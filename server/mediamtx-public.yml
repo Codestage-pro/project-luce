@@ -32,9 +32,13 @@ webrtcEncryption: no
 webrtcAllowOrigins: ["*"]
 # Sem interface nenhuma: a mídia só sai pelo relay do Cloudflare TURN abaixo,
 # então não precisa (e não deve) anunciar a IP real do servidor como
-# candidato ICE.
+# candidato ICE. webrtcAdditionalHosts só está preenchido porque o MediaMTX
+# exige um dos dois não-vazio (erro "at least one between
+# 'webrtcIPsFromInterfaces' or 'webrtcAdditionalHosts' must be filled"); esse
+# host candidate nem é alcançável de fora (porta UDP não exposta publicamente
+# — só o cloudflared pra HTTP), então o ICE sempre cai pro candidato do TURN.
 webrtcIPsFromInterfaces: no
-webrtcAdditionalHosts: []
+webrtcAdditionalHosts: ["luce.codestage.pro"]
 webrtcICEServers2:
   - url: stun:stun.cloudflare.com:3478
   # BEGIN CLOUDFLARE_TURN (gerado por scripts/refresh-cloudflare-turn.sh, não edite à mão)
