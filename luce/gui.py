@@ -191,6 +191,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._capture: CapturePipeline | None = None
         self._portal: ScreenCast | None = None
         self._watches: dict[str, WatchPipeline] = {}
+        self._watch_windows: dict[str, Gtk.Window] = {}
         # Sobrevive ao rebuild do roster (a cada 3s) pra não perder o volume/mute
         # que a pessoa escolheu enquanto assiste.
         self._volumes: dict[str, float] = {}
@@ -474,24 +475,61 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _toggle_watch(self, name: str, button: Gtk.Button) -> None:
         existing = self._watches.pop(name, None)
+        win = self._watch_windows.pop(name, None)
         if existing is not None:
             existing.stop()
+            if win is not None:
+                win.close()
             button.set_label("Assistir")
             return
+
+        sink = Gst.ElementFactory.make("gtk4paintablesink", None)
+        if sink is None:
+            self._status.set_label("falta o pacote gst-plugin-gtk4 para exibir o vídeo")
+            return
+
+        # Janela própria do GTK (desenhada via Vulkan) em vez da janela solta
+        # "OpenGL Renderer" do glimagesink: sem isso o GStreamer abre uma
+        # janela crua de GL sem controles, sem ícone e sem seguir o tema.
+        win = Gtk.Window(title=f"LUCE — {name}")
+        win.set_default_size(960, 540)
+        picture = Gtk.Picture(hexpand=True, vexpand=True, keep_aspect_ratio=True)
+        picture.set_paintable(sink.get_property("paintable"))
+        win.set_child(picture)
+        # Fechar pelo 'X' da janela de vídeo para a transmissão também
+        win.connect("close-request", lambda _w, n=name: self._on_watch_window_closed(n))
+
         watch = WatchPipeline(
             whep_endpoint=config.whep_endpoint(name),
             auth_token=config.auth_token(),
             on_pipeline_error=lambda msg, n=name: self._on_watch_error(n, msg),
+            video_sink=sink,
         )
         watch.set_volume(self._volumes.get(name, 1.0))
         watch.set_muted(self._muted.get(name, False))
         watch.start()
+        win.present()
         self._watches[name] = watch
-        button.set_label("Parar")
+        self._watch_windows[name] = win
+        self._refresh_roster()
+
+    def _on_watch_window_closed(self, name: str) -> bool:
+        watch = self._watches.pop(name, None)
+        self._watch_windows.pop(name, None)
+        if watch is not None:
+            watch.stop()
+        self._refresh_roster()
+        return False
 
     def _on_watch_error(self, name: str, message: str) -> None:
         self._status.set_label(f"assistir {name} caiu: {message}")
-        self._watches.pop(name, None)
+        watch = self._watches.pop(name, None)
+        win = self._watch_windows.pop(name, None)
+        if watch is not None:
+            watch.stop()
+        if win is not None:
+            win.close()
+        self._refresh_roster()
 
     def _refresh_roster(self) -> bool:
         cfg = config.load()

@@ -58,8 +58,15 @@ def _make_decoder() -> Gst.Element | None:
 class WatchPipeline:
     """Assiste a tela de um publisher WHIP através do relay (WHEP)."""
 
-    def __init__(self, whep_endpoint: str, auth_token: str | None = None, on_pipeline_error=None) -> None:
+    def __init__(
+        self,
+        whep_endpoint: str,
+        auth_token: str | None = None,
+        on_pipeline_error=None,
+        video_sink: Gst.Element | None = None,
+    ) -> None:
         self._on_pipeline_error = on_pipeline_error
+        self._video_sink = video_sink
         self._volume: Gst.Element | None = None
         # O pad de áudio só aparece depois de negociar com o WHEP; guarda o
         # valor pedido e aplica quando _wire_audio criar o elemento de verdade.
@@ -148,23 +155,47 @@ class WatchPipeline:
                 "(software), gst-plugin-va (AMD/Intel) ou nvcodec (NVIDIA)"
             )
             return
-        # Sem GL (sessão remota, driver sem suporte), autovideosink acha
-        # qualquer janela que funcione em vez de deixar o vídeo sem sink.
-        sink = Gst.ElementFactory.make("glimagesink", "sink-video") or (
+        # A GUI manda um gtk4paintablesink: o vídeo vai pra dentro de uma
+        # janela do próprio app (que o GTK desenha em Vulkan), em vez da
+        # janela solta "OpenGL Renderer" do glimagesink. Sem GUI (luce watch
+        # no terminal) continua valendo o GL, e autovideosink é a última
+        # saída quando nem GL tem.
+        is_gtk = self._video_sink is not None
+        sink = self._video_sink or Gst.ElementFactory.make("glimagesink", "sink-video") or (
             Gst.ElementFactory.make("autovideosink", "sink-video")
         )
         if sink is None:
             self._fail("nenhum sink de vídeo disponível (falta gst-plugins-base)")
             return
         _try_set(sink, "sync", True)
-        chain = (dec, sink)
+
+        convert = Gst.ElementFactory.make("videoconvert", "convert-video")
+        if convert is None:
+            self._fail("falta o elemento videoconvert (gst-plugins-base)")
+            return
+
+        chain: list[Gst.Element] = [dec, convert]
+        if is_gtk:
+            # O GSK Vulkan do GTK tem um bug grave ao subir buffers planares
+            # YUV crus (I420/Y444 que o avdec_h264 produz): o driver Vulkan
+            # rejeita com VK_ERROR_OUT_OF_DEVICE_MEMORY e dá SIGSEGV no app.
+            # Forçando RGBA (formato unorm empacotado padrão do Vulkan), o
+            # upload da textura funciona 100% liso em qualquer GPU e CPU.
+            rgba_caps = Gst.ElementFactory.make("capsfilter", "caps-rgba-video")
+            rgba_caps.set_property(
+                "caps", Gst.Caps.from_string("video/x-raw,format=RGBA")
+            )
+            chain.append(rgba_caps)
+        chain.append(sink)
+
         for element in chain:
             self.pipeline.add(element)
-        if not dec.link(sink):
-            print(f"não liguei {dec.get_name()} em {sink.get_name()}", flush=True)
-            return
+        for left, right in zip(chain, chain[1:]):
+            if not left.link(right):
+                self._fail(f"não liguei {left.get_name()} em {right.get_name()}")
+                return
         if pad.link(dec.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
-            print("o vídeo não encaixou no decode", flush=True)
+            self._fail("o vídeo recebido não encaixou no decoder")
             return
         for element in chain:
             element.sync_state_with_parent()

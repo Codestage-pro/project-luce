@@ -18,6 +18,14 @@ from gi.repository import GLib
 
 log = logging.getLogger("luce.portal")
 
+# Antes de qualquer SessionBus(): o dbus-python guarda UMA conexão de sessão e
+# devolve sempre a mesma, com o main loop que ela tinha quando foi criada. Se
+# a primeira SessionBus() do processo for a de screencast_available() (que roda
+# antes de existir ScreenCast), a conexão cacheada nasce sem main loop e o
+# add_signal_receiver de depois morre com "D-Bus connections must be attached
+# to a main loop".
+DBusGMainLoop(set_as_default=True)
+
 PORTAL_NAME = "org.freedesktop.portal.Desktop"
 PORTAL_PATH = "/org/freedesktop/portal/desktop"
 
@@ -67,7 +75,6 @@ def x11_session() -> bool:
 
 class ScreenCast:
     def __init__(self) -> None:
-        DBusGMainLoop(set_as_default=True)
         self.bus = dbus.SessionBus()
         self.portal = self.bus.get_object(PORTAL_NAME, PORTAL_PATH)
         self.iface = dbus.Interface(self.portal, "org.freedesktop.portal.ScreenCast")
