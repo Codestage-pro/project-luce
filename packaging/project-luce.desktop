@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Project LUCE
+Comment=Transmitir e assistir a tela do grupo
+Exec=luce gui
+Icon=video-display
+Terminal=false
+Categories=Network;VideoConference;

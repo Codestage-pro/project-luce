@@ -1,0 +1,58 @@
+# Relay pra teste à distância (Fase 2) — servidor roda no seu PC, o amigo
+# conecta pela sua IP do Tailscale (100.92.162.83). Diferença do
+# mediamtx.yml (Fase 1, loopback):
+#   - api/webrtc escutam em todas as interfaces, não só 127.0.0.1;
+#   - webrtcIPsFromInterfacesList restringe os candidatos ICE à interface do
+#     Tailscale (tailscale0) — sem isso, o MediaMTX ou só oferece 127.0.0.1
+#     (inútil pra quem tá em outra máquina) ou oferece todas as interfaces
+#     (LAN, docker, etc.), o que já causou instabilidade antes (ver README).
+# Ainda sem autenticação/TLS — a rede do Tailscale é o controle de acesso
+# aqui; não exponha essa config na internet direto (sem Tailscale).
+
+logLevel: info
+
+api: yes
+apiAddress: :9997
+
+rtsp: no
+rtmp: no
+hls: no
+srt: no
+moq: no  # Media over QUIC, não usamos; porta default (8892) colide se mais
+         # de um mediamtx rodar na mesma máquina (ex: Fase 1 em paralelo)
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+webrtcEncryption: no
+webrtcAllowOrigins: ["*"]
+webrtcIPsFromInterfaces: yes
+webrtcIPsFromInterfacesList: [tailscale0]
+webrtcAdditionalHosts: []
+
+# Por padrão o MediaMTX só deixa a action "api" vir de 127.0.0.1/::1 (pra
+# ninguém de fora controlar o relay). A GUI do watcher consulta a API pra
+# listar quem está no ar, então precisa liberar pra faixa do Tailscale
+# também (100.64.0.0/10) — publish/read continuam livres pra qualquer IP,
+# igual ao default.
+authInternalUsers:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: publish
+        path:
+      - action: read
+        path:
+      - action: playback
+        path:
+  - user: any
+    pass:
+    ips: ["127.0.0.1", "::1", "100.64.0.0/10"]
+    permissions:
+      - action: api
+      - action: metrics
+      - action: pprof
+
+paths:
+  all_others:

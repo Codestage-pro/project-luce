@@ -1,0 +1,4 @@
+# Default de sistema (Fase 2 — teste via Tailscale), sobrescrito por
+# ~/.config/project-luce/config.toml se a pessoa criar um (ver luce/config.py).
+base_url = "http://100.92.162.83:8889"
+api_url = "http://100.92.162.83:9997"

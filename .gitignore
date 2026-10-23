@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+auto.crt
+auto.key
+
+# artefatos do makepkg (PKGBUILD)
+pkg/
+src/
+*.pkg.tar.zst
