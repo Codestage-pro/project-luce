@@ -266,23 +266,35 @@ class MainWindow(Gtk.ApplicationWindow):
         if preview_sink is not None:
             self._preview.set_paintable(preview_sink.get_property("paintable"))
 
-        self._capture = CapturePipeline(
-            whip_endpoint=config.whip_endpoint(name),
-            width=cfg["width"],
-            height=cfg["height"],
-            fps=cfg["fps"],
-            bitrate_kbps=cfg["bitrate"],
-            portal_fd=fd,
-            portal_node=node,
-            preview_sink=preview_sink,
-            audio_enabled=cfg["audio"],
-            audio_bitrate_kbps=cfg["audio_bitrate"],
-            audio_device=cfg["audio_device"],
-            auth_token=config.auth_token(),
-            on_pipeline_error=self._on_share_error,
-            gl_display=self._gl_display,
-        )
-        self._capture.start()
+        try:
+            self._capture = CapturePipeline(
+                whip_endpoint=config.whip_endpoint(name),
+                width=cfg["width"],
+                height=cfg["height"],
+                fps=cfg["fps"],
+                bitrate_kbps=cfg["bitrate"],
+                portal_fd=fd,
+                portal_node=node,
+                preview_sink=preview_sink,
+                audio_enabled=cfg["audio"],
+                audio_bitrate_kbps=cfg["audio_bitrate"],
+                audio_device=cfg["audio_device"],
+                auth_token=config.auth_token(),
+                on_pipeline_error=self._on_share_error,
+                gl_display=self._gl_display,
+            )
+            self._capture.start()
+        except Exception as exc:
+            # Montar o pipeline falha de verdade em máquina sem encoder de GPU
+            # (sem NVIDIA e sem driver VA-API): sem isto a exceção só ia pro
+            # stderr do handler do GTK e a janela ficava parada em "escolha o
+            # monitor…", sem dizer o que faltava.
+            self._capture = None
+            self._portal.close()
+            self._portal = None
+            self._preview.set_paintable(None)
+            self._status.set_label(f"não deu pra transmitir: {exc}")
+            return
         self._share_btn.set_label("Parar transmissão")
         self._switch_btn.set_visible(True)
         enc_label = "NVENC" if self._capture.encoder_kind == "nvenc" else "VAAPI"

@@ -16,7 +16,7 @@ import logging
 import gi
 
 gi.require_version("Gst", "1.0")
-from gi.repository import Gst
+from gi.repository import GLib, Gst
 
 log = logging.getLogger("luce.watch")
 
@@ -32,24 +32,27 @@ def _try_set(element: Gst.Element, name: str, value) -> None:
         log.debug("%s=%r ignorado: %s", name, value, exc)
 
 
-def _make_decoder() -> Gst.Element:
-    """NVDEC primeiro; sem NVIDIA, cai pro VAAPI (AMD/Intel via gst-plugin-va).
+def _make_decoder() -> Gst.Element | None:
+    """NVDEC, senão VAAPI (AMD/Intel), senão software.
+
+    Quem assiste não escolhe a GPU de quem transmite: numa máquina sem NVIDIA
+    e sem gst-plugin-va não existia decoder nenhum e o vídeo simplesmente não
+    montava (só o áudio chegava). avdec_h264 gasta CPU, mas é melhor que tela
+    preta — e é o único que existe em qualquer instalação.
 
     shortcut: igual ao _make_encoder de capture_pipeline.py, nunca testado
     decodificando de verdade num driver VAAPI (esta máquina só tem NVIDIA).
     """
-    dec = Gst.ElementFactory.make("nvh264dec", "dec")
-    if dec is not None:
-        print("decodificando com NVDEC (GPU NVIDIA)", flush=True)
-        return dec
-    dec = Gst.ElementFactory.make("vah264dec", "dec")
-    if dec is not None:
-        print("decodificando com VAAPI (GPU AMD/Intel)", flush=True)
-        return dec
-    raise RuntimeError(
-        "faltam nvh264dec (NVIDIA, gst-plugins-bad com nvcodec) e "
-        "vah264dec (AMD/Intel, gst-plugin-va)"
-    )
+    for factory, label in (
+        ("nvh264dec", "NVDEC (GPU NVIDIA)"),
+        ("vah264dec", "VAAPI (GPU AMD/Intel)"),
+        ("avdec_h264", "software/CPU (gst-libav)"),
+    ):
+        dec = Gst.ElementFactory.make(factory, "dec")
+        if dec is not None:
+            print(f"decodificando com {label}", flush=True)
+            return dec
+    return None
 
 
 class WatchPipeline:
@@ -139,7 +142,20 @@ class WatchPipeline:
 
     def _wire_video(self, pad) -> None:
         dec = _make_decoder()
-        sink = Gst.ElementFactory.make("glimagesink", "sink-video")
+        if dec is None:
+            self._fail(
+                "nenhum decoder de H.264 instalado — falta gst-libav "
+                "(software), gst-plugin-va (AMD/Intel) ou nvcodec (NVIDIA)"
+            )
+            return
+        # Sem GL (sessão remota, driver sem suporte), autovideosink acha
+        # qualquer janela que funcione em vez de deixar o vídeo sem sink.
+        sink = Gst.ElementFactory.make("glimagesink", "sink-video") or (
+            Gst.ElementFactory.make("autovideosink", "sink-video")
+        )
+        if sink is None:
+            self._fail("nenhum sink de vídeo disponível (falta gst-plugins-base)")
+            return
         _try_set(sink, "sync", True)
         chain = (dec, sink)
         for element in chain:
@@ -188,6 +204,18 @@ class WatchPipeline:
         for element in chain:
             element.sync_state_with_parent()
         print("recebendo áudio", flush=True)
+
+    def _fail(self, message: str) -> None:
+        """Erro detectado fora do bus (montagem da cadeia no pad-added).
+
+        Vai pro mesmo callback do _on_error, mas via idle_add: pad-added roda
+        numa thread de streaming do GStreamer e quem recebe isso mexe em
+        widget GTK, que só pode ser tocado na thread do loop principal.
+        """
+        print(f"vídeo não montou: {message}", flush=True)
+        log.error("vídeo não montou: %s", message)
+        if self._on_pipeline_error is not None:
+            GLib.idle_add(self._on_pipeline_error, message)
 
     def _on_error(self, _bus, message) -> None:
         err, debug = message.parse_error()

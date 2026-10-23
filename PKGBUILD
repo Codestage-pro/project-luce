@@ -7,11 +7,23 @@ pkgrel=1
 pkgdesc="Transmissão de tela do grupo (GPU, WHIP/WHEP via MediaMTX)"
 arch=('any')
 license=('custom')
+# gst-plugin-va dá o vah264enc/vah264dec, que é como vídeo integrado (Intel/AMD)
+# usa a GPU — sem ele o PC cai no software e nem todo mundo aqui tem NVIDIA.
+# gst-libav dá o avdec_h264, último recurso: sem ele quem assiste numa máquina
+# sem GPU utilizável não monta vídeo nenhum e só o áudio chega (ver
+# _make_decoder em luce/watch_pipeline.py).
 depends=(python python-gobject python-dbus gtk4 gstreamer gst-plugins-base
-         gst-plugins-good gst-plugins-bad gst-plugin-webrtchttp gst-plugin-gtk4
-         xdg-desktop-portal)
-optdepends=('gst-plugin-va: aceleração de vídeo em GPU AMD/Intel'
-            'nvidia-utils: aceleração de vídeo em GPU NVIDIA')
+         gst-plugins-good gst-plugins-bad gst-libav gst-plugin-va
+         gst-plugin-webrtchttp gst-plugin-gtk4 xdg-desktop-portal)
+# O gst-plugin-va não serve de nada sozinho: ele só registra os elementos se
+# achar um driver VA-API no render node da placa (confirmado nesta máquina —
+# plugin instalado, `gst-inspect-1.0 va` dizendo "0 features" por falta de
+# driver compatível). O pacman lista estes na instalação; é a dica pro dono da
+# máquina instalar o da GPU dele.
+optdepends=('intel-media-driver: GPU Intel Broadwell ou mais nova (vídeo integrado) — sem isso o vídeo vai na CPU'
+            'libva-mesa-driver: GPU AMD — sem isso o vídeo vai na CPU'
+            'libva-intel-driver: GPU Intel antiga (até Haswell)'
+            'nvidia-utils: GPU NVIDIA (NVENC/NVDEC)')
 
 package() {
     install -d "$pkgdir/usr/share/project-luce"

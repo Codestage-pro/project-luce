@@ -135,3 +135,15 @@ clonada. Isso instala as dependências do `PKGBUILD`, o pacote
 ícone "Project LUCE" no menu de apps. `packaging/config.toml` já aponta pra
 esses domínios por padrão — não precisa configurar nada. Dá pra sobrescrever
 o endereço criando `~/.config/project-luce/config.toml`.
+
+**Quem não tem NVIDIA precisa de um driver VA-API** pra usar a GPU (vídeo
+integrado Intel/AMD): o `gst-plugin-va` já vem como dependência, mas ele só
+registra os elementos se achar o driver da placa. O pacman mostra a lista na
+instalação; na prática é `sudo pacman -S intel-media-driver` (Intel Broadwell
+pra cima, inclusive os UHD de desktop), `libva-mesa-driver` (AMD) ou
+`libva-intel-driver` (Intel até Haswell). Sem o driver dá pra *assistir* (cai
+no `avdec_h264`, software — um i3 aguenta, mas fica no talo), e *transmitir*
+não começa: não existe encoder de software aqui de propósito, a janela avisa
+"não deu pra transmitir: faltam nvh264enc … e vah264enc …". Pra conferir qual
+caminho pegou, rode `luce` pelo terminal: ele imprime `codificando com …` e
+`decodificando com VAAPI (GPU AMD/Intel)` ou `software/CPU`.
