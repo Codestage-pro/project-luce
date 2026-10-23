@@ -219,6 +219,12 @@ class CapturePipeline:
         if whip is None:
             raise RuntimeError("whipsink não está instalado (gst-plugin-webrtchttp)")
         whip.set_property("whip-endpoint", whip_endpoint)
+        # whipsink é um GstBin com um webrtcbin interno: sem isso, um erro do
+        # webrtcbin (ICE caiu, DTLS falhou) fica preso dentro do bin e nunca
+        # chega no bus do pipeline externo — a conexão morre em silêncio sem
+        # disparar on_pipeline_error (visto em teste real: servidor loga
+        # "closed: terminated" mas a GUI nunca soube).
+        _try_set(whip, "message-forward", True)
         if auth_token:
             _try_set(whip, "auth-token", auth_token)
 

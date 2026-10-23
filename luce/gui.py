@@ -448,9 +448,18 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _refresh_roster(self) -> bool:
         cfg = config.load()
-        names = [n for n in roster.list_paths(cfg["api_url"]) if n != cfg["name"]]
         for child in list(self._roster_box):
             self._roster_box.remove(child)
+        try:
+            names = [n for n in roster.list_paths(cfg["api_url"]) if n != cfg["name"]]
+        except Exception as exc:
+            # Falha de rede vira mensagem na própria lista: antes virava lista
+            # vazia indistinguível de "ninguém no ar", que foi o que escondeu
+            # um 403 do Cloudflare.
+            self._roster_box.append(
+                Gtk.Label(label=f"servidor não respondeu: {exc}", xalign=0, wrap=True)
+            )
+            return True
         for name in names:
             row = Gtk.Box(spacing=8, margin_top=4, margin_bottom=4, margin_start=4, margin_end=4)
             row.append(Gtk.Label(label=name, xalign=0, hexpand=True))

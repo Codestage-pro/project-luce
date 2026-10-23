@@ -67,6 +67,10 @@ class WatchPipeline:
         if src is None:
             raise RuntimeError("whepsrc não está instalado (gst-plugin-webrtchttp)")
         src.set_property("whep-endpoint", whep_endpoint)
+        # Mesmo motivo do whipsink em capture_pipeline.py: sem isso, erro do
+        # webrtcbin interno (ICE caiu) fica preso no bin e quem assiste nunca
+        # fica sabendo que a transmissão morreu.
+        _try_set(src, "message-forward", True)
         if auth_token:
             _try_set(src, "auth-token", auth_token)
         self.pipeline.add(src)

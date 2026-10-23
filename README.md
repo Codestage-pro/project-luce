@@ -123,9 +123,15 @@ No servidor:
    `-api`) e reiniciar o `cloudflared`.
 
 Pro lado do amigo, instalar de verdade (ícone no menu, sem terminal depois):
-`sudo pacman -S --needed base-devel` (uma vez, se ele não tiver) e então,
-dentro da pasta do projeto, `makepkg -si`. Isso instala as dependências do
-`PKGBUILD`, o pacote `luce/` em `/usr/share/project-luce`, o lançador `luce`
-em `/usr/bin` e o ícone "Project LUCE" no menu de apps. `packaging/config.toml`
-já aponta pra esses domínios por padrão — não precisa configurar nada. Dá pra
-sobrescrever o endereço criando `~/.config/project-luce/config.toml`.
+`git clone https://github.com/MuriloX06/project-luce.git`, e dentro da pasta
+clonada, `makepkg -si` (precisa de `base-devel` instalado — `sudo pacman -S
+--needed base-devel` antes, se ele não tiver) — ou `paru -Bi .` (o `.` é
+obrigatório: `-B` builda o PKGBUILD de uma pasta, e o alvo é essa pasta),
+se ele preferir o paru pra resolver as dependências. **Não é um pacote da
+AUR** (não precisa buscar "project-luce" no paru, isso dá erro de pacote não
+encontrado) — o `-B`/`-si` só builda o `PKGBUILD` que já está na pasta
+clonada. Isso instala as dependências do `PKGBUILD`, o pacote
+`luce/` em `/usr/share/project-luce`, o lançador `luce` em `/usr/bin` e o
+ícone "Project LUCE" no menu de apps. `packaging/config.toml` já aponta pra
+esses domínios por padrão — não precisa configurar nada. Dá pra sobrescrever
+o endereço criando `~/.config/project-luce/config.toml`.
