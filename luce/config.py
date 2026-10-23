@@ -20,6 +20,8 @@ DEFAULTS: dict[str, Any] = {
     "fps": 30,
     "bitrate": 4000,
     "audio": True,
+    "audio_bitrate": 128,  # kbps, Opus
+    "auth_password": "",  # senha do grupo (bdk) — só o servidor "público" (mediamtx-public.yml) exige
 }
 
 
@@ -51,3 +53,13 @@ def whip_endpoint(path: str) -> str:
 
 def whep_endpoint(path: str) -> str:
     return f"{load()['base_url']}/{path}/whep"
+
+
+def auth_token() -> str | None:
+    """Vira o header `Authorization: Bearer user:pass` do whipsink/whepsrc.
+
+    Usuário fixo "bdk" pra combinar com authInternalUsers do
+    mediamtx-public.yml — só a senha precisa ser configurada.
+    """
+    password = load()["auth_password"]
+    return f"bdk:{password}" if password else None

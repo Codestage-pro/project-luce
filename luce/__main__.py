@@ -77,6 +77,7 @@ def cmd_share(args: argparse.Namespace) -> int:
         portal_fd=fd,
         portal_node=node,
         audio_enabled=not args.no_audio,
+        auth_token=config.auth_token(),
         on_pipeline_error=_failed,
     )
     print(f"{args.width}x{args.height}@{args.fps} {args.bitrate} kbps -> {endpoint}", flush=True)
@@ -92,7 +93,7 @@ def cmd_share(args: argparse.Namespace) -> int:
 
 def cmd_watch(args: argparse.Namespace) -> int:
     endpoint = config.whep_endpoint(args.path)
-    pipeline = WatchPipeline(whep_endpoint=endpoint)
+    pipeline = WatchPipeline(whep_endpoint=endpoint, auth_token=config.auth_token())
     print(f"assistindo {endpoint}", flush=True)
     pipeline.start()
     return _run_loop(pipeline.stop)

@@ -66,6 +66,8 @@ class CapturePipeline:
         preview: bool = True,
         preview_sink: Gst.Element | None = None,
         audio_enabled: bool = True,
+        audio_bitrate_kbps: int = 128,
+        auth_token: str | None = None,
         on_pipeline_error=None,
     ) -> None:
         self._on_pipeline_error = on_pipeline_error
@@ -185,6 +187,8 @@ class CapturePipeline:
         if whip is None:
             raise RuntimeError("whipsink não está instalado (gst-plugin-webrtchttp)")
         whip.set_property("whip-endpoint", whip_endpoint)
+        if auth_token:
+            _try_set(whip, "auth-token", auth_token)
 
         chain = [*front, caps]
         for element in chain:
@@ -265,7 +269,7 @@ class CapturePipeline:
         self._audio_volume = Gst.ElementFactory.make("volume", "audio-volume")
         self._audio_volume.set_property("mute", not audio_enabled)
         audio_enc = Gst.ElementFactory.make("opusenc", "audio-enc")
-        _try_set(audio_enc, "bitrate", 64000)
+        _try_set(audio_enc, "bitrate", audio_bitrate_kbps * 1000)
         _try_set(audio_enc, "audio-type", "restricted-lowdelay")
         audio_pay = Gst.ElementFactory.make("rtpopuspay", "audio-pay")
         _try_set(audio_pay, "pt", 97)

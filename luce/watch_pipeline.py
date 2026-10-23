@@ -55,7 +55,7 @@ def _make_decoder() -> Gst.Element:
 class WatchPipeline:
     """Assiste a tela de um publisher WHIP através do relay (WHEP)."""
 
-    def __init__(self, whep_endpoint: str, on_pipeline_error=None) -> None:
+    def __init__(self, whep_endpoint: str, auth_token: str | None = None, on_pipeline_error=None) -> None:
         self._on_pipeline_error = on_pipeline_error
         self._volume: Gst.Element | None = None
         # O pad de áudio só aparece depois de negociar com o WHEP; guarda o
@@ -67,6 +67,8 @@ class WatchPipeline:
         if src is None:
             raise RuntimeError("whepsrc não está instalado (gst-plugin-webrtchttp)")
         src.set_property("whep-endpoint", whep_endpoint)
+        if auth_token:
+            _try_set(src, "auth-token", auth_token)
         self.pipeline.add(src)
         src.connect("pad-added", self._on_pad_added)
         bus = self.pipeline.get_bus()

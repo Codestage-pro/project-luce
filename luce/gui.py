@@ -21,6 +21,36 @@ from .capture_pipeline import CapturePipeline
 from .portal import PortalError, ScreenCast
 from .watch_pipeline import WatchPipeline
 
+# Valores fixos pra resolução/fps/qualidade — botão em vez de caixa de texto,
+# pra ninguém digitar um valor fora do que o encoder/a rede aguenta.
+RESOLUTIONS = [(1280, 720), (1920, 1080), (2560, 1440)]
+FPS_OPTIONS = [30, 60]
+VIDEO_BITRATES_KBPS = [2500, 4000, 8000]
+AUDIO_BITRATES_KBPS = [64, 128, 256]
+
+
+def _choice_row(grid: Gtk.Grid, row: int, label: str, options: list, selected, fmt=str) -> list[tuple[Gtk.ToggleButton, object]]:
+    """Linha de botões mutuamente exclusivos (GTK4 não tem mais RadioButton)."""
+    grid.attach(Gtk.Label(label=label, xalign=0), 0, row, 1, 1)
+    box = Gtk.Box(spacing=4)
+    grid.attach(box, 1, row, 1, 1)
+    pairs: list[tuple[Gtk.ToggleButton, object]] = []
+    first: Gtk.ToggleButton | None = None
+    for option in options:
+        btn = Gtk.ToggleButton(label=fmt(option))
+        if first is None:
+            first = btn
+        else:
+            btn.set_group(first)
+        btn.set_active(option == selected)
+        box.append(btn)
+        pairs.append((btn, option))
+    return pairs
+
+
+def _choice_value(pairs: list[tuple[Gtk.ToggleButton, object]], fallback):
+    return next((option for btn, option in pairs if btn.get_active()), fallback)
+
 
 class SettingsWindow(Gtk.Window):
     def __init__(self, parent: Gtk.Window) -> None:
@@ -31,32 +61,44 @@ class SettingsWindow(Gtk.Window):
         self.set_child(grid)
 
         self._fields: dict[str, Gtk.Entry] = {}
-        rows = [
+        text_rows = [
             ("base_url", "Servidor (WHIP/WHEP)"),
             ("api_url", "API do servidor"),
-            ("width", "Largura"),
-            ("height", "Altura"),
-            ("fps", "FPS"),
-            ("bitrate", "Bitrate (kbps)"),
+            ("auth_password", "Senha do grupo (BDK)"),
         ]
-        for i, (key, label) in enumerate(rows):
+        for i, (key, label) in enumerate(text_rows):
             grid.attach(Gtk.Label(label=label, xalign=0), 0, i, 1, 1)
             entry = Gtk.Entry(text=str(cfg[key]))
             grid.attach(entry, 1, i, 1, 1)
             self._fields[key] = entry
 
+        next_row = len(text_rows)
+        self._resolution = _choice_row(
+            grid, next_row, "Resolução", RESOLUTIONS, (cfg["width"], cfg["height"]), fmt=lambda r: f"{r[1]}p"
+        )
+        self._fps = _choice_row(grid, next_row + 1, "FPS", FPS_OPTIONS, cfg["fps"])
+        self._bitrate = _choice_row(
+            grid, next_row + 2, "Qualidade de vídeo", VIDEO_BITRATES_KBPS, cfg["bitrate"], fmt=lambda k: f"{k} kbps"
+        )
+        self._audio_bitrate = _choice_row(
+            grid, next_row + 3, "Qualidade de áudio", AUDIO_BITRATES_KBPS, cfg["audio_bitrate"], fmt=lambda k: f"{k} kbps"
+        )
+
         self._audio_check = Gtk.CheckButton(label="Transmitir áudio", active=cfg["audio"])
-        grid.attach(self._audio_check, 0, len(rows), 2, 1)
+        grid.attach(self._audio_check, 0, next_row + 4, 2, 1)
 
         save = Gtk.Button(label="Salvar")
         save.connect("clicked", self._on_save)
-        grid.attach(save, 0, len(rows) + 1, 2, 1)
+        grid.attach(save, 0, next_row + 5, 2, 1)
 
     def _on_save(self, _button: Gtk.Button) -> None:
         cfg = config.load()
         for key, entry in self._fields.items():
-            text = entry.get_text()
-            cfg[key] = int(text) if isinstance(config.DEFAULTS[key], int) else text
+            cfg[key] = entry.get_text()
+        cfg["width"], cfg["height"] = _choice_value(self._resolution, (cfg["width"], cfg["height"]))
+        cfg["fps"] = _choice_value(self._fps, cfg["fps"])
+        cfg["bitrate"] = _choice_value(self._bitrate, cfg["bitrate"])
+        cfg["audio_bitrate"] = _choice_value(self._audio_bitrate, cfg["audio_bitrate"])
         cfg["audio"] = self._audio_check.get_active()
         config.save(cfg)
         self.close()
@@ -142,6 +184,8 @@ class MainWindow(Gtk.ApplicationWindow):
             portal_node=node,
             preview_sink=preview_sink,
             audio_enabled=cfg["audio"],
+            audio_bitrate_kbps=cfg["audio_bitrate"],
+            auth_token=config.auth_token(),
             on_pipeline_error=self._on_share_error,
         )
         self._capture.start()
@@ -173,6 +217,7 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         watch = WatchPipeline(
             whep_endpoint=config.whep_endpoint(name),
+            auth_token=config.auth_token(),
             on_pipeline_error=lambda msg, n=name: self._on_watch_error(n, msg),
         )
         watch.set_volume(self._volumes.get(name, 1.0))

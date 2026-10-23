@@ -66,7 +66,9 @@ PulseAudio e PipeWire via pipewire-pulse, sem código separado — aparece como
 "Project LUCE" no qpwgraph/pavucontrol pra quem quiser rotear manualmente).
 "Transmitir áudio" em Configurações (ou `--no-audio` na CLI) só muda a faixa,
 não deixa de publicá-la. Quem assiste tem mute e volume por pessoa, na linha
-dela no roster da GUI.
+dela no roster da GUI. Resolução, FPS e qualidade de vídeo/áudio em
+Configurações são botões de opção fixa (não caixa de texto) — evita digitar
+um valor fora do que o encoder ou a rede aguentam.
 
 Com Tailscale ativo na máquina, o MediaMTX por padrão também anuncia
 candidatos ICE da interface Tailscale, o que deixava o WHEP instável em
@@ -96,3 +98,45 @@ em `/usr/bin` e o ícone "Project LUCE" no menu de apps — já apontando pro se
 IP do Tailscale por padrão (`/etc/project-luce/config.toml`, ver
 `packaging/`); sem autenticação, a rede do Tailscale é o controle de acesso.
 Dá pra sobrescrever o endereço criando `~/.config/project-luce/config.toml`.
+
+-----------Fase 3 — servidor público (Cloudflare, sem exigir Tailscale do amigo)-----------
+
+Mesma máquina do servidor (no seu caso, o notebook Debian via Dokploy), mas
+sem depender de ninguém entrar no seu Tailscale: a sinalização HTTP
+(WHIP/WHEP + roster) passa pelo seu `cloudflared` já existente, e o
+vídeo/áudio (RTP/ICE) relaia pelo **Cloudflare Realtime TURN** em vez da
+interface `tailscale0`. Decisão de arquitetura e por quê, nos comentários de
+`server/mediamtx-public.yml` e `scripts/refresh-cloudflare-turn.sh`.
+
+No servidor:
+1. `server/docker-compose.yml` via Dokploy (tipo "Docker Compose", apontando
+   pro repo — **sem domínio configurado nele**, ver comentário no arquivo
+   pro bug do Dokploy que isso evita). Monta `server/mediamtx-public.yml`.
+2. Cria uma TURN Key em Cloudflare → Realtime → TURN Keys; cola
+   `TURN_KEY_ID`/`TURN_KEY_API_TOKEN` na aba Environment do serviço no
+   Dokploy (ele escreve um `server/.env` do lado do `docker-compose.yml`
+   sozinho — ver `server/.env.example`).
+3. Cron rodando `scripts/refresh-cloudflare-turn.sh` 1x/dia (credenciais do
+   TURN expiram em até 48h) — aponta pra cópia do script dentro da pasta que
+   o Dokploy clonou, não uma clonagem manual separada.
+4. Cola `BDK_PASSWORD` (senha de verdade, à sua escolha) na aba Environment
+   do Dokploy também — `server/docker-compose.yml` repassa pro MediaMTX via
+   `MTX_AUTHINTERNALUSERS_0_PASS` (override nativo dele pra essa entrada de
+   `authInternalUsers`, documentado em mediamtx.org/docs/usage/configuration).
+   Sem Tailscale restringindo quem alcança o servidor, publish/read exigem
+   essa senha (mesmo valor de `auth_password` no `config.toml` de quem vai
+   usar).
+5. No `/etc/cloudflared/config.yml` do servidor, ingress apontando pras
+   portas que o `network_mode: host` já expõe em loopback:
+   ```yaml
+   - hostname: luce.codestage.pro
+     service: http://127.0.0.1:8889
+   - hostname: luce-api.codestage.pro
+     service: http://127.0.0.1:9997
+   ```
+   (antes da regra catch-all do final do arquivo), depois
+   `cloudflared tunnel route dns <tunnel> luce.codestage.pro` (e de novo pro
+   `-api`) e reiniciar o `cloudflared`.
+
+`packaging/config.toml` já aponta pra esses domínios por padrão — quem
+instalar o pacote Arch (`makepkg -si`) não precisa configurar nada.
