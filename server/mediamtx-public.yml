@@ -1,13 +1,13 @@
-# Relay "servidor real" acessível pela internet, sem exigir Tailscale dos
-# amigos: a sinalização HTTP (WHIP/WHEP/API) passa pelo seu cloudflared (ver
+# Relay "servidor real" acessível pela internet: a sinalização HTTP
+# (WHIP/WHEP/API) passa pelo seu cloudflared (ver
 # /etc/cloudflared/config.yml no notebook — ingress apontando pra
 # http://127.0.0.1:8889 e http://127.0.0.1:9997) e a mídia (RTP/ICE) relaia
-# pelo Cloudflare Realtime TURN em vez da interface tailscale0. O bloco
-# CLOUDFLARE_TURN abaixo é preenchido por scripts/refresh-cloudflare-turn.sh
-# (credenciais do Cloudflare expiram em até 48h, não dá pra deixar fixo).
+# pelo Cloudflare Realtime TURN. O bloco CLOUDFLARE_TURN abaixo é preenchido
+# por scripts/refresh-cloudflare-turn.sh (credenciais do Cloudflare expiram
+# em até 48h, não dá pra deixar fixo).
 #
-# Sem o Tailscale restringindo quem alcança o servidor, publish/read ficam
-# abertos pra qualquer um na internet que descobrir a URL — por isso agora
+# Rede aberta pra internet (sem VPN restringindo quem alcança o servidor),
+# publish/read ficam abertos pra qualquer um que descobrir a URL — por isso
 # exigem senha (authInternalUsers abaixo). A senha de verdade entra por
 # variável de ambiente (MTX_AUTHINTERNALUSERS_0_PASS, ver
 # server/docker-compose.yml + server/.env.example), não fica commitada aqui;

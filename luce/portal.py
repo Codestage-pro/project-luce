@@ -52,14 +52,35 @@ class ScreenCast:
             raise PortalError("o portal não devolveu o vídeo")
         return self.fd, self.node_id
 
+    def reopen_fd(self) -> int:
+        """Pede ao portal um novo fd do PipeWire para a sessão existente."""
+        if not self._session:
+            raise PortalError("sessão do portal não está aberta")
+        if self.fd is not None:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self.fd = None
+        raw = self.iface.OpenPipeWireRemote(self._session, dbus.Dictionary({}, signature="sv"))
+        self.fd = _owned_fd(raw)
+        return self.fd
+
     def close(self) -> None:
-        if self.fd is None:
-            return
-        try:
-            os.close(self.fd)
-        except OSError:
-            pass
-        self.fd = None
+        if self.fd is not None:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self.fd = None
+        if self._session:
+            try:
+                session_obj = self.bus.get_object(PORTAL_NAME, self._session)
+                session_iface = dbus.Interface(session_obj, "org.freedesktop.portal.Session")
+                session_iface.Close()
+            except Exception:
+                pass
+            self._session = None
 
     def _request(self, sender: str, token: str, callback, call) -> None:
         self._response = None

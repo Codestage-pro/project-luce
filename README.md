@@ -70,42 +70,27 @@ dela no roster da GUI. Resolução, FPS e qualidade de vídeo/áudio em
 Configurações são botões de opção fixa (não caixa de texto) — evita digitar
 um valor fora do que o encoder ou a rede aguentam.
 
-Com Tailscale ativo na máquina, o MediaMTX por padrão também anuncia
-candidatos ICE da interface Tailscale, o que deixava o WHEP instável em
-teste local; `server/mediamtx.yml` restringe a loopback
-(`webrtcIPsFromInterfaces: no`) — isso precisa voltar a incluir interfaces
-reais na Fase 2 (teste com um amigo via LAN/Tailscale).
+Qualquer VPN/interface extra ativa na máquina pode fazer o MediaMTX anunciar
+um candidato ICE dela, o que deixava o WHEP instável em teste local;
+`server/mediamtx.yml` restringe a loopback (`webrtcIPsFromInterfaces: no`).
 
 Fora de escopo por enquanto: Windows/macOS, GUI completa, VPS/TLS (fases
-seguintes do plano).
+seguintes do plano). Resolução adaptada por espectador (cada um assiste na
+qualidade que a rede dele aguenta) também fica pra depois — o MediaMTX não
+suporta isso pelo WHEP hoje (só lê simulcast como tracks independentes via
+RTSP/RTMP/SRT, não via WebRTC: github.com/bluenviron/mediamtx/issues/5596) e
+não transcodifica nada (github.com/bluenviron/mediamtx/discussions/3953); os
+dois jeitos de contornar isso custam caro demais pra v1 — publicar 2 streams
+fixos simultâneos (dobra o encode de quem transmite) ou transcode no servidor
+via FFmpeg/`runOnDemand` (reintroduz carga de GPU/CPU no servidor, o problema
+de escala que fez abandonar o Go Live).
 
------------Fase 2 — teste à distância (Tailscale)-----------
+-----------Fase 2 — servidor público (Cloudflare)-----------
 
-Servidor no seu PC, amigo conecta pela sua IP do Tailscale. No seu lado:
-```
-./scripts/run-tailscale-server.sh
-```
-(usa `server/mediamtx-tailscale.yml` — escuta em todas as interfaces, não só
-loopback, e libera a API do MediaMTX pra faixa do Tailscale também; por
-padrão o MediaMTX só deixa a `api` vir de 127.0.0.1, o que quebraria o
-roster da GUI do amigo.)
-
-Pro lado do amigo, instalar de verdade (ícone no menu, sem terminal depois):
-`sudo pacman -S --needed base-devel` (uma vez, se ele não tiver) e então,
-dentro da pasta do projeto, `makepkg -si`. Isso instala as dependências do
-`PKGBUILD`, o pacote `luce/` em `/usr/share/project-luce`, o lançador `luce`
-em `/usr/bin` e o ícone "Project LUCE" no menu de apps — já apontando pro seu
-IP do Tailscale por padrão (`/etc/project-luce/config.toml`, ver
-`packaging/`); sem autenticação, a rede do Tailscale é o controle de acesso.
-Dá pra sobrescrever o endereço criando `~/.config/project-luce/config.toml`.
-
------------Fase 3 — servidor público (Cloudflare, sem exigir Tailscale do amigo)-----------
-
-Mesma máquina do servidor (no seu caso, o notebook Debian via Dokploy), mas
-sem depender de ninguém entrar no seu Tailscale: a sinalização HTTP
-(WHIP/WHEP + roster) passa pelo seu `cloudflared` já existente, e o
-vídeo/áudio (RTP/ICE) relaia pelo **Cloudflare Realtime TURN** em vez da
-interface `tailscale0`. Decisão de arquitetura e por quê, nos comentários de
+Mesma máquina do servidor (no seu caso, o notebook Debian via Dokploy): a
+sinalização HTTP (WHIP/WHEP + roster) passa pelo seu `cloudflared` já
+existente, e o vídeo/áudio (RTP/ICE) relaia pelo **Cloudflare Realtime
+TURN**. Decisão de arquitetura e por quê, nos comentários de
 `server/mediamtx-public.yml` e `scripts/refresh-cloudflare-turn.sh`.
 
 No servidor:
@@ -123,9 +108,8 @@ No servidor:
    do Dokploy também — `server/docker-compose.yml` repassa pro MediaMTX via
    `MTX_AUTHINTERNALUSERS_0_PASS` (override nativo dele pra essa entrada de
    `authInternalUsers`, documentado em mediamtx.org/docs/usage/configuration).
-   Sem Tailscale restringindo quem alcança o servidor, publish/read exigem
-   essa senha (mesmo valor de `auth_password` no `config.toml` de quem vai
-   usar).
+   O servidor fica aberto pra internet, então publish/read exigem essa
+   senha (mesmo valor de `auth_password` no `config.toml` de quem vai usar).
 5. No `/etc/cloudflared/config.yml` do servidor, ingress apontando pras
    portas que o `network_mode: host` já expõe em loopback:
    ```yaml
@@ -138,5 +122,10 @@ No servidor:
    `cloudflared tunnel route dns <tunnel> luce.codestage.pro` (e de novo pro
    `-api`) e reiniciar o `cloudflared`.
 
-`packaging/config.toml` já aponta pra esses domínios por padrão — quem
-instalar o pacote Arch (`makepkg -si`) não precisa configurar nada.
+Pro lado do amigo, instalar de verdade (ícone no menu, sem terminal depois):
+`sudo pacman -S --needed base-devel` (uma vez, se ele não tiver) e então,
+dentro da pasta do projeto, `makepkg -si`. Isso instala as dependências do
+`PKGBUILD`, o pacote `luce/` em `/usr/share/project-luce`, o lançador `luce`
+em `/usr/bin` e o ícone "Project LUCE" no menu de apps. `packaging/config.toml`
+já aponta pra esses domínios por padrão — não precisa configurar nada. Dá pra
+sobrescrever o endereço criando `~/.config/project-luce/config.toml`.

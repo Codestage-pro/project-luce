@@ -1,7 +1,5 @@
-# Default de sistema (Fase 3 — servidor público via Cloudflare, sem exigir
-# Tailscale de quem instala), sobrescrito por ~/.config/project-luce/config.toml
-# se a pessoa criar um (ver luce/config.py). Pra voltar ao teste via
-# Tailscale (Fase 2): base_url/api_url = http://100.92.162.83:8889/:9997.
+# Default de sistema (Fase 2 — servidor público via Cloudflare), sobrescrito
+# por ~/.config/project-luce/config.toml se a pessoa criar um (ver luce/config.py).
 base_url = "https://luce.codestage.pro"
 api_url = "https://luce-api.codestage.pro"
 # Senha do grupo (bdk) exigida pelo server/mediamtx-public.yml — preencha

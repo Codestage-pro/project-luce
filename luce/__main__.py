@@ -77,6 +77,7 @@ def cmd_share(args: argparse.Namespace) -> int:
         portal_fd=fd,
         portal_node=node,
         audio_enabled=not args.no_audio,
+        audio_device=args.audio_device,
         auth_token=config.auth_token(),
         on_pipeline_error=_failed,
     )
@@ -143,6 +144,7 @@ def main() -> int:
     share.add_argument("--fps", type=int, default=30)
     share.add_argument("--bitrate", type=int, default=4000, help="kbps")
     share.add_argument("--no-audio", action="store_true", help="transmite mudo (áudio continua indo, só sem som)")
+    share.add_argument("--audio-device", default=None, help="nome do dispositivo de entrada (pulsesrc device); padrão = do sistema")
     share.set_defaults(func=cmd_share)
 
     watch = sub.add_parser("watch", help="assiste a tela de alguém")

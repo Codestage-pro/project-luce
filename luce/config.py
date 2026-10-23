@@ -21,6 +21,7 @@ DEFAULTS: dict[str, Any] = {
     "bitrate": 4000,
     "audio": True,
     "audio_bitrate": 128,  # kbps, Opus
+    "audio_device": "",  # dispositivo de entrada (pulsesrc device); vazio = padrão do sistema
     "auth_password": "",  # senha do grupo (bdk) — só o servidor "público" (mediamtx-public.yml) exige
 }
 

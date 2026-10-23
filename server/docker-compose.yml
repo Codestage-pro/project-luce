@@ -1,12 +1,10 @@
 # Deploy no Dokploy (ou qualquer docker compose) como "servidor real", em vez
 # do script local. Imagem oficial (bluenviron/mediamtx:1, ~16MB).
 #
-# network_mode: host é obrigatório aqui, não só mais simples — o
-# mediamtx-tailscale.yml restringe os candidatos ICE à interface
-# `tailscale0` (webrtcIPsFromInterfacesList), e com rede bridge (padrão do
-# Docker) o container nem vê essa interface do host. Com host, as portas do
-# mediamtx-tailscale.yml (9997 API, 8889 WebRTC, 8189 UDP) já saem direto no
-# host, sem precisar de `ports:`.
+# network_mode: host é mais simples aqui: o cloudflared do host (ver
+# mediamtx-public.yml) fala com o MediaMTX via 127.0.0.1:8889/:9997 — com
+# rede bridge (padrão do Docker) esses endereços não alcançariam o
+# container sem mapear `ports:` um por um.
 #
 # No Dokploy: crie o serviço como "Docker Compose" apontando pra esse
 # arquivo (server/docker-compose.yml) — e NÃO configure domínio pra ele. Ao
@@ -16,10 +14,9 @@
 # domínio — acesso é direto pelo seu cloudflared (ver mediamtx-public.yml) —
 # não tem esse problema.
 #
-# mediamtx-public.yml em vez de mediamtx-tailscale.yml: essa é a versão sem
-# depender de amigo nenhum entrar no seu Tailscale — mídia relaiada pelo
-# Cloudflare Realtime TURN (scripts/refresh-cloudflare-turn.sh, via cron,
-# mantém as credenciais vivas) e sinalização exposta pelo cloudflared.
+# mediamtx-public.yml: mídia relaiada pelo Cloudflare Realtime TURN
+# (scripts/refresh-cloudflare-turn.sh, via cron, mantém as credenciais
+# vivas) e sinalização exposta pelo cloudflared.
 services:
   mediamtx:
     image: bluenviron/mediamtx:1

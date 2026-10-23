@@ -80,9 +80,14 @@ class WatchPipeline:
         self.pipeline.set_state(Gst.State.PLAYING)
 
     def stop(self) -> None:
+        bus = self.pipeline.get_bus()
+        # Mesmo motivo do CapturePipeline.stop(): quebra o ciclo self <-> bus
+        # <-> pipeline antes de liberar o contexto GL do NVDEC/VAAPI, senão
+        # só o GC cíclico (em momento imprevisível) liberaria o antigo.
+        bus.disconnect_by_func(self._on_error)
+        bus.disconnect_by_func(self._on_warning)
+        bus.remove_signal_watch()
         self.pipeline.set_state(Gst.State.NULL)
-        # Mesmo motivo do CapturePipeline.stop(): espera o contexto GL do
-        # NVDEC/VAAPI terminar de ser liberado antes de devolver o controle.
         self.pipeline.get_state(Gst.CLOCK_TIME_NONE)
 
     def set_volume(self, value: float) -> None:
@@ -149,13 +154,24 @@ class WatchPipeline:
         dec = Gst.ElementFactory.make("opusdec", "dec-audio")
         convert = Gst.ElementFactory.make("audioconvert", "convert-audio")
         resample = Gst.ElementFactory.make("audioresample", "resample-audio")
+        # Opus do WHEP sempre chega em stereo; sem travar isso aqui, a saída
+        # negocia com as caps do dispositivo PADRÃO do sistema (7.1 surround,
+        # 8 canais nesta máquina) e faz upmix sem motivo — o nó real no
+        # PipeWire então aparece com 8 entradas + 8 monitores de verdade
+        # (visto no qpwgraph), em vez de um stereo normal de 2 portas.
+        stereo_caps = Gst.ElementFactory.make("capsfilter", "stereo-caps-audio")
+        stereo_caps.set_property("caps", Gst.Caps.from_string("audio/x-raw,channels=2"))
         volume = Gst.ElementFactory.make("volume", "volume-audio")
         volume.set_property("volume", self._wanted_volume)
         volume.set_property("mute", self._wanted_muted)
         sink = Gst.ElementFactory.make("autoaudiosink", "sink-audio")
         _try_set(sink, "sync", True)
+        # autoaudiosink é um bin: client-name não existe nele, só no sink real
+        # (pulsesink/pipewiresink) que ele cria sozinho ao ir pra PLAYING —
+        # daí aparecer "python" em vez de "Project LUCE" no qpwgraph/pavucontrol.
+        sink.connect("child-added", lambda _bin, child, _name: _try_set(child, "client-name", "Project LUCE"))
         self._volume = volume
-        chain = (dec, convert, resample, volume, sink)
+        chain = (dec, convert, resample, stereo_caps, volume, sink)
         for element in chain:
             self.pipeline.add(element)
         for left, right in zip(chain, chain[1:]):
