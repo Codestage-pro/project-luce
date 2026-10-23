@@ -136,6 +136,16 @@ clonada. Isso instala as dependências do `PKGBUILD`, o pacote
 esses domínios por padrão — não precisa configurar nada. Dá pra sobrescrever
 o endereço criando `~/.config/project-luce/config.toml`.
 
+**O seletor de tela depende do ambiente.** O `xdg-desktop-portal` sozinho não
+captura nada — quem captura é o backend do ambiente, e só GNOME
+(`xdg-desktop-portal-gnome`), KDE (`-kde`), wlroots/sway (`-wlr`) e Hyprland
+(`-hyprland`) têm backend de ScreenCast. Quem usa XFCE, Cinnamon, i3 e afins
+costuma ter só o `-gtk`, que **não** implementa captura: nesses o seletor
+nunca aparece. O app detecta isso ao clicar em "Transmitir" e, se a sessão for
+X11 de verdade, captura a tela inteira direto pelo servidor gráfico
+(`ximagesrc`, sem seletor e sem o botão "Trocar tela"). Em Wayland sem backend
+não tem saída — a janela diz qual pacote instalar.
+
 **Quem não tem NVIDIA precisa de um driver VA-API** pra usar a GPU (vídeo
 integrado Intel/AMD): o `gst-plugin-va` já vem como dependência, mas ele só
 registra os elementos se achar o driver da placa. O pacman mostra a lista na

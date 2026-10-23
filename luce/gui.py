@@ -23,7 +23,7 @@ from gi.repository import GLib, Gst, GstGL, Gtk
 
 from . import config, roster
 from .capture_pipeline import CapturePipeline
-from .portal import PortalError, ScreenCast
+from .portal import PortalError, ScreenCast, screencast_available, x11_session
 from .watch_pipeline import WatchPipeline
 
 # Valores fixos pra resolução/fps/qualidade — botão em vez de caixa de texto,
@@ -196,6 +196,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self._volumes: dict[str, float] = {}
         self._muted: dict[str, bool] = {}
         self._restart_count: int = 0
+        # Captura sem portal (ximagesrc): decidido a cada "Transmitir", porque
+        # o backend do portal pode ser instalado com o app já aberto.
+        self._x11: bool = False
         self._last_restart_time: float = 0.0
         self._restart_window_start: float = 0.0
         # Um só GLDisplay pra vida da janela: recriar um novo a cada restart
@@ -252,15 +255,33 @@ class MainWindow(Gtk.ApplicationWindow):
         cfg["name"] = name
         config.save(cfg)
 
-        self._status.set_label("escolha o monitor na janela do sistema…")
         self._restart_count = 0
-        self._portal = ScreenCast()
-        try:
-            fd, node = self._portal.open()
-        except PortalError as exc:
-            self._status.set_label(str(exc))
-            self._portal = None
+        fd = node = None
+        # Nem todo Linux tem portal de captura: ele depende de um backend do
+        # ambiente (gnome/kde/wlr/hyprland). Quem só tem o backend gtk
+        # (XFCE, Cinnamon, i3…) ficava esperando um seletor de tela que nunca
+        # abria; no X11 dá pra capturar direto, sem portal e sem seletor.
+        self._x11 = not screencast_available()
+        if self._x11 and not x11_session():
+            self._status.set_label(
+                "sem como capturar a tela: falta o backend do portal "
+                "(xdg-desktop-portal-gnome, -kde, -wlr ou -hyprland) — "
+                "instale o do seu ambiente e saia e entre na sessão"
+            )
+            self._x11 = False
             return
+
+        if self._x11:
+            self._status.set_label("sem portal: capturando a tela inteira (X11)…")
+        else:
+            self._status.set_label("escolha o monitor na janela do sistema…")
+            self._portal = ScreenCast()
+            try:
+                fd, node = self._portal.open()
+            except PortalError as exc:
+                self._status.set_label(str(exc))
+                self._portal = None
+                return
 
         preview_sink = Gst.ElementFactory.make("gtk4paintablesink", "preview-sink")
         if preview_sink is not None:
@@ -273,6 +294,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 height=cfg["height"],
                 fps=cfg["fps"],
                 bitrate_kbps=cfg["bitrate"],
+                x11=self._x11,
                 portal_fd=fd,
                 portal_node=node,
                 preview_sink=preview_sink,
@@ -290,13 +312,17 @@ class MainWindow(Gtk.ApplicationWindow):
             # stderr do handler do GTK e a janela ficava parada em "escolha o
             # monitor…", sem dizer o que faltava.
             self._capture = None
-            self._portal.close()
-            self._portal = None
+            if self._portal is not None:
+                self._portal.close()
+                self._portal = None
+            self._x11 = False
             self._preview.set_paintable(None)
             self._status.set_label(f"não deu pra transmitir: {exc}")
             return
         self._share_btn.set_label("Parar transmissão")
-        self._switch_btn.set_visible(True)
+        # Trocar de tela pede uma sessão nova do portal; no X11 cru a fonte é
+        # sempre a tela inteira, então o botão não teria o que fazer.
+        self._switch_btn.set_visible(not self._x11)
         enc_label = "NVENC" if self._capture.encoder_kind == "nvenc" else "VAAPI"
         self._status.set_label(f"transmitindo como {name} ({enc_label}, GPU)")
 
@@ -338,7 +364,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._status.set_label(f"transmitindo como {name} ({enc_label}, GPU)")
 
     def _on_share_error(self, message: str) -> None:
-        if self._portal is None:
+        if self._portal is None and not self._x11:
             self._status.set_label(f"transmissão caiu: {message}")
             self._stop_sharing()
             return
@@ -378,19 +404,21 @@ class MainWindow(Gtk.ApplicationWindow):
         GLib.timeout_add(delay, self._do_restart_sharing)
 
     def _do_restart_sharing(self) -> bool:
-        if self._portal is None:
+        if self._portal is None and not self._x11:
             return False
         name = self._name_entry.get_text().strip()
         if not name:
             self._stop_sharing()
             return False
-        try:
-            fd = self._portal.reopen_fd()
-            node = self._portal.node_id
-        except Exception as exc:
-            self._status.set_label(f"sessão de captura fechou: {exc}")
-            self._stop_sharing()
-            return False
+        fd = node = None
+        if self._portal is not None:
+            try:
+                fd = self._portal.reopen_fd()
+                node = self._portal.node_id
+            except Exception as exc:
+                self._status.set_label(f"sessão de captura fechou: {exc}")
+                self._stop_sharing()
+                return False
 
         cfg = config.load()
         preview_sink = Gst.ElementFactory.make("gtk4paintablesink", "preview-sink")
@@ -404,6 +432,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 height=cfg["height"],
                 fps=cfg["fps"],
                 bitrate_kbps=cfg["bitrate"],
+                x11=self._x11,
                 portal_fd=fd,
                 portal_node=node,
                 preview_sink=preview_sink,
@@ -431,7 +460,13 @@ class MainWindow(Gtk.ApplicationWindow):
         if self._portal is not None:
             self._portal.close()
             self._portal = None
+        self._x11 = False
         self._preview.set_paintable(None)
+        # Mesmo gc do auto-restart em _on_share_error: libera o contexto
+        # GL/EGL do pipeline antigo agora, e não quando o GC cíclico quiser —
+        # clicar "Transmitir" logo depois de "Parar" criava o contexto novo
+        # com o antigo ainda vivo (EGL_BAD_CONTEXT na NVIDIA).
+        gc.collect()
         self._share_btn.set_label("Transmitir")
         self._switch_btn.set_visible(False)
 

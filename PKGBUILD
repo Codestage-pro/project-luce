@@ -7,6 +7,11 @@ pkgrel=1
 pkgdesc="Transmissão de tela do grupo (GPU, WHIP/WHEP via MediaMTX)"
 arch=('any')
 license=('custom')
+# O xdg-desktop-portal sozinho não captura tela: quem captura é o backend do
+# ambiente, e só existe backend de ScreenCast pra gnome/kde/wlroots/hyprland
+# (o -gtk, usado em XFCE/Cinnamon/i3, não tem). Por isso os backends estão em
+# optdepends e não em depends — num X11 sem backend o app cai no ximagesrc
+# (gst-plugins-good, já obrigatório) em vez de ficar sem transmitir.
 # gst-plugin-va dá o vah264enc/vah264dec, que é como vídeo integrado (Intel/AMD)
 # usa a GPU — sem ele o PC cai no software e nem todo mundo aqui tem NVIDIA.
 # gst-libav dá o avdec_h264, último recurso: sem ele quem assiste numa máquina
@@ -20,7 +25,11 @@ depends=(python python-gobject python-dbus gtk4 gstreamer gst-plugins-base
 # plugin instalado, `gst-inspect-1.0 va` dizendo "0 features" por falta de
 # driver compatível). O pacman lista estes na instalação; é a dica pro dono da
 # máquina instalar o da GPU dele.
-optdepends=('intel-media-driver: GPU Intel Broadwell ou mais nova (vídeo integrado) — sem isso o vídeo vai na CPU'
+optdepends=('xdg-desktop-portal-gnome: seletor de tela no GNOME'
+            'xdg-desktop-portal-kde: seletor de tela no KDE'
+            'xdg-desktop-portal-wlr: seletor de tela em sway/wlroots'
+            'xdg-desktop-portal-hyprland: seletor de tela no Hyprland'
+            'intel-media-driver: GPU Intel Broadwell ou mais nova (vídeo integrado) — sem isso o vídeo vai na CPU'
             'libva-mesa-driver: GPU AMD — sem isso o vídeo vai na CPU'
             'libva-intel-driver: GPU Intel antiga (até Haswell)'
             'nvidia-utils: GPU NVIDIA (NVENC/NVDEC)')

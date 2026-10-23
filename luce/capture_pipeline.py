@@ -63,6 +63,7 @@ class CapturePipeline:
         fps: int = 30,
         bitrate_kbps: int = 4000,
         pattern: bool = False,
+        x11: bool = False,
         portal_fd: int | None = None,
         portal_node: int | None = None,
         preview: bool = True,
@@ -78,6 +79,7 @@ class CapturePipeline:
         self._gl_display = gl_display
         self._fps = fps
         self._pattern = pattern
+        self._x11 = x11
         self._frames = 0
         self._reported = -1
         self._last_pts = 0
@@ -87,9 +89,23 @@ class CapturePipeline:
         self._probe_id: int | None = None
         self.pipeline = Gst.Pipeline.new("luce-capture")
 
+        # ximagesrc e videotestsrc entregam quadro cru na memória comum; o
+        # portal entrega DMA-BUF/GL. A diferença vale pra cadeia inteira.
+        raw_source = pattern or x11
         if pattern:
             src = Gst.ElementFactory.make("videotestsrc", "src")
             src.set_property("is-live", True)
+        elif x11:
+            # Sem portal de captura (XFCE, Cinnamon, i3 — só o backend gtk,
+            # que não implementa ScreenCast) o X11 ainda deixa ler a tela
+            # inteira direto do servidor gráfico. use-damage=false porque o
+            # modo por região suja manda quadro parcial e trava o encoder.
+            src = Gst.ElementFactory.make("ximagesrc", "src")
+            if src is None:
+                raise RuntimeError("falta o ximagesrc (gst-plugins-good)")
+            _try_set(src, "use-damage", False)
+            _try_set(src, "show-pointer", True)
+            _try_set(src, "do-timestamp", True)
         else:
             src = Gst.ElementFactory.make("pipewiresrc", "src")
             src.set_property("fd", int(portal_fd))
@@ -114,15 +130,18 @@ class CapturePipeline:
         enc, enc_kind = _make_encoder()
         self.encoder_kind = enc_kind
 
-        if pattern:
+        if raw_source:
             raw_preview = False
             convert = Gst.ElementFactory.make("videoconvert", "convert")
             scale = Gst.ElementFactory.make("videoscale", "scale")
             front: list[Gst.Element] = [src, convert, scale, rate]
+            # width/height=0 é a opção "Fonte" das Configurações: sem tamanho
+            # na caps, o ximagesrc transmite a tela no tamanho nativo dela.
+            size = f"width={width},height={height}," if width and height else ""
             caps.set_property(
                 "caps",
                 Gst.Caps.from_string(
-                    f"video/x-raw,format=NV12,width={width},height={height},framerate={fps}/1"
+                    f"video/x-raw,format=NV12,{size}framerate={fps}/1"
                 ),
             )
         else:
@@ -235,7 +254,7 @@ class CapturePipeline:
             if not left.link(right):
                 raise RuntimeError(f"não liguei {left.get_name()} em {right.get_name()}")
 
-        if not pattern and enc_kind == "nvenc" and mixer is not None:
+        if not raw_source and enc_kind == "nvenc" and mixer is not None:
             # O pad de entrada do mixer só existe depois do link acima
             # (gst_element_link pede ele sozinho); aqui é que dá pra definir
             # o retângulo de destino (a tela toda) e o letterbox.
@@ -271,7 +290,7 @@ class CapturePipeline:
             _try_set(prev_queue, "leaky", "downstream")
             if preview_sink is not None:
                 prev_tail = [preview_sink]
-            elif pattern:
+            elif raw_source:
                 prev_tail = [
                     Gst.ElementFactory.make("videoconvert", "preview-convert"),
                     Gst.ElementFactory.make("autovideosink", "preview-sink"),
@@ -369,7 +388,11 @@ class CapturePipeline:
 
     def start(self) -> bool:
         self.pipeline.set_state(Gst.State.PLAYING)
-        self._report_id = GLib.timeout_add_seconds(2, self._report_frames)
+        # O contador vive na sonda _restamp, que só existe no caminho do
+        # portal; sem ela o relatório imprimiria "0 frames" pra sempre e
+        # pareceria que a captura (ximagesrc/--pattern) está morta.
+        if self._probe_id is not None:
+            self._report_id = GLib.timeout_add_seconds(2, self._report_frames)
         return False
 
     def stop(self) -> None:
@@ -417,8 +440,8 @@ class CapturePipeline:
         --pattern); não se aplica à reconexão automática de _on_share_error,
         que já recebeu um erro do bus e precisa recriar tudo mesmo.
         """
-        if self._pattern:
-            raise RuntimeError("switch_source não vale pra --pattern")
+        if self._pattern or self._x11:
+            raise RuntimeError("switch_source só existe com o portal (pipewiresrc)")
         old_src = self.pipeline.get_by_name("src")
         pad = old_src.get_static_pad("src")
         peer = pad.get_peer()
