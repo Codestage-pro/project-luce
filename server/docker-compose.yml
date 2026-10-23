@@ -1,30 +1,17 @@
-# Deploy no Dokploy (ou qualquer docker compose) como "servidor real", em vez
-# do script local. Imagem oficial (bluenviron/mediamtx:1, ~16MB).
+# Servidor do Project LUCE (Dokploy ou qualquer docker compose): o proxy
+# WHIP/WHEP -> Cloudflare Realtime SFU de sfu_proxy.py. Só HTTP: a mídia vai
+# direto do cliente pro SFU, então não há porta UDP pra abrir.
 #
-# network_mode: host é mais simples aqui: o cloudflared do host (ver
-# mediamtx-public.yml) fala com o MediaMTX via 127.0.0.1:8889/:9997 — com
-# rede bridge (padrão do Docker) esses endereços não alcançariam o
-# container sem mapear `ports:` um por um.
+# CF_SFU_APP_ID, CF_SFU_APP_SECRET e BDK_PASSWORD vêm de server/.env (ver
+# .env.example). No Dokploy, cole as três na aba Environment do serviço.
 #
-# No Dokploy: crie o serviço como "Docker Compose" apontando pra esse
-# arquivo (server/docker-compose.yml) — e NÃO configure domínio pra ele. Ao
-# associar um domínio, o Dokploy injeta a dokploy-network no serviço, o que
-# conflita com network_mode: host e a implantação falha (bug conhecido,
-# fechado como "not planned": github.com/Dokploy/dokploy/issues/663). Sem
-# domínio — acesso é direto pelo seu cloudflared (ver mediamtx-public.yml) —
-# não tem esse problema.
-#
-# mediamtx-public.yml: mídia relaiada pelo Cloudflare Realtime TURN
-# (scripts/refresh-cloudflare-turn.sh, via cron, mantém as credenciais
-# vivas) e sinalização exposta pelo cloudflared.
+# O cloudflared do host fala com 127.0.0.1:8889 (ingress no
+# /etc/cloudflared/config.yml). Não configure domínio no Dokploy pra este
+# serviço — o acesso é só pelo túnel.
 services:
-  mediamtx:
-    image: bluenviron/mediamtx:1
-    network_mode: host
+  luce:
+    build: .
     restart: unless-stopped
-    environment:
-      # Senha do grupo (bdk) — override nativo do MediaMTX pra item de lista
-      # (authInternalUsers[0].pass), lido de server/.env (ver .env.example).
-      - MTX_AUTHINTERNALUSERS_0_PASS=${BDK_PASSWORD}
-    volumes:
-      - ./mediamtx-public.yml:/mediamtx.yml:ro
+    env_file: .env
+    ports:
+      - "127.0.0.1:8889:8889"

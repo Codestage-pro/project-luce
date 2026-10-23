@@ -121,7 +121,6 @@ class SettingsWindow(Gtk.Window):
         self._fields: dict[str, Gtk.Entry] = {}
         text_rows = [
             ("base_url", "Servidor (WHIP/WHEP)"),
-            ("api_url", "API do servidor"),
             ("auth_password", "Senha do grupo (BDK)"),
         ]
         for i, (key, label) in enumerate(text_rows):
@@ -536,7 +535,7 @@ class MainWindow(Gtk.ApplicationWindow):
         for child in list(self._roster_box):
             self._roster_box.remove(child)
         try:
-            names = [n for n in roster.list_paths(cfg["api_url"]) if n != cfg["name"]]
+            names = [n for n in roster.list_paths(cfg["base_url"], config.auth_token()) if n != cfg["name"]]
         except Exception as exc:
             # Falha de rede vira mensagem na própria lista: antes virava lista
             # vazia indistinguível de "ninguém no ar", que foi o que escondeu

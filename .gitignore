@@ -11,5 +11,5 @@ src/
 # saída local do Graphify CLI (cache/hashes, reconstrói com `graphify update .`)
 graphify-out/
 
-# credenciais do Cloudflare Realtime TURN (ver server/.env.example)
+# credenciais do Cloudflare Realtime SFU e senha do grupo (ver server/.env.example)
 server/.env

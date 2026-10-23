@@ -1,6 +1,6 @@
 """Captura + encode + publish via WHIP. Portado de golive-linux/golive/media.py.
 
-Só existe um destino (o MediaMTX), então a cadeia é linear — sem o `tee`
+Só existe um destino (o server/sfu_proxy.py), então a cadeia é linear — sem o `tee`
 por-espectador do protótipo original, que servia pra abrir um `webrtcbin`
 por pessoa (mesh). O WHIP delega toda a negociação SDP/ICE pro `whipsink`.
 """
@@ -8,6 +8,7 @@ por pessoa (mesh). O WHIP delega toda a negociação SDP/ICE pro `whipsink`.
 from __future__ import annotations
 
 import logging
+import threading
 
 import gi
 
@@ -16,7 +17,12 @@ gi.require_version("GstVideo", "1.0")
 gi.require_version("GstGL", "1.0")
 from gi.repository import GLib, Gst, GstGL, GstVideo
 
+from . import roster
+
 log = logging.getLogger("luce.capture")
+
+# O servidor tira do roster quem passa de 30s sem avisar (queda sem DELETE).
+HEARTBEAT_SECONDS = 10
 
 Gst.init(None)
 
@@ -76,6 +82,9 @@ class CapturePipeline:
         gl_display: GstGL.GLDisplay | None = None,
     ) -> None:
         self._on_pipeline_error = on_pipeline_error
+        self._whip_endpoint = whip_endpoint
+        self._auth_token = auth_token
+        self._stop_heartbeat = threading.Event()
         self._gl_display = gl_display
         self._fps = fps
         self._pattern = pattern
@@ -386,8 +395,16 @@ class CapturePipeline:
             bus.enable_sync_message_emission()
             bus.connect("sync-message::need-context", self._on_need_context)
 
+    def _heartbeat_loop(self) -> None:
+        while not self._stop_heartbeat.wait(HEARTBEAT_SECONDS):
+            try:
+                roster.heartbeat(self._whip_endpoint, self._auth_token)
+            except OSError as exc:  # queda de rede passageira: o próximo tenta de novo
+                log.debug("heartbeat falhou: %s", exc)
+
     def start(self) -> bool:
         self.pipeline.set_state(Gst.State.PLAYING)
+        threading.Thread(target=self._heartbeat_loop, daemon=True).start()
         # O contador vive na sonda _restamp, que só existe no caminho do
         # portal; sem ela o relatório imprimiria "0 frames" pra sempre e
         # pareceria que a captura (ximagesrc/--pattern) está morta.
@@ -396,6 +413,7 @@ class CapturePipeline:
         return False
 
     def stop(self) -> None:
+        self._stop_heartbeat.set()
         if self._report_id is not None:
             GLib.source_remove(self._report_id)
             self._report_id = None

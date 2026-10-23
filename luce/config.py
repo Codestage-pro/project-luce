@@ -12,8 +12,7 @@ CONFIG_FILE = Path.home() / ".config" / "project-luce" / "config.toml"
 SYSTEM_CONFIG_FILE = Path("/etc/project-luce/config.toml")
 
 DEFAULTS: dict[str, Any] = {
-    "base_url": "http://127.0.0.1:8889",  # porta WebRTC do MediaMTX (WHIP/WHEP)
-    "api_url": "http://127.0.0.1:9997",  # porta da API do MediaMTX (roster)
+    "base_url": "http://127.0.0.1:8889",  # server/sfu_proxy.py (WHIP, WHEP e roster)
     "name": "",
     "width": 1920,
     "height": 1080,
@@ -22,7 +21,7 @@ DEFAULTS: dict[str, Any] = {
     "audio": True,
     "audio_bitrate": 128,  # kbps, Opus
     "audio_device": "",  # dispositivo de entrada (pulsesrc device); vazio = padrão do sistema
-    "auth_password": "",  # senha do grupo (bdk) — só o servidor "público" (mediamtx-public.yml) exige
+    "auth_password": "",  # senha do grupo (bdk) — BDK_PASSWORD do servidor
 }
 
 
@@ -59,8 +58,8 @@ def whep_endpoint(path: str) -> str:
 def auth_token() -> str | None:
     """Vira o header `Authorization: Bearer user:pass` do whipsink/whepsrc.
 
-    Usuário fixo "bdk" pra combinar com authInternalUsers do
-    mediamtx-public.yml — só a senha precisa ser configurada.
+    Usuário fixo "bdk" pra combinar com o server/sfu_proxy.py — só a senha
+    precisa ser configurada.
     """
     password = load()["auth_password"]
     return f"bdk:{password}" if password else None

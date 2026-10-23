@@ -7,53 +7,60 @@
 -OPÇÃO
 GPU QUEIMAD
 
------------Project LUCE — Fase 1 (loopback local)-----------
+-----------Project LUCE-----------
 
-Transmissão de tela 100% GPU (NVENC/NVDEC) sem Electron, publicando via WHIP
-e assistindo via WHEP num relay MediaMTX próprio (sem depender do backend do
-Go Live).
+Transmissão de tela 100% GPU (NVENC/NVDEC) sem Electron. O cliente publica via
+WHIP e assiste via WHEP (`whipsink`/`whepsrc` do GStreamer) num servidor
+próprio pequeno, `server/sfu_proxy.py`, que traduz isso para o **Cloudflare
+Realtime SFU**:
 
-Requisitos (Arch/AUR): `mediamtx-bin`, `gst-plugin-webrtchttp` (pacote
-`extra`, dá os elementos `whipsink`/`whepsrc`), `gst-plugins-bad` com
-`nvcodec` (dá `nvh264enc`/`nvh264dec`), `gst-plugins-base` com OpenGL.
+```
+luce share/watch ──WHIP/WHEP (HTTPS)──▶ cloudflared ──▶ sfu_proxy.py ──▶ API do SFU
+        └────────────── vídeo/áudio (RTP/UDP) ──────────────▶ Cloudflare (anycast)
+```
 
-1. Suba o relay local:
-   ```
-   ./scripts/run-local-server.sh
-   ```
-2. Em outro terminal, publique a tela (ou `--pattern` pra testar sem o
-   seletor de monitor do portal):
-   ```
-   python -m luce share --path test
-   ```
-3. Em outro terminal, assista:
-   ```
-   python -m luce watch test
-   ```
-4. `python -m luce doctor` testa NVENC/NVDEC e os elementos necessários sem
-   precisar do relay.
-5. `python -m luce gui` abre a janela (GTK4): campo de nome, botão
-   "Transmitir", botão "Configurações" (endereço do servidor,
-   resolução/fps/bitrate) e uma lista com quem está no ar agora (consulta a
-   API do MediaMTX a cada 3s), com um botão "Assistir" por pessoa. A janela
-   de vídeo em si (sua transmissão e cada pessoa assistida) continua sendo
-   a janela GL nativa que o GStreamer abre sozinho — não tem vídeo embutido
-   dentro da janela principal ainda.
+O vídeo vai direto do cliente para o IP anycast da Cloudflare; o servidor só
+fala HTTP. Por isso não existe porta UDP para abrir no roteador, nem VPN. O
+`CF_SFU_APP_SECRET` fica só no servidor.
 
-Validado localmente (loopback, dois processos na mesma máquina): publish com
-`--pattern` sobe pro MediaMTX, watch assina via WHEP e abre uma janela GL
-mostrando o vídeo decodificado por NVDEC, com NVENC publicando ao mesmo
-tempo — ida e volta 100% GPU, sem Electron.
+Requisitos (Arch): `gst-plugin-webrtchttp` (pacote `extra`, dá os elementos
+`whipsink`/`whepsrc`), `gst-plugins-bad` com `nvcodec` (dá
+`nvh264enc`/`nvh264dec`), `gst-plugins-base` com OpenGL.
+
+Rodando tudo na sua máquina (precisa das chaves do SFU, ver Fase 2):
+1. `cp server/.env.example server/.env` e preencha as três variáveis. Crie
+   `~/.config/project-luce/config.toml` com `auth_password = "<BDK_PASSWORD>"`
+   (e `base_url = "http://127.0.0.1:8889"`, que já é o padrão).
+2. Suba o servidor: `python server/sfu_proxy.py` (só biblioteca padrão).
+3. Publique a tela (ou `--pattern` pra testar sem o seletor de monitor):
+   `python -m luce share --path test`
+4. Em outro terminal, assista: `python -m luce watch test`
+5. `python -m luce doctor` testa NVENC/NVDEC e os elementos necessários sem
+   precisar do servidor.
+6. `python -m luce gui` abre a janela (GTK4): campo de nome, "Transmitir",
+   "Configurações" (servidor, senha, resolução/fps/bitrate) e a lista de quem
+   está no ar agora (consulta `GET /v3/paths/list` a cada 3s), com um botão
+   "Assistir" por pessoa.
+7. Testes do servidor (SFU falso, sem rede): `python -m unittest discover -s server`
+
+Quem está no ar: o servidor registra quem fez `POST /{nome}/whip` e tira do
+roster no `DELETE` (encerramento normal) ou, se a pessoa cair/levar kill sem
+avisar, 30s depois do último heartbeat (o cliente manda um `PATCH` a cada
+10s). O estado fica só em memória: reiniciar o servidor esquece quem estava no
+ar até a pessoa transmitir de novo.
 
 Pegadinhas do `gst-plugin-webrtchttp` que custaram tempo pra descobrir,
 documentadas nos comentários do código:
-- `whepsrc` sempre oferece um m-line de áudio e tem um bug na negociação do
-  Opus padrão quando o publisher não manda áudio nenhum — o MediaMTX rejeita
-  a oferta inteira com "codecs not supported by client". Em vez de dar uma
-  `audio-caps` inválida pro `whepsrc` (contorno antigo, removido), o
-  publisher agora sempre manda uma faixa de áudio — muda (via elemento
-  `volume`) quando o usuário desliga "transmitir áudio" — então esse bug
-  nunca é disparado (`luce/capture_pipeline.py`, `luce/watch_pipeline.py`).
+- `whepsrc` sempre oferece um m-line de áudio, então o publisher sempre manda
+  uma faixa de áudio — muda (via elemento `volume`) quando o usuário desliga
+  "transmitir áudio" (`luce/capture_pipeline.py`, `luce/watch_pipeline.py`).
+- O offer do `whepsrc` não é aceito como está pelo SFU: ele oferece
+  `OPUS/48000` sem o `/2` de canais (o SFU só reconhece `opus/48000/2`) e
+  VP8/VP9/H265/AV1 além do H264, e com qualquer um deles o SFU recusa tudo com
+  "missing the published track's codec". O proxy corrige o Opus e deixa só o
+  H264 (`whep_offer` em `server/sfu_proxy.py`). O WHEP do SFU também só
+  funciona se o publisher já estiver com o ICE conectado; o proxy tenta de novo
+  (6x, 1,5s) quando recebe `not_found_track_error`.
 - O sinal `pad-added` do `whepsrc` dispara antes das caps do pad estarem
   negociadas, e os pads de áudio/vídeo têm nome genérico (`src_%u`) — não dá
   pra filtrar por `media=video`/`media=audio` nesse momento. Resolvido
@@ -70,57 +77,33 @@ dela no roster da GUI. Resolução, FPS e qualidade de vídeo/áudio em
 Configurações são botões de opção fixa (não caixa de texto) — evita digitar
 um valor fora do que o encoder ou a rede aguentam.
 
-Qualquer VPN/interface extra ativa na máquina pode fazer o MediaMTX anunciar
-um candidato ICE dela, o que deixava o WHEP instável em teste local;
-`server/mediamtx.yml` restringe a loopback (`webrtcIPsFromInterfaces: no`).
-
-Fora de escopo por enquanto: Windows/macOS, GUI completa, VPS/TLS (fases
-seguintes do plano). Resolução adaptada por espectador (cada um assiste na
-qualidade que a rede dele aguenta) também fica pra depois — o MediaMTX não
-suporta isso pelo WHEP hoje (só lê simulcast como tracks independentes via
-RTSP/RTMP/SRT, não via WebRTC: github.com/bluenviron/mediamtx/issues/5596) e
-não transcodifica nada (github.com/bluenviron/mediamtx/discussions/3953); os
-dois jeitos de contornar isso custam caro demais pra v1 — publicar 2 streams
-fixos simultâneos (dobra o encode de quem transmite) ou transcode no servidor
-via FFmpeg/`runOnDemand` (reintroduz carga de GPU/CPU no servidor, o problema
-de escala que fez abandonar o Go Live).
+Fora de escopo por enquanto: Windows/macOS e resolução adaptada por espectador
+(cada um assistir na qualidade que a rede dele aguenta — o SFU suporta
+simulcast, mas o cliente só publica uma qualidade).
 
 -----------Fase 2 — servidor público (Cloudflare)-----------
 
-Mesma máquina do servidor (no seu caso, o notebook Debian via Dokploy): a
-sinalização HTTP (WHIP/WHEP + roster) passa pelo seu `cloudflared` já
-existente, e o vídeo/áudio (RTP/ICE) relaia pelo **Cloudflare Realtime
-TURN**. Decisão de arquitetura e por quê, nos comentários de
-`server/mediamtx-public.yml` e `scripts/refresh-cloudflare-turn.sh`.
+Roda na máquina do servidor (no seu caso, o notebook Debian via Dokploy). A
+sinalização HTTP passa pelo `cloudflared` que já existe; a mídia vai do
+cliente direto pro Cloudflare Realtime SFU.
 
-No servidor:
-1. `server/docker-compose.yml` via Dokploy (tipo "Docker Compose", apontando
-   pro repo — **sem domínio configurado nele**, ver comentário no arquivo
-   pro bug do Dokploy que isso evita). Monta `server/mediamtx-public.yml`.
-2. Cria uma TURN Key em Cloudflare → Realtime → TURN Keys; cola
-   `TURN_KEY_ID`/`TURN_KEY_API_TOKEN` na aba Environment do serviço no
-   Dokploy (ele escreve um `server/.env` do lado do `docker-compose.yml`
-   sozinho — ver `server/.env.example`).
-3. Cron rodando `scripts/refresh-cloudflare-turn.sh` 1x/dia (credenciais do
-   TURN expiram em até 48h) — aponta pra cópia do script dentro da pasta que
-   o Dokploy clonou, não uma clonagem manual separada.
-4. Cola `BDK_PASSWORD` (senha de verdade, à sua escolha) na aba Environment
-   do Dokploy também — `server/docker-compose.yml` repassa pro MediaMTX via
-   `MTX_AUTHINTERNALUSERS_0_PASS` (override nativo dele pra essa entrada de
-   `authInternalUsers`, documentado em mediamtx.org/docs/usage/configuration).
-   O servidor fica aberto pra internet, então publish/read exigem essa
-   senha (mesmo valor de `auth_password` no `config.toml` de quem vai usar).
-5. No `/etc/cloudflared/config.yml` do servidor, ingress apontando pras
-   portas que o `network_mode: host` já expõe em loopback:
+1. Cloudflare dashboard → Realtime → SFU → crie um app; copie App ID e App
+   Secret.
+2. `server/docker-compose.yml` via Dokploy (tipo "Docker Compose", apontando
+   pro repo, **sem domínio configurado nele** — o acesso é só pelo túnel).
+   Cole `CF_SFU_APP_ID`, `CF_SFU_APP_SECRET` e `BDK_PASSWORD` (senha de
+   verdade, à sua escolha) na aba Environment; o compose lê `server/.env` e
+   publica a porta 8889 só em `127.0.0.1` do host.
+3. No `/etc/cloudflared/config.yml`, ingress antes da regra catch-all:
    ```yaml
    - hostname: luce.codestage.pro
      service: http://127.0.0.1:8889
-   - hostname: luce-api.codestage.pro
-     service: http://127.0.0.1:9997
    ```
-   (antes da regra catch-all do final do arquivo), depois
-   `cloudflared tunnel route dns <tunnel> luce.codestage.pro` (e de novo pro
-   `-api`) e reiniciar o `cloudflared`.
+   depois `cloudflared tunnel route dns <tunnel> luce.codestage.pro` e
+   reiniciar o `cloudflared`. O hostname `luce-api` do desenho antigo não é
+   mais usado (o roster sai do mesmo servidor).
+4. O servidor exige `Authorization: Bearer bdk:<BDK_PASSWORD>` em toda rota;
+   o mesmo valor vai em `auth_password` no `config.toml` de quem usa.
 
 Pro lado do amigo, instalar de verdade (ícone no menu, sem terminal depois):
 `git clone https://github.com/MuriloX06/project-luce.git`, e dentro da pasta
@@ -133,7 +116,7 @@ encontrado) — o `-B`/`-si` só builda o `PKGBUILD` que já está na pasta
 clonada. Isso instala as dependências do `PKGBUILD`, o pacote
 `luce/` em `/usr/share/project-luce`, o lançador `luce` em `/usr/bin` e o
 ícone "Project LUCE" no menu de apps. `packaging/config.toml` já aponta pra
-esses domínios por padrão — não precisa configurar nada. Dá pra sobrescrever
+esse domínio por padrão — não precisa configurar nada. Dá pra sobrescrever
 o endereço criando `~/.config/project-luce/config.toml`.
 
 **O seletor de tela depende do ambiente.** O `xdg-desktop-portal` sozinho não

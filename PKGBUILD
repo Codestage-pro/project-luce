@@ -4,7 +4,7 @@
 pkgname=project-luce
 pkgver=1.0.0
 pkgrel=1
-pkgdesc="Transmissão de tela do grupo (GPU, WHIP/WHEP via MediaMTX)"
+pkgdesc="Transmissão de tela do grupo (GPU, WHIP/WHEP via Cloudflare Realtime SFU)"
 arch=('any')
 license=('custom')
 # O xdg-desktop-portal sozinho não captura tela: quem captura é o backend do
