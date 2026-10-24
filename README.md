@@ -205,6 +205,12 @@ git tag v1.0.5 && git push origin main v1.0.5
 
 ---
 
+## ⚖️ Licença
+
+**Todos os direitos reservados © 2026 Codestage.pro.** O código está público para consulta e para distribuir o app pelos canais oficiais, mas **não é open source**: copiar, modificar, redistribuir ou vender qualquer parte dele exige autorização por escrito. Detalhes no arquivo [`LICENSE`](LICENSE).
+
+---
+
 ## 🗺️ Fora de escopo (por enquanto)
 
 - Windows e macOS

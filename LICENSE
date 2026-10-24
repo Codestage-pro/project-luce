@@ -1,0 +1,44 @@
+Copyright (c) 2026 Codestage.pro. Todos os direitos reservados.
+Copyright (c) 2026 Codestage.pro. All rights reserved.
+
+PT-BR
+-----
+Este repositório é público apenas para consulta e para a distribuição do
+aplicativo Project LUCE pelos canais oficiais (Flatpak e PKGBUILD deste
+repositório). O código-fonte, a documentação, a logo e os demais arquivos NÃO
+são software livre nem de código aberto.
+
+Sem autorização prévia e por escrito da Codestage.pro, é proibido copiar,
+modificar, redistribuir, sublicenciar, vender, hospedar como serviço ou criar
+obras derivadas de qualquer parte deste repositório. Ver o código, ou fazer um
+fork pelos recursos do próprio GitHub, não concede nenhuma licença de uso.
+
+O uso do aplicativo instalado pelos canais oficiais é permitido apenas para
+fins pessoais e não comerciais, e o acesso ao servidor do grupo depende de
+senha fornecida pela Codestage.pro. As credenciais do servidor não fazem parte
+da licença e podem ser trocadas a qualquer momento.
+
+O SOFTWARE É FORNECIDO "NO ESTADO EM QUE SE ENCONTRA", SEM GARANTIA DE
+QUALQUER TIPO. A CODESTAGE.PRO NÃO RESPONDE POR DANOS DECORRENTES DO USO.
+
+Contato para pedir permissão: https://github.com/Codestage-pro
+
+EN
+--
+This repository is public for viewing and for distributing the Project LUCE
+application through the official channels (the Flatpak and the PKGBUILD in this
+repository) only. The source code, documentation, logo and all other files are
+NOT free or open-source software.
+
+Without prior written permission from Codestage.pro, you may not copy, modify,
+redistribute, sublicense, sell, host as a service, or create derivative works
+from any part of this repository. Viewing the code, or forking it through
+GitHub's own features, does not grant any license to use it.
+
+Using the application installed through the official channels is allowed for
+personal, non-commercial purposes only, and access to the group server requires
+a password provided by Codestage.pro. Server credentials are not part of this
+license and may be changed at any time.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. CODESTAGE.PRO
+IS NOT LIABLE FOR ANY DAMAGES ARISING FROM ITS USE.
