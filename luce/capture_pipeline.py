@@ -90,7 +90,7 @@ class CapturePipeline:
         self._auth_token = auth_token
         self._stop_heartbeat = threading.Event()
         self._gl_display = gl_display
-        self._preview_sink = preview_sink
+        self._preview_pipeline: Gst.Pipeline | None = None
         self._fps = fps
         self._pattern = pattern
         self._x11 = x11
@@ -300,10 +300,10 @@ class CapturePipeline:
             prev_queue = Gst.ElementFactory.make("queue", "preview-queue")
             _try_set(prev_queue, "max-size-buffers", 2)
             _try_set(prev_queue, "leaky", "downstream")
-            _try_set(preview_sink, "sync", False)
+            preview_out = self._preview_bridge(preview_sink)
             self.pipeline.add(prev_queue)
-            self.pipeline.add(preview_sink)
-            if not raw_tee.link(prev_queue) or not prev_queue.link(preview_sink):
+            self.pipeline.add(preview_out)
+            if not raw_tee.link(prev_queue) or not prev_queue.link(preview_out):
                 raise RuntimeError("não liguei o preview bruto (DMA-BUF) no tee")
 
         # Preview local: quem transmite não via a própria tela até agora
@@ -322,7 +322,7 @@ class CapturePipeline:
             _try_set(prev_queue, "max-size-buffers", 2)
             _try_set(prev_queue, "leaky", "downstream")
             if preview_sink is not None:
-                prev_tail = [preview_sink]
+                prev_tail = [self._preview_bridge(preview_sink)]
             elif sysmem:
                 prev_tail = [
                     Gst.ElementFactory.make("videoconvert", "preview-convert"),
@@ -466,9 +466,32 @@ class CapturePipeline:
         bus.remove_signal_watch()
         self.pipeline.set_state(Gst.State.NULL)
         self.pipeline.get_state(Gst.CLOCK_TIME_NONE)
-        # o sink é da GUI e vai pra próxima transmissão: sai do pipeline em vez de morrer com ele
-        if self._preview_sink is not None and self._preview_sink.get_parent() is self.pipeline:
-            self.pipeline.remove(self._preview_sink)
+        if self._preview_pipeline is not None:
+            self._preview_pipeline.set_state(Gst.State.NULL)
+            self._preview_pipeline = None
+
+    def _preview_bridge(self, preview_sink: Gst.Element) -> Gst.Element:
+        """Devolve o appsink que entra no pipeline; o gtk4paintablesink roda num pipeline só dele.
+
+        No mesmo pipeline do glupload o sink do GTK compartilha o contexto GL e,
+        da segunda transmissão em diante, o glupload leva EGL_BAD_CONTEXT.
+        """
+        appsink = Gst.ElementFactory.make("appsink", "preview-out")
+        appsink.set_property("emit-signals", True)
+        appsink.set_property("max-buffers", 2)
+        appsink.set_property("drop", True)
+        appsrc = Gst.ElementFactory.make("appsrc", "preview-in")
+        appsrc.set_property("is-live", True)
+        appsrc.set_property("format", Gst.Format.TIME)
+        _try_set(preview_sink, "sync", False)
+        pipeline = Gst.Pipeline.new("luce-preview")
+        pipeline.add(appsrc)
+        pipeline.add(preview_sink)
+        appsrc.link(preview_sink)
+        appsink.connect("new-sample", lambda sink: appsrc.emit("push-sample", sink.emit("pull-sample")))
+        pipeline.set_state(Gst.State.PLAYING)
+        self._preview_pipeline = pipeline
+        return appsink
 
     def set_audio_enabled(self, enabled: bool) -> None:
         self._audio_volume.set_property("mute", not enabled)
