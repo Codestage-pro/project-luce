@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>pro.codestage.Luce</id>
+  <name>Project LUCE</name>
+  <summary>Transmitir e assistir a tela do grupo</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <developer id="pro.codestage">
+    <name>Codestage.pro</name>
+  </developer>
+  <description>
+    <p>Transmissão de tela para o grupo, com codificação e decodificação na GPU (NVENC, VA-API) via Cloudflare Realtime.</p>
+  </description>
+  <launchable type="desktop-id">pro.codestage.Luce.desktop</launchable>
+  <url type="homepage">https://github.com/Codestage-pro/project-luce</url>
+  <content_rating type="oars-1.1"/>
+  <provides><binary>luce</binary></provides>
+  <releases>
+    <release version="1.0.0" date="2026-10-24"/>
+  </releases>
+</component>

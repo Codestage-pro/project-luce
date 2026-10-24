@@ -3,9 +3,8 @@ de quem está no ar.
 
 A preview de quem transmite usa `gtk4paintablesink` (`Gtk.Picture`), vinda de
 um ramo DMA-BUF à parte (ver capture_pipeline.py) pra não forçar o GTK (que
-roda em Vulkan aqui) a fazer bridge com textura GL. A janela de cada pessoa
-assistida continua sendo a janela GL nativa que o `glimagesink` abre sozinho
-— embutir isso também fica pra v2.
+roda em Vulkan aqui) a fazer bridge com textura GL. Quem é assistido aparece na
+janela única de viewer.py (uma tela por pessoa, em grade).
 """
 
 from __future__ import annotations
@@ -25,6 +24,7 @@ from gi.repository import GLib, Gdk, Gst, GstGL, Gtk
 from . import config, roster, stats
 from .capture_pipeline import CapturePipeline
 from .portal import PortalError, ScreenCast, screencast_available, x11_session
+from .viewer import ViewerWindow
 from .watch_pipeline import WatchPipeline
 
 # Valores fixos pra resolução/fps/qualidade — botão em vez de caixa de texto,
@@ -111,6 +111,9 @@ def _choice_value(pairs: list[tuple[Gtk.ToggleButton, object]], fallback):
     return next((option for btn, option in pairs if btn.get_active()), fallback)
 
 
+_ENCODER_LABELS = {"nvenc": "NVENC, GPU", "va": "VA-API, GPU", "x264": "x264, CPU"}
+
+
 class SettingsWindow(Gtk.Window):
     def __init__(self, parent: Gtk.Window) -> None:
         super().__init__(title="Configurações", transient_for=parent, modal=True)
@@ -191,7 +194,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._capture: CapturePipeline | None = None
         self._portal: ScreenCast | None = None
         self._watches: dict[str, WatchPipeline] = {}
-        self._watch_windows: dict[str, Gtk.Window] = {}
+        self._viewer: ViewerWindow | None = None
         # Sobrevive ao rebuild do roster (a cada 3s) pra não perder o volume/mute
         # que a pessoa escolheu enquanto assiste.
         self._volumes: dict[str, float] = {}
@@ -221,6 +224,8 @@ class MainWindow(Gtk.ApplicationWindow):
         top.append(self._name_entry)
         settings_btn = Gtk.Button(label="Configurações")
         settings_btn.connect("clicked", lambda _b: SettingsWindow(self).present())
+        if not cfg["auth_password"]:  # primeira abertura: sem senha do grupo nada conecta
+            GLib.idle_add(SettingsWindow(self).present)  # present() devolve None: roda uma vez
         top.append(settings_btn)
 
         share_row = Gtk.Box(spacing=8)
@@ -336,8 +341,8 @@ class MainWindow(Gtk.ApplicationWindow):
         # Trocar de tela pede uma sessão nova do portal; no X11 cru a fonte é
         # sempre a tela inteira, então o botão não teria o que fazer.
         self._switch_btn.set_visible(not self._x11)
-        enc_label = "NVENC" if self._capture.encoder_kind == "nvenc" else "VAAPI"
-        self._status.set_label(f"transmitindo como {name} ({enc_label}, GPU)")
+        enc_label = _ENCODER_LABELS[self._capture.encoder_kind]
+        self._status.set_label(f"transmitindo como {name} ({enc_label})")
 
     def _on_switch_source_clicked(self, _button: Gtk.Button) -> None:
         """Troca a janela/monitor transmitido sem parar a transmissão.
@@ -353,7 +358,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if self._capture is None or self._portal is None:
             return
         name = self._name_entry.get_text().strip()
-        enc_label = "NVENC" if self._capture.encoder_kind == "nvenc" else "VAAPI"
+        enc_label = _ENCODER_LABELS[self._capture.encoder_kind]
 
         self._status.set_label("escolha a nova tela na janela do sistema…")
         new_portal = ScreenCast()
@@ -362,7 +367,7 @@ class MainWindow(Gtk.ApplicationWindow):
         except PortalError as exc:
             self._status.set_label(str(exc))
             new_portal.close()
-            self._status.set_label(f"transmitindo como {name} ({enc_label}, GPU)")
+            self._status.set_label(f"transmitindo como {name} ({enc_label})")
             return
 
         try:
@@ -374,7 +379,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self._portal.close()
         self._portal = new_portal
-        self._status.set_label(f"transmitindo como {name} ({enc_label}, GPU)")
+        self._status.set_label(f"transmitindo como {name} ({enc_label})")
 
     def _on_share_error(self, message: str) -> None:
         if self._portal is None and not self._x11:
@@ -458,8 +463,8 @@ class MainWindow(Gtk.ApplicationWindow):
                 gl_display=self._gl_display,
             )
             self._capture.start()
-            enc_label = "NVENC" if self._capture.encoder_kind == "nvenc" else "VAAPI"
-            self._status.set_label(f"transmitindo como {name} ({enc_label}, GPU)")
+            enc_label = _ENCODER_LABELS[self._capture.encoder_kind]
+            self._status.set_label(f"transmitindo como {name} ({enc_label})")
         except Exception as exc:
             self._status.set_label(f"erro ao reiniciar transmissão: {exc}")
             self._stop_sharing()
@@ -518,37 +523,14 @@ class MainWindow(Gtk.ApplicationWindow):
     # --- assistir ---
 
     def _toggle_watch(self, name: str, button: Gtk.Button) -> None:
-        existing = self._watches.pop(name, None)
-        win = self._watch_windows.pop(name, None)
-        if existing is not None:
-            self._forget_stats(name)
-            existing.stop()
-            if win is not None:
-                win.close()
-            button.set_label("Assistir")
+        if name in self._watches:
+            self._stop_watch(name)
             return
 
         sink = Gst.ElementFactory.make("gtk4paintablesink", None)
         if sink is None:
             self._status.set_label("falta o pacote gst-plugin-gtk4 para exibir o vídeo")
             return
-
-        # Janela própria do GTK (desenhada via Vulkan) em vez da janela solta
-        # "OpenGL Renderer" do glimagesink: sem isso o GStreamer abre uma
-        # janela crua de GL sem controles, sem ícone e sem seguir o tema.
-        win = Gtk.Window(title=f"LUCE — {name}")
-        win.set_default_size(960, 540)
-        picture = Gtk.Picture(hexpand=True, vexpand=True, keep_aspect_ratio=True)
-        picture.set_paintable(sink.get_property("paintable"))
-        stats_label = Gtk.Label(label="conectando…", xalign=0, margin_start=8, margin_end=8, margin_top=4, margin_bottom=4)
-        stats_label.add_css_class("monospace")
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        box.append(picture)
-        box.append(stats_label)
-        win.set_child(box)
-        self._watch_stats[name] = stats_label
-        # Fechar pelo 'X' da janela de vídeo para a transmissão também
-        win.connect("close-request", lambda _w, n=name: self._on_watch_window_closed(n))
 
         watch = WatchPipeline(
             whep_endpoint=config.whep_endpoint(name),
@@ -558,20 +540,31 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         watch.set_volume(self._volumes.get(name, 1.0))
         watch.set_muted(self._muted.get(name, False))
-        watch.start()
-        win.present()
+        # Uma janela só pra todas as transmissões (grade), em vez de uma por pessoa.
+        if self._viewer is None:
+            self._viewer = ViewerWindow(self._on_volume_changed, self._on_mute_toggled, self._stop_watch, self._on_viewer_closed)
+        self._watch_stats[name] = self._viewer.add(
+            name, sink.get_property("paintable"), self._volumes.get(name, 1.0), self._muted.get(name, False)
+        )
         self._watches[name] = watch
-        self._watch_windows[name] = win
+        watch.start()
+        self._viewer.present()
         self._refresh_roster()
 
-    def _on_watch_window_closed(self, name: str) -> bool:
+    def _stop_watch(self, name: str) -> None:
         watch = self._watches.pop(name, None)
-        self._watch_windows.pop(name, None)
         self._forget_stats(name)
         if watch is not None:
             watch.stop()
+        if self._viewer is not None:
+            self._viewer.remove(name)  # fecha a janela quando era a última tela
         self._refresh_roster()
-        return False
+
+    def _on_viewer_closed(self) -> None:
+        """O 'X' da janela de vídeo para todas as transmissões que ainda estavam nela."""
+        self._viewer = None
+        for name in list(self._watches):
+            self._stop_watch(name)
 
     def _forget_stats(self, key: str) -> None:
         self._watch_stats.pop(key, None)
@@ -598,14 +591,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _on_watch_error(self, name: str, message: str) -> None:
         self._status.set_label(f"assistir {name} caiu: {message}")
-        watch = self._watches.pop(name, None)
-        win = self._watch_windows.pop(name, None)
-        self._forget_stats(name)
-        if watch is not None:
-            watch.stop()
-        if win is not None:
-            win.close()
-        self._refresh_roster()
+        self._stop_watch(name)
 
     def _refresh_roster(self) -> bool:
         cfg = config.load()
@@ -625,31 +611,19 @@ class MainWindow(Gtk.ApplicationWindow):
             row = Gtk.Box(spacing=8, margin_top=4, margin_bottom=4, margin_start=4, margin_end=4)
             row.append(Gtk.Label(label=name, xalign=0, hexpand=True))
             watch = self._watches.get(name)
-            if watch is not None:
-                mute_btn = Gtk.ToggleButton(label="🔇", active=self._muted.get(name, False))
-                mute_btn.connect("toggled", lambda b, n=name: self._on_mute_toggled(n, b))
-                row.append(mute_btn)
-                vol = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.0, 1.5, 0.05)
-                vol.set_value(self._volumes.get(name, 1.0))
-                vol.set_size_request(100, -1)
-                vol.set_draw_value(False)
-                vol.connect("value-changed", lambda s, n=name: self._on_volume_changed(n, s))
-                row.append(vol)
             button = Gtk.Button(label="Parar" if watch is not None else "Assistir")
             button.connect("clicked", lambda _b, n=name, btn=button: self._toggle_watch(n, btn))
             row.append(button)
             self._roster_box.append(row)
         return True
 
-    def _on_mute_toggled(self, name: str, button: Gtk.ToggleButton) -> None:
-        muted = button.get_active()
+    def _on_mute_toggled(self, name: str, muted: bool) -> None:
         self._muted[name] = muted
         watch = self._watches.get(name)
         if watch is not None:
             watch.set_muted(muted)
 
-    def _on_volume_changed(self, name: str, scale: Gtk.Scale) -> None:
-        value = scale.get_value()
+    def _on_volume_changed(self, name: str, value: float) -> None:
         self._volumes[name] = value
         watch = self._watches.get(name)
         if watch is not None:
@@ -658,7 +632,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
 class LuceApp(Gtk.Application):
     def __init__(self) -> None:
-        super().__init__(application_id="me.nemtudo.projectluce")
+        super().__init__(application_id="pro.codestage.Luce")
 
     def do_activate(self) -> None:
         MainWindow(self).present()

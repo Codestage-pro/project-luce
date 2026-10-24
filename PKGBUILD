@@ -1,5 +1,5 @@
 # Pacote Arch do Project LUCE — instala luce/ + um lançador "luce" no PATH +
-# um ícone no menu de apps (project-luce.desktop), pra abrir sem terminal.
+# um ícone no menu de apps (pro.codestage.Luce.desktop), pra abrir sem terminal.
 # Build local, sem source remoto: `makepkg -si` dentro da pasta do projeto.
 pkgname=project-luce
 pkgver=1.0.0
@@ -39,6 +39,7 @@ package() {
     cp -r "$startdir/luce" "$pkgdir/usr/share/project-luce/"
     find "$pkgdir/usr/share/project-luce" -name __pycache__ -exec rm -rf {} +
     install -Dm755 "$startdir/packaging/luce-launcher.sh" "$pkgdir/usr/bin/luce"
-    install -Dm644 "$startdir/packaging/project-luce.desktop" "$pkgdir/usr/share/applications/project-luce.desktop"
+    install -Dm644 "$startdir/packaging/pro.codestage.Luce.desktop" "$pkgdir/usr/share/applications/pro.codestage.Luce.desktop"
+    install -Dm644 "$startdir/packaging/pro.codestage.Luce.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/pro.codestage.Luce.svg"
     install -Dm644 "$startdir/packaging/config.toml" "$pkgdir/etc/project-luce/config.toml"
 }

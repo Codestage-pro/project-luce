@@ -18,6 +18,8 @@ import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst
 
+from . import rtc
+
 log = logging.getLogger("luce.watch")
 
 Gst.init(None)
@@ -84,6 +86,7 @@ class WatchPipeline:
         if auth_token:
             _try_set(src, "auth-token", auth_token)
         self.pipeline.add(src)
+        rtc.enable_nack(src)
         src.connect("pad-added", self._on_pad_added)
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()

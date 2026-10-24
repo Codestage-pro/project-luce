@@ -11,9 +11,10 @@ from http.server import ThreadingHTTPServer
 import sfu_proxy as p
 
 OFFER = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:audio1\r\na=rtpmap:111 OPUS/48000\r\n" \
-        "m=video 9 UDP/TLS/RTP/SAVPF 96 97 98\r\na=mid:video0\r\na=rtpmap:96 VP8/90000\r\n" \
+        "m=video 9 UDP/TLS/RTP/SAVPF 96 97 98 99 100\r\na=mid:video0\r\na=rtpmap:96 VP8/90000\r\n" \
         "a=rtcp-fb:96 nack\r\na=rtpmap:97 H264/90000\r\na=fmtp:97 packetization-mode=1\r\n" \
-        "a=rtpmap:98 AV1/90000\r\n"
+        "a=rtpmap:98 AV1/90000\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=96\r\n" \
+        "a=rtpmap:100 rtx/90000\r\na=fmtp:100 apt=97\r\n"
 
 
 class FakeSfu:
@@ -59,11 +60,14 @@ class ProxyTest(unittest.TestCase):
     def test_whep_offer_keeps_only_h264_and_fixes_opus(self):
         out = p.whep_offer(OFFER)
         self.assertIn("a=rtpmap:111 opus/48000/2\r\n", out)
-        self.assertIn("m=video 9 UDP/TLS/RTP/SAVPF 97\r\n", out)
         self.assertNotIn("VP8", out)
         self.assertNotIn("AV1", out)
         self.assertNotIn("a=rtcp-fb:96", out)
         self.assertIn("a=fmtp:97", out)
+        self.assertIn("a=rtpmap:100 rtx/90000", out)  # RTX do H264 fica
+        self.assertNotIn("a=rtpmap:99 rtx", out)  # RTX do VP8 sai junto
+        self.assertNotIn("apt=96", out)
+        self.assertIn("m=video 9 UDP/TLS/RTP/SAVPF 100 97\r\n", out)
 
     def test_auth_required(self):
         self.assertEqual(self.call("GET", "/v3/paths/list", auth=None)[0], 401)

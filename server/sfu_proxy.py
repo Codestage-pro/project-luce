@@ -107,15 +107,23 @@ def whep_offer(sdp: str) -> str:
 
     O whepsrc oferece "OPUS/48000" sem os canais (o SFU só reconhece
     opus/48000/2) e VP8/VP9/H265/AV1 junto com o H264; com qualquer um deles o
-    SFU recusa tudo com "missing the published track's codec".
+    SFU recusa tudo com "missing the published track's codec". O RTX do H264
+    (retransmissão por NACK) fica, mas o publisher com RTX exige que o viewer
+    ofereça o seu (senão 500) e o SFU só aceita um payload por m-line.
     """
     sdp = re.sub(r"(?im)^(a=rtpmap:\d+) opus/48000\r?$", r"\1 opus/48000/2", sdp)
     drop = {pt for pt, codec in re.findall(r"a=rtpmap:(\d+) (\w+)/", sdp) if codec in ("VP8", "VP9", "H265", "AV1")}
+    rtx = {pt for pt, _ in re.findall(r"a=fmtp:(\d+) apt=(\d+)", sdp)}
+    # o RTX de um codec descartado ficaria apontando (apt=) pra um payload que não existe mais
+    drop |= {pt for pt, apt in re.findall(r"a=fmtp:(\d+) apt=(\d+)", sdp) if apt in drop}
     lines = []
     for line in sdp.splitlines():
         if line.startswith("m=video"):
             head = line.split(" ")
-            line = " ".join(head[:3] + [pt for pt in head[3:] if pt not in drop])
+            # medido: o SFU responde só com o ÚLTIMO payload da m-line; com o rtx por último
+            # a resposta perde o H264 e não vem vídeo. Sort estável: rtx primeiro.
+            keep = sorted((pt for pt in head[3:] if pt not in drop), key=lambda pt: pt not in rtx)
+            line = " ".join(head[:3] + keep)
         attr = re.match(r"a=(rtpmap|fmtp|rtcp-fb):(\d+) ", line)
         if not (attr and attr.group(2) in drop):
             lines.append(line)

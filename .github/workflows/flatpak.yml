@@ -1,0 +1,69 @@
+name: Flatpak
+
+# Tag vX.Y.Z -> builda, assina e publica o repositório Flatpak no GitHub Pages.
+# Quem instalou pelo luce.flatpakref recebe a versão nova pelo GNOME Software /
+# Discover / `flatpak update`. Segredos: GPG_PRIVATE_KEY (gpg --armor --export-secret-keys).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-49
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Importar chave GPG
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          echo "GPG_KEY_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak-builder --force-clean --install-deps-from=flathub --default-branch=stable \
+            --repo=repo --gpg-sign="$GPG_KEY_ID" build flatpak/pro.codestage.Luce.yml
+          flatpak build-update-repo --gpg-sign="$GPG_KEY_ID" --generate-static-deltas --prune repo
+
+      - name: Montar o site (repo + .flatpakref)
+        run: |
+          KEY=$(gpg --export "$GPG_KEY_ID" | base64 -w0)
+          URL="https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}"
+          mkdir site && mv repo site/repo
+          cat > site/luce.flatpakref <<EOF
+          [Flatpak Ref]
+          Name=pro.codestage.Luce
+          Branch=stable
+          Title=Project LUCE
+          IsRuntime=false
+          Url=$URL/repo/
+          SuggestRemoteName=codestage-luce
+          RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
+          GPGKey=$KEY
+          EOF
+          printf '<!doctype html><meta charset=utf-8><title>Project LUCE</title><a href="luce.flatpakref">Instalar Project LUCE</a>\n' > site/index.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

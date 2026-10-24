@@ -1,0 +1,77 @@
+app-id: pro.codestage.Luce
+runtime: org.gnome.Platform
+runtime-version: '49'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: luce
+
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  # GPU: NVENC/NVDEC (extensão NVIDIA do Flatpak) e VA-API (Mesa). A captura de tela
+  # vem do portal (xdg-desktop-portal), que já é acessível por padrão.
+  - --device=dri
+
+modules:
+  # O runtime GNOME 49 tem GStreamer 1.26 com gtk4paintablesink, nvcodec e va, mas não
+  # o whipsink/whepsrc (gst-plugins-rs) nem o ximagesrc (gst-plugins-good sem X11).
+  - name: gst-plugin-webrtchttp
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      build-args:
+        - --share=network  # cargo baixa as crates; ok pro nosso repositório, a Flathub não aceitaria
+      env:
+        CARGO_HOME: /run/build/gst-plugin-webrtchttp/cargo
+    build-commands:
+      - cargo build --release -p gst-plugin-webrtchttp
+      - install -Dm755 target/release/libgstwebrtchttp.so /app/lib/gstreamer-1.0/libgstwebrtchttp.so
+    sources:
+      - type: git
+        url: https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs.git
+        tag: 0.14.5  # série 0.14 casa com GStreamer 1.26 do runtime
+        commit: a18c320043bc340db037df4171a8a896a6ba5e1d
+
+  - name: gst-ximagesrc
+    buildsystem: meson
+    config-opts:
+      - -Dauto_features=disabled
+      - -Dximagesrc=enabled
+      - -Dximagesrc-xshm=enabled
+      - -Dximagesrc-xfixes=enabled
+      - -Dximagesrc-xdamage=enabled
+      - -Dtests=disabled
+      - -Dexamples=disabled
+      - -Ddoc=disabled
+      - -Dnls=disabled
+    sources:
+      - type: archive
+        url: https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.26.11.tar.xz
+        sha256: 001deb0876d5d743cd3448abf74a27adec3fd850012fcb1b00994861bd6c1145
+
+  - name: python-dbus
+    buildsystem: meson
+    sources:
+      - type: archive
+        url: https://files.pythonhosted.org/packages/f3/cc/23f24bc7cbfec3a0ab508b7e11bc98837d77a91445d5f666a8545353a147/dbus_python-1.5.1.tar.gz
+        sha256: 57423cf87d09b7d084f420b55b737fe654c33339b06df77945620d97795c6ac4
+
+  - name: luce
+    buildsystem: simple
+    build-commands:
+      - install -d /app/share/project-luce
+      - cp -r luce /app/share/project-luce/
+      - find /app/share/project-luce -name __pycache__ -exec rm -rf {} +
+      - install -Dm755 flatpak/luce-launcher.sh /app/bin/luce
+      - install -Dm644 flatpak/config.toml /app/etc/project-luce/config.toml
+      - install -Dm644 packaging/pro.codestage.Luce.desktop /app/share/applications/pro.codestage.Luce.desktop
+      - install -Dm644 packaging/pro.codestage.Luce.svg /app/share/icons/hicolor/scalable/apps/pro.codestage.Luce.svg
+      - install -Dm644 packaging/pro.codestage.Luce.metainfo.xml /app/share/metainfo/pro.codestage.Luce.metainfo.xml
+    sources:
+      - type: dir
+        path: ..
+        skip: [.git, graphify-out, server, auto.crt, auto.key, __pycache__, build-dir, repo, .flatpak-builder]

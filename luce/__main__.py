@@ -109,12 +109,15 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     if missing:
         print(f"faltam elementos GStreamer: {', '.join(missing)}", file=sys.stderr)
         return 1
-    sampler = subprocess.Popen(
-        ["nvidia-smi", "--query-gpu=utilization.encoder,utilization.gpu,name", "--format=csv,noheader", "-l", "1"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-    )
+    try:
+        sampler = subprocess.Popen(
+            ["nvidia-smi", "--query-gpu=utilization.encoder,utilization.gpu,name", "--format=csv,noheader", "-l", "1"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except FileNotFoundError:
+        sampler = None  # no Flatpak a extensão NVIDIA traz as libs, não o nvidia-smi
     pipeline = Gst.parse_launch(
         "videotestsrc is-live=true pattern=ball ! "
         "video/x-raw,width=1280,height=720,framerate=30/1 ! "
@@ -124,6 +127,9 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     pipeline.set_state(Gst.State.PLAYING)
     time.sleep(5)
     pipeline.set_state(Gst.State.NULL)
+    if sampler is None:
+        print("codificou 5s com nvh264enc (sem nvidia-smi pra medir a GPU)", flush=True)
+        return 0
     sampler.terminate()
     output, _ = sampler.communicate(timeout=3)
     for line in output.splitlines():

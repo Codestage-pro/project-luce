@@ -17,7 +17,7 @@ gi.require_version("GstVideo", "1.0")
 gi.require_version("GstGL", "1.0")
 from gi.repository import GLib, Gst, GstGL, GstVideo
 
-from . import roster
+from . import roster, rtc
 
 log = logging.getLogger("luce.capture")
 
@@ -37,25 +37,28 @@ def _try_set(element: Gst.Element, name: str, value) -> None:
 
 
 def _make_encoder() -> tuple[Gst.Element, str]:
-    """NVENC primeiro; sem NVIDIA, cai pro VAAPI (AMD/Intel via gst-plugin-va).
+    """GPU primeiro (NVENC, depois VA-API de AMD/Intel), CPU só se não houver GPU que codifique.
 
-    shortcut: o ramo VAAPI nunca rodou num encoder VAAPI de verdade (esta
-    máquina só tem NVIDIA — o driver VA dela cobre decode, não encode); só a
-    construção do pipeline foi validada. Se os nomes de propriedade abaixo
-    estiverem errados, _try_set ignora e cai nos defaults do driver.
+    vah264lpenc é o encoder "low power" do VA: em Intel recente (e algumas AMD) é o
+    único que existe, vah264enc nem aparece. x264enc gasta CPU, mas é o que garante
+    que o app transmite em qualquer máquina.
+
+    shortcut: os ramos VA-API nunca rodaram num encoder VA de verdade (esta máquina só
+    tem NVIDIA, e o gst-va recusa o driver VA da NVIDIA); só a construção do pipeline
+    foi validada. Se os nomes de propriedade abaixo estiverem errados, _try_set
+    ignora e cai nos defaults do driver.
     """
-    enc = Gst.ElementFactory.make("nvh264enc", "enc")
-    if enc is not None:
-        print("codificando com NVENC (GPU NVIDIA)", flush=True)
-        return enc, "nvenc"
-    enc = Gst.ElementFactory.make("vah264enc", "enc")
-    if enc is not None:
-        print("codificando com VAAPI (GPU AMD/Intel)", flush=True)
-        return enc, "va"
-    raise RuntimeError(
-        "faltam nvh264enc (NVIDIA, gst-plugins-bad com nvcodec) e "
-        "vah264enc (AMD/Intel, gst-plugin-va)"
-    )
+    for factory, kind, label in (
+        ("nvh264enc", "nvenc", "NVENC (GPU NVIDIA)"),
+        ("vah264enc", "va", "VA-API (GPU AMD/Intel)"),
+        ("vah264lpenc", "va", "VA-API low-power (GPU Intel/AMD)"),
+        ("x264enc", "x264", "x264 (CPU, sem encoder de GPU disponível)"),
+    ):
+        enc = Gst.ElementFactory.make(factory, "enc")
+        if enc is not None:
+            print(f"codificando com {label}", flush=True)
+            return enc, kind
+    raise RuntimeError("nenhum encoder H.264 (nvh264enc, vah264enc, vah264lpenc ou x264enc) instalado")
 
 
 class CapturePipeline:
@@ -144,7 +147,11 @@ class CapturePipeline:
         enc, enc_kind = _make_encoder()
         self.encoder_kind = enc_kind
 
-        if raw_source:
+        # x264 lê memória comum: o mesmo caminho do ximagesrc, só que com o pipewiresrc na frente.
+        sysmem = raw_source or enc_kind == "x264"
+        if not raw_source:
+            self._probe_id = src.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, self._restamp)
+        if sysmem:
             raw_preview = False
             convert = Gst.ElementFactory.make("videoconvert", "convert")
             scale = Gst.ElementFactory.make("videoscale", "scale")
@@ -159,10 +166,9 @@ class CapturePipeline:
                 ),
             )
         else:
-            # O portal manda DMA-BUF e todos os quadros chegam com o mesmo
-            # PTS; sem remarcar, o videorate joga fora tudo depois do
+            # O portal manda DMA-BUF e todos os quadros chegam com o mesmo PTS;
+            # sem remarcar (probe acima), o videorate joga fora tudo depois do
             # primeiro e a imagem congela.
-            self._probe_id = src.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, self._restamp)
             # width/height=0 é a opção "Fonte" das Configurações: transmite
             # no tamanho nativo de quem foi capturado, sem forçar nenhuma
             # resolução (nem letterbox, que só existe pra caber num tamanho
@@ -219,17 +225,29 @@ class CapturePipeline:
 
         if enc_kind == "nvenc":
             _try_set(enc, "bitrate", bitrate_kbps)
-            _try_set(enc, "gop-size", fps * 2)
+            # IDR a cada 1 s: quem entra ou perde pacote espera no máx. 1 s por imagem limpa.
+            _try_set(enc, "gop-size", fps)
+            # VBV de ~1 quadro: sem isso o IDR sai com ~55x o tamanho médio (880 KB a 8 Mbps/60 fps,
+            # medido com snow) em rajada de pacotes colados que estoura o buffer do caminho.
+            _try_set(enc, "vbv-buffer-size", max(bitrate_kbps // fps, 1))
             _try_set(enc, "zerolatency", True)
             _try_set(enc, "rc-mode", "cbr")
             _try_set(enc, "preset", "p4")
             _try_set(enc, "tune", "ultra-low-latency")
             _try_set(enc, "bframes", 0)
             _try_set(enc, "cabac", False)
+        elif enc_kind == "x264":
+            _try_set(enc, "bitrate", bitrate_kbps)
+            _try_set(enc, "tune", "zerolatency")
+            _try_set(enc, "speed-preset", "veryfast")
+            _try_set(enc, "key-int-max", fps)
+            _try_set(enc, "bframes", 0)
+            _try_set(enc, "byte-stream", True)
+            _try_set(enc, "vbv-buf-capacity", 1000)  # ms; x264 não tem VBV por quadro como o NVENC
         else:
             _try_set(enc, "bitrate", bitrate_kbps)
             _try_set(enc, "rate-control", "cbr")
-            _try_set(enc, "key-int-max", fps * 2)
+            _try_set(enc, "key-int-max", fps)
             _try_set(enc, "b-frames", 0)
             _try_set(enc, "target-usage", 6)
         h264caps = Gst.ElementFactory.make("capsfilter", "h264caps")
@@ -304,7 +322,7 @@ class CapturePipeline:
             _try_set(prev_queue, "leaky", "downstream")
             if preview_sink is not None:
                 prev_tail = [preview_sink]
-            elif raw_source:
+            elif sysmem:
                 prev_tail = [
                     Gst.ElementFactory.make("videoconvert", "preview-convert"),
                     Gst.ElementFactory.make("autovideosink", "preview-sink"),
@@ -383,6 +401,7 @@ class CapturePipeline:
         audio_sink_pad = whip.request_pad(whip.get_pad_template("sink_%u"), None, None)
         if audio_pay.get_static_pad("src").link(audio_sink_pad) != Gst.PadLinkReturn.OK:
             raise RuntimeError("não liguei o áudio no whip")
+        rtc.enable_nack(whip)
 
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()

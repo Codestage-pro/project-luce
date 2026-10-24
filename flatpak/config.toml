@@ -1,0 +1,3 @@
+# Padrão do Flatpak (servidor público); a senha do grupo cada pessoa digita
+# na primeira abertura e fica em ~/.config/project-luce/config.toml.
+base_url = "https://luce.codestage.pro"

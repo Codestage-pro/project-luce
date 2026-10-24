@@ -9,7 +9,8 @@ from typing import Any
 CONFIG_FILE = Path.home() / ".config" / "project-luce" / "config.toml"
 # Default de sistema (pacote Arch, ver packaging/config.toml) — deixa o
 # pacote já vir configurado pro servidor certo, sem a pessoa editar nada.
-SYSTEM_CONFIG_FILE = Path("/etc/project-luce/config.toml")
+# /app/etc é onde o Flatpak instala o equivalente (o /etc dele é do runtime).
+SYSTEM_CONFIG_FILES = [Path("/etc/project-luce/config.toml"), Path("/app/etc/project-luce/config.toml")]
 
 DEFAULTS: dict[str, Any] = {
     "base_url": "http://127.0.0.1:8889",  # server/sfu_proxy.py (WHIP, WHEP e roster)
@@ -27,8 +28,9 @@ DEFAULTS: dict[str, Any] = {
 
 def load() -> dict[str, Any]:
     data = dict(DEFAULTS)
-    if SYSTEM_CONFIG_FILE.exists():
-        data.update(tomllib.loads(SYSTEM_CONFIG_FILE.read_text()))
+    for system_file in SYSTEM_CONFIG_FILES:
+        if system_file.exists():
+            data.update(tomllib.loads(system_file.read_text()))
     if CONFIG_FILE.exists():
         data.update(tomllib.loads(CONFIG_FILE.read_text()))
     return data
