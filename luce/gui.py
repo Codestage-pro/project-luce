@@ -19,7 +19,8 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gst", "1.0")
 gi.require_version("GstGL", "1.0")
-from gi.repository import GLib, Gst, GstGL, Gtk
+gi.require_version("Gdk", "4.0")
+from gi.repository import GLib, Gdk, Gst, GstGL, Gtk
 
 from . import config, roster, stats
 from .capture_pipeline import CapturePipeline
@@ -202,6 +203,7 @@ class MainWindow(Gtk.ApplicationWindow):
         # Captura sem portal (ximagesrc): decidido a cada "Transmitir", porque
         # o backend do portal pode ser instalado com o app já aberto.
         self._x11: bool = False
+        self._x11_region: tuple[int, int, int, int] | None = None
         self._last_restart_time: float = 0.0
         self._restart_window_start: float = 0.0
         # Um só GLDisplay pra vida da janela: recriar um novo a cada restart
@@ -279,7 +281,10 @@ class MainWindow(Gtk.ApplicationWindow):
             return
 
         if self._x11:
-            self._status.set_label("sem portal: capturando a tela inteira (X11)…")
+            if self._x11_region is None and not self._pick_x11_monitor():
+                self._x11 = False  # o diálogo chama _on_share_clicked de novo depois da escolha
+                return
+            self._status.set_label("sem portal: capturando o monitor escolhido (X11)…")
         else:
             self._status.set_label("escolha o monitor na janela do sistema…")
             self._portal = ScreenCast()
@@ -302,6 +307,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 fps=cfg["fps"],
                 bitrate_kbps=cfg["bitrate"],
                 x11=self._x11,
+                x11_region=self._x11_region,
                 portal_fd=fd,
                 portal_node=node,
                 preview_sink=preview_sink,
@@ -440,6 +446,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 fps=cfg["fps"],
                 bitrate_kbps=cfg["bitrate"],
                 x11=self._x11,
+                x11_region=self._x11_region,
                 portal_fd=fd,
                 portal_node=node,
                 preview_sink=preview_sink,
@@ -459,6 +466,34 @@ class MainWindow(Gtk.ApplicationWindow):
 
         return False
 
+    def _pick_x11_monitor(self) -> bool:
+        """Define _x11_region pelo monitor. True se já dá pra seguir; False se abriu o
+        diálogo de escolha (a resposta volta por _on_share_clicked)."""
+        monitors = Gdk.Display.get_default().get_monitors()
+        found = [monitors.get_item(i) for i in range(monitors.get_n_items())]
+
+        def region(mon):  # o ximagesrc usa pixels reais, o GDK devolve pixels lógicos
+            g, s = mon.get_geometry(), mon.get_scale_factor()
+            return (g.x * s, g.y * s, g.width * s, g.height * s)
+
+        if len(found) <= 1:
+            self._x11_region = region(found[0]) if found else None
+            return True
+        labels = [f"{m.get_connector() or m.get_model()} ({m.get_geometry().width}x{m.get_geometry().height})" for m in found]
+        dialog = Gtk.AlertDialog(message="Qual monitor transmitir?", buttons=[*labels, "Cancelar"], cancel_button=len(labels))
+
+        def chosen(dlg, result):
+            try:
+                idx = dlg.choose_finish(result)
+            except GLib.Error:
+                return
+            if idx < len(found):
+                self._x11_region = region(found[idx])
+                self._on_share_clicked(self._share_btn)
+
+        dialog.choose(self, None, chosen)
+        return False
+
     def _stop_sharing(self) -> None:
         self._restart_count = 0
         if self._capture is not None:
@@ -468,6 +503,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self._portal.close()
             self._portal = None
         self._x11 = False
+        self._x11_region = None
         self._preview.set_paintable(None)
         self._stats_label.set_label("")
         self._last_stats.pop("share", None)

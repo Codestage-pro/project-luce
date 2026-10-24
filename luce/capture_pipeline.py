@@ -70,6 +70,7 @@ class CapturePipeline:
         bitrate_kbps: int = 4000,
         pattern: bool = False,
         x11: bool = False,
+        x11_region: tuple[int, int, int, int] | None = None,
         portal_fd: int | None = None,
         portal_node: int | None = None,
         preview: bool = True,
@@ -113,6 +114,10 @@ class CapturePipeline:
             if src is None:
                 raise RuntimeError("falta o ximagesrc (gst-plugins-good)")
             _try_set(src, "use-damage", False)
+            if x11_region:  # sem isso o ximagesrc pega a área virtual com todos os monitores juntos
+                x, y, w, h = x11_region
+                for prop, value in ("startx", x), ("starty", y), ("endx", x + w - 1), ("endy", y + h - 1):
+                    src.set_property(prop, value)
             _try_set(src, "show-pointer", True)
             _try_set(src, "do-timestamp", True)
         else:
