@@ -32,7 +32,7 @@ jobs:
       - name: Build
         run: |
           flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-          flatpak-builder --force-clean --install-deps-from=flathub --default-branch=stable \
+          flatpak-builder --force-clean --disable-rofiles-fuse --install-deps-from=flathub --default-branch=stable \
             --repo=repo --gpg-sign="$GPG_KEY_ID" build flatpak/pro.codestage.Luce.yml
           flatpak build-update-repo --gpg-sign="$GPG_KEY_ID" --generate-static-deltas --prune repo
 
