@@ -1,6 +1,5 @@
 # Default de sistema (servidor público via Cloudflare), sobrescrito por
 # ~/.config/project-luce/config.toml se a pessoa criar um (ver luce/config.py).
 base_url = "https://luce.codestage.pro"
-# Senha do grupo (bdk): mesmo valor de BDK_PASSWORD do servidor (server/.env).
-# Preencha antes de empacotar/distribuir.
-auth_password = "CHANGE_ME_SENHA_BDK"
+# A senha do grupo NÃO vai neste arquivo (o repositório é público): cada pessoa
+# digita em Configurações na primeira abertura.
