@@ -213,6 +213,7 @@ class MainWindow(Gtk.ApplicationWindow):
         # (troca de tela/resolução) é o que parece deixar a NVIDIA devolver
         # EGL_BAD_CONTEXT — ver comentário em CapturePipeline._on_need_context.
         self._gl_display = GstGL.GLDisplay.new()
+        self._preview_sink: Gst.Element | None = None
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
         self.set_child(root)
@@ -300,9 +301,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 self._portal = None
                 return
 
-        preview_sink = Gst.ElementFactory.make("gtk4paintablesink", "preview-sink")
-        if preview_sink is not None:
-            self._preview.set_paintable(preview_sink.get_property("paintable"))
+        preview_sink = self._get_preview_sink()
 
         try:
             self._capture = CapturePipeline(
@@ -381,6 +380,22 @@ class MainWindow(Gtk.ApplicationWindow):
         self._portal = new_portal
         self._status.set_label(f"transmitindo como {name} ({enc_label})")
 
+    def _get_preview_sink(self) -> Gst.Element | None:
+        """Um só gtk4paintablesink pra vida da janela, reaproveitado a cada transmissão.
+
+        Um sink novo por pipeline, junto do glupload do NVENC, faz o glupload da
+        2ª transmissão falhar com EGL_BAD_CONTEXT (reproduzido num app GTK com 1
+        sink novo por ciclo; reaproveitando o mesmo, 5 ciclos seguidos passam).
+        """
+        if self._preview_sink is None:
+            self._preview_sink = Gst.ElementFactory.make("gtk4paintablesink", "preview-sink")
+        elif (old := self._preview_sink.get_parent()) is not None:  # pipeline que não chegou a dar stop()
+            self._preview_sink.set_state(Gst.State.NULL)
+            old.remove(self._preview_sink)
+        if self._preview_sink is not None:
+            self._preview.set_paintable(self._preview_sink.get_property("paintable"))
+        return self._preview_sink
+
     def _on_share_error(self, message: str) -> None:
         if self._portal is None and not self._x11:
             self._status.set_label(f"transmissão caiu: {message}")
@@ -439,9 +454,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 return False
 
         cfg = config.load()
-        preview_sink = Gst.ElementFactory.make("gtk4paintablesink", "preview-sink")
-        if preview_sink is not None:
-            self._preview.set_paintable(preview_sink.get_property("paintable"))
+        preview_sink = self._get_preview_sink()
 
         try:
             self._capture = CapturePipeline(

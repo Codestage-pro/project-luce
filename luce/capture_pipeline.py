@@ -90,6 +90,7 @@ class CapturePipeline:
         self._auth_token = auth_token
         self._stop_heartbeat = threading.Event()
         self._gl_display = gl_display
+        self._preview_sink = preview_sink
         self._fps = fps
         self._pattern = pattern
         self._x11 = x11
@@ -465,6 +466,9 @@ class CapturePipeline:
         bus.remove_signal_watch()
         self.pipeline.set_state(Gst.State.NULL)
         self.pipeline.get_state(Gst.CLOCK_TIME_NONE)
+        # o sink é da GUI e vai pra próxima transmissão: sai do pipeline em vez de morrer com ele
+        if self._preview_sink is not None and self._preview_sink.get_parent() is self.pipeline:
+            self.pipeline.remove(self._preview_sink)
 
     def set_audio_enabled(self, enabled: bool) -> None:
         self._audio_volume.set_property("mute", not enabled)
