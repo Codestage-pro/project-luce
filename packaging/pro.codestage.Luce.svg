@@ -1,6 +1,275 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-  <rect x="8" y="20" width="112" height="76" rx="12" fill="#1e1e2e"/>
-  <rect x="16" y="28" width="96" height="60" rx="6" fill="#313244"/>
-  <polygon points="54,44 54,72 80,58" fill="#f9e2af"/>
-  <rect x="44" y="104" width="40" height="8" rx="4" fill="#1e1e2e"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="100%" height="100%">
+  <defs>
+    <!-- Recorte da parte inferior do monitor para encaixar os ombros e luvas -->
+    <clipPath id="screenBottomClip">
+      <path d="M 0,0 H 1024 V 500 H 908 V 774 A 44,44 0 0 1 864,818 H 160 A 44,44 0 0 1 116,774 V 500 H 0 Z" />
+    </clipPath>
+  </defs>
+
+  <!-- ==================== BASE FLUTUANTE DO MONITOR ==================== -->
+  <rect x="352" y="906" width="320" height="66" rx="33" fill="#212031" stroke="#080d27" stroke-width="14" />
+
+  <!-- ==================== MOLDURA DO MONITOR ==================== -->
+  <!-- Moldura Externa (#212031 com contorno #080d27) -->
+  <rect x="64" y="232" width="896" height="628" rx="76" fill="#212031" stroke="#080d27" stroke-width="16" />
+  <!-- Tela Interna (#323344) -->
+  <rect x="116" y="284" width="792" height="524" rx="42" fill="#323344" stroke="#080d27" stroke-width="12" />
+
+  <!-- ==================== CONTEÚDO PRINCIPAL (POP-OUT NO TOPO / CLIPADO NA BASE) ==================== -->
+  <g clip-path="url(#screenBottomClip)">
+
+    <!-- ==================== MARIAS-CHIQUINHAS EM ESPIRAL (VERMELHAS) ==================== -->
+    <!-- Maria-chiquinha Esquerda -->
+    <g stroke="#080d27" stroke-width="14" stroke-linejoin="round" stroke-linecap="round">
+      <!-- Sombra traseira da espiral esquerda -->
+      <path d="M 205,148 C 78,195 28,340 48,475 C 35,540 52,615 95,665 L 185,680 C 175,565 180,430 235,310 Z" fill="#981e32" />
+      <!-- Volume principal vermelho vivo -->
+      <path d="M 215,142 C 92,188 42,328 56,455 C 95,495 152,505 188,485 C 148,405 162,285 230,210 Z" fill="#e53a48" />
+      <path d="M 52,462 C 34,522 52,588 102,625 C 142,638 175,622 192,592 C 145,568 118,520 135,478 Z" fill="#e53a48" />
+      <path d="M 50,558 C 48,615 80,668 112,705 C 138,688 162,660 170,625 C 128,618 88,592 50,558 Z" fill="#e53a48" />
+    </g>
+
+    <!-- Maria-chiquinha Direita -->
+    <g stroke="#080d27" stroke-width="14" stroke-linejoin="round" stroke-linecap="round">
+      <!-- Sombra traseira da espiral direita -->
+      <path d="M 745,78 C 875,112 925,248 905,375 C 922,440 905,520 865,575 L 785,555 C 795,445 785,310 725,205 Z" fill="#981e32" />
+      <!-- Volume principal vermelho vivo -->
+      <path d="M 735,74 C 862,105 916,235 902,358 C 862,398 810,408 775,388 C 812,308 798,195 725,132 Z" fill="#e53a48" />
+      <path d="M 902,355 C 922,412 904,478 855,515 C 818,528 785,512 770,482 C 815,458 842,410 825,368 Z" fill="#e53a48" />
+      <path d="M 898,448 C 902,505 872,555 842,592 C 818,575 795,548 788,512 C 828,505 865,480 898,448 Z" fill="#e53a48" />
+    </g>
+
+    <!-- ==================== CUBOS AMARELOS COM CORAÇÕES ==================== -->
+    <!-- Cubo Esquerdo -->
+    <g stroke="#080d27" stroke-width="14" stroke-linejoin="round">
+      <!-- Face superior/frontal amarela clara -->
+      <path d="M 118,308 C 142,212 182,140 232,110 L 348,142 L 222,345 Z" fill="#fbe16d" />
+      <!-- Face inferior/lateral amarela escura -->
+      <path d="M 118,308 L 222,345 L 210,415 L 148,378 Z" fill="#d3a746" />
+      <!-- Coração principal no cubo esquerdo -->
+      <path d="M 205,212 C 185,175 155,195 168,232 C 178,262 222,282 252,278 C 245,245 258,205 235,192 C 218,182 208,198 205,212 Z" fill="#cc2c34" stroke="none" />
+      <!-- Meio coração superior esquerdo -->
+      <path d="M 255,120 C 265,148 292,168 325,165 L 338,142 L 265,118 Z" fill="#cc2c34" stroke="none" />
+      <!-- Detalhe coração na face inferior -->
+      <path d="M 168,342 C 175,322 205,325 212,348 L 195,385 L 165,362 Z" fill="#981e32" stroke="none" />
+    </g>
+
+    <!-- Cubo Direito -->
+    <g stroke="#080d27" stroke-width="14" stroke-linejoin="round">
+      <!-- Face frontal amarela clara -->
+      <path d="M 552,112 L 668,42 C 722,72 765,125 788,182 L 655,215 Z" fill="#fbe16d" />
+      <!-- Face inferior amarela escura -->
+      <path d="M 655,215 L 788,182 C 792,235 775,288 738,325 L 642,285 Z" fill="#d3a746" />
+      <!-- Coração no cubo direito -->
+      <path d="M 688,125 C 692,92 658,78 642,108 C 628,135 635,175 648,195 C 678,192 718,178 725,152 C 732,128 705,112 688,125 Z" fill="#cc2c34" stroke="none" />
+      <!-- Meio coração lateral -->
+      <path d="M 565,108 C 595,118 612,95 612,72 L 560,104 Z" fill="#cc2c34" stroke="none" />
+      <!-- Coração na face inferior direita -->
+      <path d="M 702,248 C 718,218 748,225 745,255 C 742,278 718,298 692,295 Z" fill="#981e32" stroke="none" />
+    </g>
+
+    <!-- ==================== OMBROS, ROUPA ARLEQUIM E LAÇO AMARELO ==================== -->
+    <g stroke="#080d27" stroke-width="14" stroke-linejoin="round" stroke-linecap="round">
+      <!-- Ombros (Pele) -->
+      <path d="M 235,720 C 232,615 275,548 365,540 L 660,540 C 745,548 785,615 782,720 Z" fill="#fde1cf" />
+      <!-- Sombra do pescoço e clavícula -->
+      <path d="M 412,515 C 435,585 575,585 605,515 L 625,585 L 395,585 Z" fill="#fcc5b8" stroke="none" />
+      <!-- Gola escura interna -->
+      <path d="M 418,535 C 455,605 558,605 608,525 L 615,595 L 412,595 Z" fill="#212031" />
+
+      <!-- Manga / Gola Arlequim Esquerda (Branca e Vermelha) -->
+      <path d="M 155,785 L 198,632 C 245,672 315,705 385,722 L 365,818 L 155,818 Z" fill="#f4f8f7" />
+      <polygon points="162,785 198,645 232,795" fill="#e53a48" />
+      <polygon points="232,795 278,682 325,805" fill="#e53a48" />
+      <polygon points="325,805 352,712 385,805" fill="#e53a48" />
+
+      <!-- Manga / Gola Arlequim Direita (Branca e Vermelha) -->
+      <path d="M 865,785 L 812,568 C 755,615 695,665 635,705 L 655,818 L 865,818 Z" fill="#f4f8f7" />
+      <polygon points="658,722 715,638 742,795" fill="#e53a48" />
+      <polygon points="742,795 795,588 832,765" fill="#e53a48" />
+      <!-- Detalhe amarelo no canto inferior direito -->
+      <path d="M 768,755 C 795,722 845,728 882,745 L 860,818 L 785,818 Z" fill="#fbe16d" />
+
+      <!-- Laço Amarelo no Pescoço -->
+      <!-- Aba Esquerda do Laço -->
+      <path d="M 412,582 C 455,585 492,602 518,625 L 518,682 C 482,705 445,725 405,732 Z" fill="#fbe16d" />
+      <!-- Aba Direita do Laço -->
+      <path d="M 615,535 C 578,558 548,588 532,618 L 542,675 C 575,688 605,702 632,708 Z" fill="#fbe16d" />
+      <!-- Fitas Inferiores do Laço -->
+      <path d="M 498,668 L 468,805 L 525,805 L 535,672 Z" fill="#d3a746" />
+      <path d="M 535,668 L 562,805 L 605,805 L 568,665 Z" fill="#fbe16d" />
+      <!-- Nó Central do Laço -->
+      <rect x="506" y="604" width="44" height="62" rx="16" transform="rotate(-8, 528, 635)" fill="#fbe16d" />
+    </g>
+
+    <!-- ==================== CABELO AZUL (CAMADA TRASEIRA E LATERAL) ==================== -->
+    <g stroke="#080d27" stroke-width="14" stroke-linejoin="round" stroke-linecap="round">
+      <!-- Sombra interna do cabelo ao redor do pescoço -->
+      <path d="M 245,455 L 285,548 L 368,555 L 655,542 L 732,465 Z" fill="#5789a8" />
+      <!-- Pontas laterais esquerdas -->
+      <path d="M 248,225 C 205,285 188,342 152,375 C 185,382 208,378 228,368 C 192,412 162,442 128,455 C 168,472 205,472 238,458 C 218,492 212,522 215,548 C 248,528 272,502 288,472 C 292,508 312,535 342,548 L 355,445 Z" fill="#a4d2e9" />
+      <!-- Pontas laterais direitas -->
+      <path d="M 695,185 C 745,225 775,268 815,278 C 788,305 762,315 738,315 C 772,338 795,352 822,352 C 795,385 765,402 732,405 C 748,435 752,465 742,495 C 712,475 692,452 678,425 C 675,462 658,495 632,515 L 625,395 Z" fill="#a4d2e9" />
+    </g>
+
+    <!-- ==================== ROSTO E EXPRESSÃO FELIZ ==================== -->
+    <g stroke="#080d27" stroke-linejoin="round" stroke-linecap="round">
+      <!-- Contorno da Cabeça / Rosto -->
+      <path d="M 318,285 C 308,415 352,518 485,565 C 515,575 542,568 565,552 C 655,492 688,395 668,275 Z" fill="#fde1cf" stroke-width="14" />
+
+      <!-- Sombras suaves da pele (abaixo da franja e bochechas) -->
+      <path d="M 335,345 C 355,305 425,295 495,345 C 545,295 615,295 648,335 L 645,285 L 335,285 Z" fill="#fcc5b8" stroke="none" />
+
+      <!-- Blush Rosado nas Bochechas -->
+      <ellipse cx="408" cy="442" rx="48" ry="24" transform="rotate(-8, 408, 442)" fill="#fbb1a7" opacity="0.85" stroke="none" />
+      <ellipse cx="605" cy="408" rx="44" ry="22" transform="rotate(-12, 605, 408)" fill="#fbb1a7" opacity="0.85" stroke="none" />
+      <!-- Tracinhos de Blush -->
+      <g stroke="#e53a48" stroke-width="4" opacity="0.65">
+        <line x1="385" y1="448" x2="395" y2="432" />
+        <line x1="398" y1="450" x2="408" y2="434" />
+        <line x1="412" y1="450" x2="422" y2="434" />
+        <line x1="425" y1="448" x2="435" y2="432" />
+        <line x1="575" y1="412" x2="585" y2="396" />
+        <line x1="590" y1="414" x2="600" y2="398" />
+      </g>
+
+      <!-- Olho Direito da Personagem (Esquerda da imagem) -->
+      <g>
+        <!-- Branco do olho -->
+        <path d="M 358,408 C 375,375 428,372 452,402 C 432,422 385,425 358,408 Z" fill="#f4f8f7" stroke-width="10" />
+        <!-- Íris Azul -->
+        <ellipse cx="412" cy="400" rx="25" ry="22" fill="#5789a8" stroke-width="10" />
+        <ellipse cx="412" cy="404" rx="16" ry="14" fill="#a4d2e9" stroke="none" />
+        <!-- Pupila e Brilhos -->
+        <circle cx="412" cy="400" r="9" fill="#080d27" stroke="none" />
+        <circle cx="398" cy="392" r="7" fill="#f4f8f7" stroke="none" />
+        <circle cx="422" cy="408" r="4" fill="#f4f8f7" stroke="none" />
+        <!-- Cílios Superiores Marcantes -->
+        <path d="M 345,412 C 368,368 425,365 458,398" fill="none" stroke="#080d27" stroke-width="16" />
+        <path d="M 342,395 L 365,398" fill="none" stroke="#080d27" stroke-width="12" />
+        <!-- Pinta sob o olho direito -->
+        <circle cx="372" cy="432" r="5" fill="#080d27" stroke="none" />
+      </g>
+
+      <!-- Olho Esquerdo da Personagem (Direita da imagem) -->
+      <g>
+        <!-- Branco do olho -->
+        <path d="M 535,385 C 548,352 598,342 622,368 C 605,392 562,398 535,385 Z" fill="#f4f8f7" stroke-width="10" />
+        <!-- Íris Azul -->
+        <ellipse cx="578" cy="372" rx="24" ry="22" fill="#5789a8" stroke-width="10" />
+        <ellipse cx="578" cy="376" rx="15" ry="13" fill="#a4d2e9" stroke="none" />
+        <!-- Pupila e Brilhos -->
+        <circle cx="578" cy="372" r="9" fill="#080d27" stroke="none" />
+        <circle cx="564" cy="364" r="7" fill="#f4f8f7" stroke="none" />
+        <circle cx="588" cy="380" r="4" fill="#f4f8f7" stroke="none" />
+        <!-- Cílios Superiores -->
+        <path d="M 528,388 C 545,342 598,335 632,362" fill="none" stroke="#080d27" stroke-width="16" />
+        <path d="M 615,345 L 635,355" fill="none" stroke="#080d27" stroke-width="12" />
+        <!-- Marca Vertical Preta de Bobo da Corte sob o olho esquerdo -->
+        <polygon points="588,402 608,396 608,452" fill="#080d27" stroke="none" />
+        <path d="M 582,415 C 598,415 618,408 632,398" fill="none" stroke="#080d27" stroke-width="8" />
+      </g>
+
+      <!-- Nariz Delicado -->
+      <path d="M 498,415 L 504,432" fill="none" stroke="#080d27" stroke-width="8" />
+      <polygon points="492,412 504,405 506,428" fill="#fcc5b8" stroke="none" />
+
+      <!-- Boca Sorrindo Aberta (Feliz) -->
+      <g>
+        <!-- Interior da boca -->
+        <path d="M 448,472 C 492,468 542,458 575,442 C 582,495 552,535 512,538 C 475,540 452,508 448,472 Z" fill="#652934" stroke="#080d27" stroke-width="12" />
+        <!-- Dentes Superiores -->
+        <path d="M 454,473 C 492,469 538,460 570,446 L 566,466 C 532,478 492,486 458,486 Z" fill="#f4f8f7" stroke="#080d27" stroke-width="8" />
+        <!-- Língua Rosada -->
+        <path d="M 468,510 C 488,488 535,482 564,498 C 552,525 530,536 510,537 C 488,538 475,526 468,510 Z" fill="#f9797f" stroke="#080d27" stroke-width="8" />
+        <!-- Brilho no lábio inferior -->
+        <path d="M 498,548 C 512,552 528,550 538,545" fill="none" stroke="#080d27" stroke-width="6" />
+      </g>
+    </g>
+
+    <!-- ==================== FRANJA E TOPETE AZUL (CAMADA FRONTAL) ==================== -->
+    <g stroke="#080d27" stroke-width="14" stroke-linejoin="round" stroke-linecap="round">
+      <!-- Base principal da franja e topo do cabelo -->
+      <path d="M 238,245
+               C 258,155 322,108 398,118
+               C 368,85 375,45 438,28
+               C 408,65 408,95 422,115
+               C 495,82 585,95 655,155
+               C 665,135 675,112 678,92
+               C 695,148 682,215 625,248
+               C 665,242 698,225 722,198
+               C 705,252 658,288 595,295
+               C 635,298 672,292 702,275
+               C 665,322 605,342 535,328
+               C 512,315 485,292 465,262
+               C 475,305 505,345 538,365
+               C 482,362 435,322 412,248
+               C 402,295 368,348 322,382
+               C 332,338 338,295 335,255
+               C 305,315 275,365 245,395
+               C 242,345 242,295 238,245 Z" fill="#a4d2e9" />
+
+      <!-- Reflexos claros na franja (#d0eef9) -->
+      <path d="M 335,195 C 365,165 405,162 435,185 C 415,185 395,198 382,215 C 368,198 352,192 335,195 Z" fill="#d0eef9" stroke="none" />
+      <path d="M 465,175 C 505,155 555,165 595,195 C 565,198 535,212 515,232 C 498,205 482,188 465,175 Z" fill="#d0eef9" stroke="none" />
+
+      <!-- Sombras das mechas da franja (#5789a8) -->
+      <path d="M 412,248 C 435,312 478,348 532,362 C 502,332 482,295 468,255 Z" fill="#5789a8" stroke="none" />
+      <path d="M 522,268 C 575,298 638,298 692,278 C 645,318 585,332 528,315 Z" fill="#5789a8" stroke="none" />
+
+      <!-- Sobrancelhas Azuis Expressivas (visíveis sobre a franja) -->
+      <path d="M 352,348 C 378,312 425,308 455,332" fill="none" stroke="#080d27" stroke-width="12" />
+      <path d="M 356,344 C 380,314 422,310 450,332" fill="none" stroke="#5789a8" stroke-width="6" />
+
+      <path d="M 525,312 C 555,282 605,285 635,315" fill="none" stroke="#080d27" stroke-width="12" />
+      <path d="M 529,310 C 557,284 602,287 630,315" fill="none" stroke="#5789a8" stroke-width="6" />
+    </g>
+
+    <!-- ==================== MÃOS COM LUVAS BRANCAS (SINAL DE PAZ / V) ==================== -->
+    <!-- Mão Esquerda (Frente Esquerda) -->
+    <g stroke="#080d27" stroke-width="14" stroke-linejoin="round" stroke-linecap="round">
+      <!-- Palma e Dedos V (Indicador e Médio) -->
+      <path d="M 385,818
+               L 352,755
+               C 332,718 338,678 368,665
+               L 298,582
+               C 282,562 298,538 322,555
+               L 402,638
+               L 365,535
+               C 355,508 382,495 398,522
+               L 445,635
+               C 472,628 492,652 488,692
+               C 508,708 512,745 492,778
+               L 478,818 Z" fill="#f4f8f7" />
+      <!-- Sombras de volume na luva esquerda (#b5b8c3) -->
+      <path d="M 358,745 C 378,765 415,775 445,762 L 458,818 L 385,818 Z" fill="#b5b8c3" stroke="none" />
+      <!-- Dedos dobrados (Anelar, Mínimo e Polegar) -->
+      <path d="M 365,695 C 385,672 422,682 428,712 C 432,738 402,752 378,735 Z" fill="#f4f8f7" />
+      <path d="M 428,675 C 442,642 478,645 482,682 C 485,712 452,728 432,708 Z" fill="#b5b8c3" />
+      <path d="M 422,732 C 445,715 478,728 475,758 C 472,785 438,792 422,768 Z" fill="#b5b8c3" />
+    </g>
+
+    <!-- Mão Direita (Frente Direita) -->
+    <g stroke="#080d27" stroke-width="14" stroke-linejoin="round" stroke-linecap="round">
+      <!-- Palma e Dedos V (Indicador e Médio) -->
+      <path d="M 605,818
+               L 585,758
+               C 565,722 572,675 598,655
+               L 622,495
+               C 626,468 655,468 654,498
+               L 642,612
+               L 698,505
+               C 712,480 738,495 725,522
+               L 668,645
+               C 698,658 712,695 698,738
+               L 682,818 Z" fill="#f4f8f7" />
+      <!-- Sombras de volume na luva direita (#b5b8c3) -->
+      <path d="M 592,735 C 615,765 655,768 685,742 L 675,818 L 605,818 Z" fill="#b5b8c3" stroke="none" />
+      <!-- Dedos dobrados (Anelar, Mínimo e Polegar) -->
+      <path d="M 582,665 C 598,632 632,638 632,672 C 632,698 602,708 585,688 Z" fill="#b5b8c3" />
+      <path d="M 632,662 C 648,638 682,648 678,682 C 675,708 645,715 632,692 Z" fill="#f4f8f7" />
+      <path d="M 622,708 C 645,688 685,698 682,732 C 678,762 642,765 622,742 Z" fill="#f4f8f7" />
+    </g>
+
+  </g>
 </svg>
