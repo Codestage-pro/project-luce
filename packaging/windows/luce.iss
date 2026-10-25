@@ -9,9 +9,10 @@ AppId={{6F0C7B1E-52B4-4C0E-9B8F-4C1D5A0E7A31}
 AppName=Project LUCE
 AppVersion={#AppVersion}
 AppPublisher=Codestage.pro
-; Por usuário: não pede administrador
-PrivilegesRequired=lowest
-DefaultDirName={localappdata}\Programs\Project LUCE
+; Padrão: Arquivos de Programas (pede administrador). A janela inicial deixa escolher "só para mim" (vai para AppData\Local\Programs).
+PrivilegesRequired=admin
+PrivilegesRequiredOverridesAllowed=dialog
+DefaultDirName={autopf}\Project LUCE
 DefaultGroupName=Project LUCE
 DisableProgramGroupPage=yes
 OutputDir=..\..\dist
@@ -30,8 +31,8 @@ Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortugue
 
 [Files]
 Source: "..\..\dist\LUCE\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
-; Servidor padrão; não sobrescreve o que a pessoa já configurou (nem a senha dela)
-Source: "..\config.toml"; DestDir: "{userappdata}\project-luce"; Flags: onlyifdoesntexist uninsneveruninstall
+; Servidor padrão, lido pelo luce/config.py por baixo do config.toml da pessoa (que nunca é tocado)
+Source: "..\config.toml"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\Project LUCE"; Filename: "{app}\ucrt64\bin\pythonw.exe"; Parameters: """{app}\luce_launcher.pyw"""; WorkingDir: "{app}"; IconFilename: "{app}\luce.ico"; AppUserModelID: "pro.codestage.Luce"

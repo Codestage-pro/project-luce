@@ -15,6 +15,8 @@ CONFIG_FILE = Path(_CONFIG_HOME or Path.home() / ".config") / "project-luce" / "
 # pacote já vir configurado pro servidor certo, sem a pessoa editar nada.
 # /app/etc é onde o Flatpak instala o equivalente (o /etc dele é do runtime).
 SYSTEM_CONFIG_FILES = [Path("/etc/project-luce/config.toml"), Path("/app/etc/project-luce/config.toml")]
+if os.name == "nt":  # o instalador do Windows põe o default ao lado de luce/
+    SYSTEM_CONFIG_FILES.append(Path(__file__).resolve().parents[1] / "config.toml")
 
 DEFAULTS: dict[str, Any] = {
     "base_url": "http://127.0.0.1:8889",  # server/sfu_proxy.py (WHIP, WHEP e roster)
