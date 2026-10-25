@@ -1,6 +1,6 @@
 app-id: pro.codestage.Luce
 runtime: org.gnome.Platform
-runtime-version: '49'
+runtime-version: '51'
 sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
@@ -20,7 +20,7 @@ finish-args:
   - --device=dri
 
 modules:
-  # O runtime GNOME 49 tem GStreamer 1.26 com gtk4paintablesink, nvcodec e va, mas não
+  # O runtime GNOME 51 tem GStreamer 1.28 com gtk4paintablesink, nvcodec e va, mas não
   # o whipsink/whepsrc (gst-plugins-rs) nem o ximagesrc (gst-plugins-good sem X11).
   - name: gst-plugin-webrtchttp
     buildsystem: simple
@@ -36,8 +36,8 @@ modules:
     sources:
       - type: git
         url: https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs.git
-        tag: 0.14.5  # série 0.14 casa com GStreamer 1.26 do runtime
-        commit: a18c320043bc340db037df4171a8a896a6ba5e1d
+        tag: 0.15.4  # série 0.15 casa com GStreamer 1.28 do runtime
+        commit: 1afff3711855238433862c0ce3bf34918e500386
 
   - name: gst-ximagesrc
     buildsystem: meson
@@ -53,8 +53,8 @@ modules:
       - -Dnls=disabled
     sources:
       - type: archive
-        url: https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.26.11.tar.xz
-        sha256: 001deb0876d5d743cd3448abf74a27adec3fd850012fcb1b00994861bd6c1145
+        url: https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.28.6.tar.xz
+        sha256: b0c620a4b18b6ee931b4c43bbf1760d308666dc37f730a7e7f1ad327e59ce2df
 
   - name: python-dbus
     buildsystem: meson

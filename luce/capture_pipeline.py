@@ -217,17 +217,6 @@ class CapturePipeline:
                 post_chain = [post]
                 front_caps = f"video/x-raw(memory:DMABuf),{size_caps}framerate={fps}/1"
             front = [src, *post_chain, rate]
-            if enc_kind == "nvenc":
-                # No niri + NVIDIA o quadro DMA-BUF chega antes de o compositor
-                # terminar de desenhar nele, e do 2º quadro em diante o glupload
-                # lê preto (flaky: ~80% das capturas no Flatpak, GStreamer 1.26 /
-                # PipeWire 1.4). Segurar a thread do pipewiresrc ~1 quadro de 60 fps
-                # antes de importar o buffer resolveu (4/4; 12 ms falha, 16 ms não).
-                # shortcut: custa ~10% de fps a 60 e é só paliativo; sai quando o
-                # runtime do Flatpak subir pro PipeWire >= 1.6.
-                pace = Gst.ElementFactory.make("identity", "pace")
-                _try_set(pace, "sleep-time", 16000)
-                front.insert(1, pace)
             # Preview embutida na GUI (preview_sink = gtk4paintablesink): o
             # GTK roda em Vulkan por padrão, e textura GL exige um bridge
             # GL->Vulkan que travou e derrubou o contexto GL da captura (ver
@@ -241,8 +230,6 @@ class CapturePipeline:
                 raw_tee = Gst.ElementFactory.make("tee", "raw-tee")
                 raw_queue = Gst.ElementFactory.make("queue", "raw-enc-queue")
                 front = [src, raw_tee, raw_queue, *post_chain, rate]
-                if enc_kind == "nvenc":
-                    front.insert(1, pace)
             caps.set_property("caps", Gst.Caps.from_string(front_caps))
 
         if enc_kind == "nvenc":

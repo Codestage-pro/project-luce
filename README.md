@@ -180,7 +180,7 @@ Para rodar local: `cp server/.env.example server/.env`, preencha, e `python serv
 <details>
 <summary><b>GPU / OpenGL</b></summary>
 
-- A interface GTK e o preview rodam em **Vulkan**; a captura com NVENC usa **OpenGL de propósito** (`nvh264enc` só aceita `GLMemory` ou `CUDAMemory`; o GStreamer 1.26 não tem entrada Vulkan para ele).
+- A interface GTK e o preview rodam em **Vulkan**; a captura com NVENC usa **OpenGL de propósito** (`nvh264enc` só aceita `GLMemory` ou `CUDAMemory`; o GStreamer não tem entrada Vulkan para ele).
 - **Um `gtk4paintablesink` no mesmo pipeline do `glupload` derruba a 2ª transmissão** com `EGL_BAD_CONTEXT`. Por isso o preview roda num pipeline próprio, ligado por `appsink`/`appsrc` (`CapturePipeline._preview_bridge`).
 - O `gst-va` rejeita o driver VA da NVIDIA ("Unsupported driver"); no Flatpak o `LIBVA_DRIVER_NAME=nvidia` só vale em hosts NVIDIA.
 
@@ -200,7 +200,7 @@ O publisher sempre manda uma faixa Opus (`pulsesrc` → funciona em PulseAudio e
 Marcar uma tag `vX.Y.Z` dispara o GitHub Actions: ele builda o Flatpak, **assina o repositório OSTree com GPG** e publica no GitHub Pages. Quem instalou pelo `.flatpakref` recebe a versão nova no próximo `flatpak update`.
 
 ```bash
-git tag v1.0.10 && git push origin main v1.0.10
+git tag v1.0.11 && git push origin main v1.0.11
 ```
 
 ---
