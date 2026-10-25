@@ -161,6 +161,9 @@ class CapturePipeline:
         # descartar não segura o ritmo. Sem ele o videorate emite exatamente
         # `fps` quadros por segundo (duplica se a tela parar de mudar).
         _try_set(rate, "drop-only", False)
+        # Sem teto, depois de um engasgo o videorate preenche o buraco inteiro de
+        # uma vez (rajada de 100 quadros/s). 100 ms cobre o ritmo normal.
+        _try_set(rate, "max-duplication-time", 100 * Gst.MSECOND)
         _try_set(rate, "skip-to-first", True)
         _try_set(rate, "qos", False)
         caps = Gst.ElementFactory.make("capsfilter", "caps")
@@ -575,6 +578,16 @@ class CapturePipeline:
 
     def set_audio_enabled(self, enabled: bool) -> None:
         self._audio_volume.set_property("mute", not enabled)
+
+    def set_bitrate(self, kbps: int) -> None:
+        """Muda a qualidade do vídeo sem reiniciar (o encoder reconfigura em voo)."""
+        enc = self.pipeline.get_by_name("enc")
+        _try_set(enc, "bitrate", kbps)
+        if self.encoder_kind == "nvenc":
+            _try_set(enc, "vbv-buffer-size", max(kbps // self._fps, 1))
+
+    def set_audio_bitrate(self, kbps: int) -> None:
+        _try_set(self.pipeline.get_by_name("audio-enc"), "bitrate", kbps * 1000)
 
     def switch_source(self, portal_fd: int, portal_node: int) -> None:
         """Troca o monitor/janela capturado sem derrubar o resto do pipeline.

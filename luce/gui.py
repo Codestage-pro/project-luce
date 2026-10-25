@@ -123,8 +123,9 @@ _ENCODER_LABELS = {"nvenc": "NVENC, GPU", "va": "VA-API, GPU", "x264": "x264, CP
 
 
 class SettingsWindow(Gtk.Window):
-    def __init__(self, parent: Gtk.Window) -> None:
+    def __init__(self, parent: Gtk.Window, on_saved=None) -> None:
         super().__init__(title="Configurações", transient_for=parent, modal=True)
+        self._on_saved = on_saved
         theme.load()
         self.set_default_size(360, 0)
         cfg = config.load()
@@ -181,6 +182,7 @@ class SettingsWindow(Gtk.Window):
 
     def _on_save(self, _button: Gtk.Button) -> None:
         cfg = config.load()
+        old = dict(cfg)
         for key, entry in self._fields.items():
             cfg[key] = entry.get_text()
         cfg["width"], cfg["height"] = _choice_value(self._resolution, (cfg["width"], cfg["height"]))
@@ -193,6 +195,8 @@ class SettingsWindow(Gtk.Window):
         cfg["audio"] = self._audio_check.get_active()
         config.save(cfg)
         self.close()
+        if self._on_saved is not None:
+            self._on_saved(old, cfg)
 
 
 class MainWindow(Gtk.ApplicationWindow):
@@ -241,7 +245,7 @@ class MainWindow(Gtk.ApplicationWindow):
         head.append(title)
         settings_btn = Gtk.Button(icon_name="emblem-system-symbolic", tooltip_text="Configurações", valign=Gtk.Align.CENTER)
         settings_btn.add_css_class("flat")
-        settings_btn.connect("clicked", lambda _b: SettingsWindow(self).present())
+        settings_btn.connect("clicked", lambda _b: SettingsWindow(self, self._on_settings_saved).present())
         head.append(settings_btn)
         root.append(head)
         root.append(Gtk.Box(css_classes=["beam"]))
@@ -385,6 +389,34 @@ class MainWindow(Gtk.ApplicationWindow):
         self._switch_btn.set_visible(not self._x11)
         enc_label = _ENCODER_LABELS[self._capture.encoder_kind]
         self._status.set_label(f"transmitindo como {name} ({enc_label})")
+
+    def _on_settings_saved(self, old: dict, new: dict) -> None:
+        """Aplica na hora o que mudou nas Configurações enquanto transmite.
+
+        Qualidade e áudio o encoder aceita em voo (sem cortar a imagem de
+        ninguém); resolução, fps, fonte de áudio e servidor mudam a cadeia
+        inteira, então a captura é refeita — o mesmo reinício da troca de tela,
+        sem pedir o seletor de novo.
+        """
+        cap = self._capture
+        if cap is None:
+            return
+        rebuild = ("width", "height", "fps", "audio_device", "base_url", "auth_password")
+        if any(old[k] != new[k] for k in rebuild):
+            self._restart_count = 0
+            self._status.set_label("aplicando as configurações…")
+            self._preview.set_paintable(None)
+            cap.stop()
+            self._capture = None
+            gc.collect()
+            GLib.timeout_add(800, self._do_restart_sharing)  # mesma folga pro driver da NVIDIA que o _on_share_error
+            return
+        if old["bitrate"] != new["bitrate"]:
+            cap.set_bitrate(new["bitrate"])
+        if old["audio_bitrate"] != new["audio_bitrate"]:
+            cap.set_audio_bitrate(new["audio_bitrate"])
+        if old["audio"] != new["audio"]:
+            cap.set_audio_enabled(new["audio"])
 
     def _on_switch_source_clicked(self, _button: Gtk.Button) -> None:
         """Troca a janela/monitor transmitido sem parar a transmissão.
