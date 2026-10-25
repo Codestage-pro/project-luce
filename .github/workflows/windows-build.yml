@@ -1,0 +1,96 @@
+name: Windows build
+
+# Monta o app para Windows (bundle portátil .zip + instalador Inno Setup) e publica como Artifact.
+# Não cria release nem tag.
+on:
+  workflow_dispatch:
+  push:
+    branches: [windows-probe]
+    paths:
+      - luce/**
+      - packaging/**
+      - .github/workflows/windows-build.yml
+
+jobs:
+  bundle:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            pacman-contrib
+            mingw-w64-ucrt-x86_64-gstreamer
+            mingw-w64-ucrt-x86_64-gst-plugins-base
+            mingw-w64-ucrt-x86_64-gst-plugins-good
+            mingw-w64-ucrt-x86_64-gst-plugins-bad
+            mingw-w64-ucrt-x86_64-gst-plugins-rs
+            mingw-w64-ucrt-x86_64-gst-plugins-ugly
+            mingw-w64-ucrt-x86_64-gst-libav
+            mingw-w64-ucrt-x86_64-gst-python
+            mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-python-gobject
+
+      - name: Monta o bundle (só o runtime de que o app precisa)
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          out=dist/LUCE
+          mkdir -p "$out"
+          tops="gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-rs gst-plugins-ugly gst-libav gst-python gtk4 python-gobject"
+          for t in $tops; do pactree -u -l "mingw-w64-ucrt-x86_64-$t"; done | sort -u > pkgs.txt
+          echo "$(wc -l < pkgs.txt) pacotes"
+          # só arquivos (pacman -Ql lista pastas com / no fim), sem o que só serve para compilar ou documentar
+          xargs -a pkgs.txt pacman -Ql | awk '{print $2}' | grep -v '/$' \
+            | grep -Ev '^/ucrt64/(include|share/(doc|man|info|gtk-doc|aclocal|gir-1\.0|bash-completion|vala|gdb|licenses|pkgconfig|cmake)|lib/(pkgconfig|cmake))/' \
+            | grep -Ev '\.(a|la|h|hpp|def|pdb)$' \
+            | grep -Ev '^/ucrt64/share/locale/' \
+            | grep -Ev '/(tests?|idlelib|turtledemo|__pycache__)/' \
+            | sed 's|^/||' | sort -u > files.txt
+          # o idioma do app é pt-BR: mantém só a tradução dele
+          xargs -a pkgs.txt pacman -Ql | awk '{print $2}' | grep -E '^/ucrt64/share/locale/pt_BR/' | grep -v '/$' | sed 's|^/||' >> files.txt
+          (cd / && tar -T "$OLDPWD/files.txt" -cf -) | tar -C "$out" -xf -
+          cp -r luce "$out/luce"
+          cp packaging/windows/luce_launcher.pyw "$out/"
+          find "$out" -name __pycache__ -type d -prune -exec rm -rf {} +
+          # o registro do GStreamer nasce no PC da pessoa (winenv.py); o do runner nunca vai junto
+          find "$out" \( -iname 'registry*.bin' -o -iname 'gst-registry*' \) -print -delete
+          test -z "$(find "$out" -iname '*registry*.bin')"
+          du -sh "$out"
+
+      - name: Testa o bundle (python do bundle, PATH limpo, sem MSYS2)
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $env:LOCALAPPDATA = "$PWD\_localapp"
+          $env:GST_PLUGIN_PATH = "C:\nao\existe"   # o winenv tem que ignorar GStreamer de fora
+          & dist\LUCE\ucrt64\bin\python.exe packaging\windows\ci_bundle_test.py dist\LUCE
+          if ($LASTEXITCODE -ne 0) { throw "teste do bundle falhou ($LASTEXITCODE)" }
+          # o launcher do atalho (pythonw): luce --help grava o uso no luce.log
+          Start-Process -Wait -FilePath dist\LUCE\ucrt64\bin\pythonw.exe -ArgumentList 'dist\LUCE\luce_launcher.pyw','--help'
+          Get-Content "$env:LOCALAPPDATA\LUCE\luce.log" -TotalCount 5
+          if (-not (Select-String -Path "$env:LOCALAPPDATA\LUCE\luce.log" -Pattern 'usage')) { throw "launcher não rodou" }
+
+      - name: Zip portátil
+        shell: pwsh
+        run: 7z a -tzip -mx=5 -bso0 dist\Luce-portable.zip .\dist\LUCE\*
+
+      - name: Instalador Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress | Out-Null
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=1.0.15-probe.${{ github.run_number }}" packaging\windows\luce.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC falhou" }
+          Get-ChildItem dist\*.exe, dist\*.zip | Format-Table Name, @{n='MB';e={[int]($_.Length/1MB)}}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: luce-windows
+          path: |
+            dist/Luce-Setup.exe
+            dist/Luce-portable.zip
+          compression-level: 0
+          retention-days: 14

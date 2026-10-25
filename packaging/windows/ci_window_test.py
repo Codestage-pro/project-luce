@@ -8,12 +8,14 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import gi
 
 gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 TITLE = "LUCE-CI-JANELA"
 
 
