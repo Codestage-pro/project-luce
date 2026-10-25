@@ -70,6 +70,9 @@ def main() -> int:
         print("pipeline de janela ok, crop", got, "áudio", mode, audio.get_property("loopback-target-pid"))
 
         # 2) a janela se mexe e muda de tamanho: o _follow_window acompanha, a saída segue fixa
+        import ctypes
+        from ctypes import wintypes
+        winsys.user32.MoveWindow.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.BOOL]
         winsys.user32.MoveWindow(hwnd, 150, 120, 500, 400, True)
         time.sleep(0.5)
         assert p._follow_window() is True
