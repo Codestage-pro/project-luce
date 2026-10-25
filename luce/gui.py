@@ -23,6 +23,10 @@ gi.require_version("GstGL", "1.0")
 gi.require_version("Gdk", "4.0")
 from gi.repository import GLib, Gdk, Gst, GstGL, Gtk
 
+# O GSK Vulkan do GTK no mesmo processo faz o glupload do NVENC importar DMA-BUF
+# preto (niri + NVIDIA: transmissão toda preta, ~60 kbps). Com GL fica normal.
+os.environ.setdefault("GSK_RENDERER", "gl")
+
 from . import config, roster, stats, theme
 from .capture_pipeline import CapturePipeline
 from .portal import PortalError, ScreenCast, screencast_available, x11_session
@@ -332,10 +336,6 @@ class MainWindow(Gtk.ApplicationWindow):
                 self._portal = None
                 return
 
-        preview_sink = Gst.ElementFactory.make("gtk4paintablesink", "preview-sink")
-        if preview_sink is not None:
-            self._preview.set_paintable(preview_sink.get_property("paintable"))
-
         try:
             self._capture = CapturePipeline(
                 whip_endpoint=config.whip_endpoint(name),
@@ -347,7 +347,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 x11_region=self._x11_region,
                 portal_fd=fd,
                 portal_node=node,
-                preview_sink=preview_sink,
+                preview_sink=self._make_preview_sink,
                 audio_enabled=cfg["audio"],
                 audio_bitrate_kbps=cfg["audio_bitrate"],
                 audio_device=cfg["audio_device"],
@@ -447,7 +447,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self._stop_sharing()
             return
 
-        self._status.set_label("reconectando…")
+        self._status.set_label("troca de tela detectada, reconectando…")
         # shortcut: não tem como perguntar ao driver da NVIDIA se o contexto
         # EGL/CUDA da sessão NVENC anterior já terminou de ser liberado — só
         # dá pra esperar. 400ms fixo não bastava mesmo na primeira tentativa
@@ -455,6 +455,12 @@ class MainWindow(Gtk.ApplicationWindow):
         # retry em vez de martelar o driver sempre no mesmo intervalo curto.
         delay = min(800 * (2 ** (self._restart_count - 1)), 3200)
         GLib.timeout_add(delay, self._do_restart_sharing)
+
+    def _make_preview_sink(self) -> Gst.Element | None:
+        sink = Gst.ElementFactory.make("gtk4paintablesink", "preview-sink")
+        if sink is not None:
+            self._preview.set_paintable(sink.get_property("paintable"))
+        return sink
 
     def _do_restart_sharing(self) -> bool:
         if self._portal is None and not self._x11:
@@ -474,10 +480,6 @@ class MainWindow(Gtk.ApplicationWindow):
                 return False
 
         cfg = config.load()
-        preview_sink = Gst.ElementFactory.make("gtk4paintablesink", "preview-sink")
-        if preview_sink is not None:
-            self._preview.set_paintable(preview_sink.get_property("paintable"))
-
         try:
             self._capture = CapturePipeline(
                 whip_endpoint=config.whip_endpoint(name),
@@ -489,7 +491,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 x11_region=self._x11_region,
                 portal_fd=fd,
                 portal_node=node,
-                preview_sink=preview_sink,
+                preview_sink=self._make_preview_sink,
                 audio_enabled=cfg["audio"],
                 audio_bitrate_kbps=cfg["audio_bitrate"],
                 audio_device=cfg["audio_device"],

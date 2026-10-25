@@ -79,7 +79,7 @@ class CapturePipeline:
         portal_fd: int | None = None,
         portal_node: int | None = None,
         preview: bool = True,
-        preview_sink: Gst.Element | None = None,
+        preview_sink=None,  # função que cria o gtk4paintablesink (ver _preview_bridge)
         audio_enabled: bool = True,
         audio_bitrate_kbps: int = 128,
         audio_device: str | None = None,
@@ -93,6 +93,7 @@ class CapturePipeline:
         self._stop_heartbeat = threading.Event()
         self._gl_display = gl_display
         self._preview_pipeline: Gst.Pipeline | None = None
+        self._preview_make = None
         self._fps = fps
         self._pattern = pattern
         self._x11 = x11
@@ -216,6 +217,17 @@ class CapturePipeline:
                 post_chain = [post]
                 front_caps = f"video/x-raw(memory:DMABuf),{size_caps}framerate={fps}/1"
             front = [src, *post_chain, rate]
+            if enc_kind == "nvenc":
+                # No niri + NVIDIA o quadro DMA-BUF chega antes de o compositor
+                # terminar de desenhar nele, e do 2º quadro em diante o glupload
+                # lê preto (flaky: ~80% das capturas no Flatpak, GStreamer 1.26 /
+                # PipeWire 1.4). Segurar a thread do pipewiresrc ~1 quadro de 60 fps
+                # antes de importar o buffer resolveu (4/4; 12 ms falha, 16 ms não).
+                # shortcut: custa ~10% de fps a 60 e é só paliativo; sai quando o
+                # runtime do Flatpak subir pro PipeWire >= 1.6.
+                pace = Gst.ElementFactory.make("identity", "pace")
+                _try_set(pace, "sleep-time", 16000)
+                front.insert(1, pace)
             # Preview embutida na GUI (preview_sink = gtk4paintablesink): o
             # GTK roda em Vulkan por padrão, e textura GL exige um bridge
             # GL->Vulkan que travou e derrubou o contexto GL da captura (ver
@@ -229,6 +241,8 @@ class CapturePipeline:
                 raw_tee = Gst.ElementFactory.make("tee", "raw-tee")
                 raw_queue = Gst.ElementFactory.make("queue", "raw-enc-queue")
                 front = [src, raw_tee, raw_queue, *post_chain, rate]
+                if enc_kind == "nvenc":
+                    front.insert(1, pace)
             caps.set_property("caps", Gst.Caps.from_string(front_caps))
 
         if enc_kind == "nvenc":
@@ -436,6 +450,8 @@ class CapturePipeline:
 
     def start(self) -> bool:
         self.pipeline.set_state(Gst.State.PLAYING)
+        if self._preview_make is not None:
+            self._start_preview()
         threading.Thread(target=self._heartbeat_loop, daemon=True).start()
         # O contador vive na sonda _restamp, que só existe no caminho do
         # portal; sem ela o relatório imprimiria "0 frames" pra sempre e
@@ -492,11 +508,13 @@ class CapturePipeline:
             self._preview_pipeline.set_state(Gst.State.NULL)
             self._preview_pipeline = None
 
-    def _preview_bridge(self, preview_sink: Gst.Element) -> Gst.Element:
+    def _preview_bridge(self, make_sink) -> Gst.Element:
         """Devolve o appsink que entra no pipeline; o gtk4paintablesink roda num pipeline só dele.
 
         No mesmo pipeline do glupload o sink do GTK compartilha o contexto GL e,
         da segunda transmissão em diante, o glupload leva EGL_BAD_CONTEXT.
+        O sink só nasce em start(), com a captura já no ar: criado antes, o
+        gtk4paintablesink faz o glupload importar DMA-BUF preto (niri + NVIDIA).
         """
         appsink = Gst.ElementFactory.make("appsink", "preview-out")
         appsink.set_property("emit-signals", True)
@@ -505,15 +523,22 @@ class CapturePipeline:
         appsrc = Gst.ElementFactory.make("appsrc", "preview-in")
         appsrc.set_property("is-live", True)
         appsrc.set_property("format", Gst.Format.TIME)
+        appsink.connect("new-sample", lambda sink: appsrc.emit("push-sample", sink.emit("pull-sample")))
+        self._preview_make = (make_sink, appsrc)
+        return appsink
+
+    def _start_preview(self) -> None:
+        make_sink, appsrc = self._preview_make
+        preview_sink = make_sink()
+        if preview_sink is None:  # sem o plugin: o appsink descarta os quadros
+            return
         _try_set(preview_sink, "sync", False)
         pipeline = Gst.Pipeline.new("luce-preview")
         pipeline.add(appsrc)
         pipeline.add(preview_sink)
         appsrc.link(preview_sink)
-        appsink.connect("new-sample", lambda sink: appsrc.emit("push-sample", sink.emit("pull-sample")))
         pipeline.set_state(Gst.State.PLAYING)
         self._preview_pipeline = pipeline
-        return appsink
 
     def set_audio_enabled(self, enabled: bool) -> None:
         self._audio_volume.set_property("mute", not enabled)
