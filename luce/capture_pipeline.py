@@ -125,6 +125,7 @@ class CapturePipeline:
         audio_enabled: bool = True,
         audio_bitrate_kbps: int = 128,
         audio_device: str | None = None,
+        mute_app: str = "",
         auth_token: str | None = None,
         on_pipeline_error=None,
         gl_display: GstGL.GLDisplay | None = None,
@@ -441,16 +442,17 @@ class CapturePipeline:
             _try_set(prev_queue, "max-size-buffers", 2)
             _try_set(prev_queue, "leaky", "downstream")
             if preview_sink is not None:
-                prev_tail = [self._preview_bridge(preview_sink)]
+                conv = Gst.ElementFactory.make("videoconvert", "preview-convert")
+                rgba = Gst.ElementFactory.make("capsfilter", "preview-rgba")
+                rgba.set_property("caps", Gst.Caps.from_string("video/x-raw,format=RGBA"))
+                prev_tail = [conv, rgba, self._preview_bridge(preview_sink)]
                 if self._d3d11:
                     # a GTK lê memória comum: baixa da VRAM só o ramo da preview, a 15 fps
-                    # shortcut: no tamanho nativo (4K = 12 MB/quadro); escalar na GPU quando doer.
                     rate15 = Gst.ElementFactory.make("videorate", "preview-rate")
                     _try_set(rate15, "drop-only", True)
                     cap15 = Gst.ElementFactory.make("capsfilter", "preview-rate-caps")
                     cap15.set_property("caps", Gst.Caps.from_string("video/x-raw(memory:D3D11Memory),framerate=15/1"))
-                    prev_tail = [rate15, cap15, Gst.ElementFactory.make("d3d11download", "preview-download"),
-                                 Gst.ElementFactory.make("videoconvert", "preview-convert"), *prev_tail]
+                    prev_tail = [rate15, cap15, Gst.ElementFactory.make("d3d11download", "preview-download"), *prev_tail]
             elif sysmem:
                 prev_tail = [
                     Gst.ElementFactory.make("videoconvert", "preview-convert"),
@@ -511,10 +513,13 @@ class CapturePipeline:
             if audio_device:  # microfone escolhido nas Configurações
                 _try_set(audio_src, "device", audio_device)
             else:
-                # Áudio do sistema, menos o do próprio LUCE: senão a voz de quem assiste volta pra transmissão.
-                # Process Loopback exige Windows 10 build 20348+ (ou 11); antes disso o wasapi2src falha ao abrir.
+                # Áudio do sistema: se houver app a silenciar (ex: Discord), exclui a árvore de processos dele.
+                target_pid = winsys.find_process_pid(mute_app) if mute_app else None
                 if self._window:  # só o áudio do app da janela (e dos filhos dele)
                     _set_loopback(audio_src, "include-process-tree", winsys.window_pid(self._window))
+                elif target_pid:
+                    _set_loopback(audio_src, "exclude-process-tree", target_pid)
+                    print(f"silenciando {mute_app} (PID {target_pid}) na transmissão", flush=True)
                 else:
                     _set_loopback(audio_src, "exclude-process-tree", os.getpid())
             _try_set(audio_src, "low-latency", True)
@@ -733,9 +738,16 @@ class CapturePipeline:
             return
         _try_set(preview_sink, "sync", False)
         pipeline = Gst.Pipeline.new("luce-preview")
+        conv = Gst.ElementFactory.make("videoconvert", "preview-pipe-conv")
+        rgba = Gst.ElementFactory.make("capsfilter", "preview-pipe-rgba")
+        rgba.set_property("caps", Gst.Caps.from_string("video/x-raw,format=RGBA"))
         pipeline.add(appsrc)
+        pipeline.add(conv)
+        pipeline.add(rgba)
         pipeline.add(preview_sink)
-        appsrc.link(preview_sink)
+        appsrc.link(conv)
+        conv.link(rgba)
+        rgba.link(preview_sink)
         pipeline.set_state(Gst.State.PLAYING)
         self._preview_pipeline = pipeline
 

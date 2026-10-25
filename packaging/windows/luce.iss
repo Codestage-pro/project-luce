@@ -35,8 +35,8 @@ Source: "..\..\dist\LUCE\*"; DestDir: "{app}"; Flags: recursesubdirs createallsu
 Source: "..\config.toml"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\Project LUCE"; Filename: "{app}\ucrt64\bin\pythonw.exe"; Parameters: """{app}\luce_launcher.pyw"""; WorkingDir: "{app}"; IconFilename: "{app}\luce.ico"; AppUserModelID: "pro.codestage.Luce"
-Name: "{autodesktop}\Project LUCE"; Filename: "{app}\ucrt64\bin\pythonw.exe"; Parameters: """{app}\luce_launcher.pyw"""; WorkingDir: "{app}"; IconFilename: "{app}\luce.ico"; AppUserModelID: "pro.codestage.Luce"; Tasks: desktopicon
+Name: "{autoprograms}\Project LUCE"; Filename: "{app}\ucrt64\bin\luce.exe"; Parameters: """{app}\luce_launcher.pyw"""; WorkingDir: "{app}"; IconFilename: "{app}\luce.ico"; AppUserModelID: "pro.codestage.Luce"
+Name: "{autodesktop}\Project LUCE"; Filename: "{app}\ucrt64\bin\luce.exe"; Parameters: """{app}\luce_launcher.pyw"""; WorkingDir: "{app}"; IconFilename: "{app}\luce.ico"; AppUserModelID: "pro.codestage.Luce"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Criar um atalho na área de trabalho"; Flags: unchecked
@@ -46,4 +46,4 @@ Name: "desktopicon"; Description: "Criar um atalho na área de trabalho"; Flags:
 Type: filesandordirs; Name: "{localappdata}\LUCE"
 
 [Run]
-Filename: "{app}\ucrt64\bin\pythonw.exe"; Parameters: """{app}\luce_launcher.pyw"""; WorkingDir: "{app}"; Description: "Abrir o Project LUCE"; Flags: nowait postinstall
+Filename: "{app}\ucrt64\bin\luce.exe"; Parameters: """{app}\luce_launcher.pyw"""; WorkingDir: "{app}"; Description: "Abrir o Project LUCE"; Flags: nowait postinstall

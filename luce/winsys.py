@@ -53,7 +53,14 @@ def compute_crop(win: Rect, mon: Rect) -> tuple[int, int, int, int]:
 if sys.platform == "win32":
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     dwmapi = ctypes.WinDLL("dwmapi")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _H, _B = wintypes.HANDLE, wintypes.BOOL
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
     for _fn, _args, _res in (
         ("IsWindow", [_H], _B), ("IsWindowVisible", [_H], _B), ("IsIconic", [_H], _B),
         ("ShowWindow", [_H, ctypes.c_int], _B), ("SetForegroundWindow", [_H], _B),
@@ -179,3 +186,52 @@ if sys.platform == "win32":
 
         user32.EnumWindows(visit, 0)
         return found
+
+    def process_name(pid: int) -> str:
+        """Nome do executável do processo (ex: 'Discord.exe'), ou '' se inacessível."""
+        hproc = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not hproc:
+            return ""
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            size = wintypes.DWORD(1024)
+            if kernel32.QueryFullProcessImageNameW(hproc, 0, buf, ctypes.byref(size)):
+                return Path(buf.value).name
+            return ""
+        finally:
+            kernel32.CloseHandle(hproc)
+
+    def find_process_pid(name: str) -> int | None:
+        """Acha o PID de um app pelo nome do executável (ex: 'Discord') ou título da janela."""
+        target = name.lower().removesuffix(".exe")
+        for hwnd, title in list_windows():
+            try:
+                pid = window_pid(hwnd)
+                pname = process_name(pid).lower().removesuffix(".exe")
+                if pname == target or target in title.lower():
+                    return pid
+            except OSError:
+                pass
+        return None
+else:
+    def process_name(pid: int) -> str:
+        return ""
+
+    def find_process_pid(name: str) -> int | None:
+        return None
+
+    def apply_icon() -> None:
+        pass
+
+    def list_monitors() -> list[tuple[int, str]]:
+        return []
+
+    def list_windows() -> list[tuple[int, str]]:
+        return []
+
+    def window_pid(hwnd: int) -> int:
+        return 0
+
+    def is_window(hwnd: int) -> bool:
+        return False
+

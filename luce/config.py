@@ -28,6 +28,7 @@ DEFAULTS: dict[str, Any] = {
     "audio": True,
     "audio_bitrate": 128,  # kbps, Opus
     "audio_device": "",  # dispositivo de entrada (pulsesrc device); vazio = padrão do sistema
+    "mute_app": "",  # aplicativo a silenciar na transmissão (ex: Discord); vazio = nenhum
     "auth_password": "",  # senha do grupo (bdk) — BDK_PASSWORD do servidor
 }
 

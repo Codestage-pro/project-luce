@@ -34,7 +34,7 @@ if not WINDOWS:
 from . import config, roster, stats, theme
 from .capture_pipeline import CapturePipeline
 if WINDOWS:
-    from . import updater
+    from . import updater, winsys
     from .winsys import apply_icon, is_window, list_monitors, list_windows
 else:  # o portal usa dbus, que não existe no Windows
     from .portal import PortalError, ScreenCast, screencast_available, x11_session
@@ -122,6 +122,38 @@ def _list_audio_sources() -> list[tuple[str, str]]:
     return devices
 
 
+def _list_mutable_apps() -> list[tuple[str, str]]:
+    """[(valor_cfg, label_exibicao)]. Primeiro é sempre ('', 'Nenhum')."""
+    apps: list[tuple[str, str]] = [("", "Nenhum")]
+    seen: set[str] = set()
+    if WINDOWS:
+        try:
+            for hwnd, title in list_windows():
+                pname = winsys.process_name(winsys.window_pid(hwnd))
+                stem = Path(pname).stem if pname else title.split(" - ")[-1].strip()
+                if stem and stem.lower() not in seen:
+                    seen.add(stem.lower())
+                    apps.append((stem, f"{stem} ({title[:30]}…)" if len(title) > 30 else f"{stem} ({title})"))
+        except Exception:
+            pass
+    else:  # Linux: pega apps produzindo áudio via pw-dump
+        try:
+            import json
+
+            out = subprocess.run(["pw-dump"], capture_output=True, text=True, check=True, timeout=2).stdout
+            for node in json.loads(out):
+                props = (node.get("info") or {}).get("props") or {}
+                if props.get("media.class") != "Stream/Output/Audio":
+                    continue
+                app = props.get("application.name") or props.get("node.name")
+                if app and app.lower() not in seen:
+                    seen.add(app.lower())
+                    apps.append((app, app))
+        except Exception:
+            pass
+    return apps
+
+
 def _choice_value(pairs: list[tuple[Gtk.ToggleButton, object]], fallback):
     return next((option for btn, option in pairs if btn.get_active()), fallback)
 
@@ -183,12 +215,27 @@ class SettingsWindow(Gtk.Window):
         self._audio_dropdown.set_selected(sel_idx)
         grid.attach(self._audio_dropdown, 1, next_row + 4, 1, 1)
 
+        grid.attach(Gtk.Label(label="Silenciar app", tooltip_text="Silencia o aplicativo na transmissão (evita eco do Discord)", xalign=0), 0, next_row + 5, 1, 1)
+        self._mute_apps = _list_mutable_apps()
+        current_mute = cfg.get("mute_app", "")
+        if current_mute and not any(val.lower() == current_mute.lower() for val, _ in self._mute_apps):
+            self._mute_apps.append((current_mute, f"{current_mute} (não aberto)"))
+        mute_labels = [desc for _val, desc in self._mute_apps]
+        self._mute_dropdown = Gtk.DropDown.new_from_strings(mute_labels)
+        mute_idx = 0
+        for idx, (val, _desc) in enumerate(self._mute_apps):
+            if val.lower() == current_mute.lower():
+                mute_idx = idx
+                break
+        self._mute_dropdown.set_selected(mute_idx)
+        grid.attach(self._mute_dropdown, 1, next_row + 5, 1, 1)
+
         self._audio_check = Gtk.CheckButton(label="Transmitir áudio", active=cfg["audio"])
-        grid.attach(self._audio_check, 0, next_row + 5, 2, 1)
+        grid.attach(self._audio_check, 0, next_row + 6, 2, 1)
 
         save = Gtk.Button(label="Salvar", css_classes=["go"])
         save.connect("clicked", self._on_save)
-        grid.attach(save, 0, next_row + 6, 2, 1)
+        grid.attach(save, 0, next_row + 7, 2, 1)
 
     def _on_save(self, _button: Gtk.Button) -> None:
         cfg = config.load()
@@ -202,6 +249,9 @@ class SettingsWindow(Gtk.Window):
         sel_idx = self._audio_dropdown.get_selected()
         if 0 <= sel_idx < len(self._audio_sources):
             cfg["audio_device"] = self._audio_sources[sel_idx][0]
+        mute_idx = self._mute_dropdown.get_selected()
+        if 0 <= mute_idx < len(self._mute_apps):
+            cfg["mute_app"] = self._mute_apps[mute_idx][0]
         cfg["audio"] = self._audio_check.get_active()
         config.save(cfg)
         self.close()
@@ -390,6 +440,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 preview_sink=self._make_preview_sink,
                 audio_enabled=cfg["audio"],
                 audio_bitrate_kbps=cfg["audio_bitrate"],
+                mute_app=cfg.get("mute_app", ""),
                 audio_device=cfg["audio_device"],
                 auth_token=config.auth_token(),
                 on_pipeline_error=self._on_share_error,
@@ -573,6 +624,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 preview_sink=self._make_preview_sink,
                 audio_enabled=cfg["audio"],
                 audio_bitrate_kbps=cfg["audio_bitrate"],
+                mute_app=cfg.get("mute_app", ""),
                 audio_device=cfg["audio_device"],
                 auth_token=config.auth_token(),
                 on_pipeline_error=self._on_share_error,
