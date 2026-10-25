@@ -23,6 +23,8 @@ log = logging.getLogger("luce.capture")
 
 # O servidor tira do roster quem passa de 30s sem avisar (queda sem DELETE).
 HEARTBEAT_SECONDS = 10
+# O WHIP normal conecta em ~1 s; passou disso sem sair do "new", a negociação não começou.
+HANDSHAKE_SECONDS = 6
 
 Gst.init(None)
 
@@ -100,6 +102,7 @@ class CapturePipeline:
         self._src_width: int | None = None
         self._src_height: int | None = None
         self._report_id: int | None = None
+        self._handshake_id: int | None = None
         self._probe_id: int | None = None
         self.pipeline = Gst.Pipeline.new("luce-capture")
 
@@ -133,6 +136,10 @@ class CapturePipeline:
             src.set_property("do-timestamp", True)
             _try_set(src, "provide-clock", False)
             _try_set(src, "client-name", "ProjectLUCE")
+            # O compositor só manda quadro quando a tela muda (niri, GNOME...). Tela parada =
+            # nenhum quadro = encoder sem IDR: 0 kbps pra quem transmite e tela preta pra quem
+            # entra depois. Reenviar o último quadro mantém o fluxo (o videorate corta o excesso).
+            _try_set(src, "keepalive-time", max(1000 // fps, 1))
             # shortcut: capturando uma janela específica, se ela for redimensionada
             # no meio da transmissão o pipewiresrc derruba o pipeline com
             # "gst_video_frame_map_id: assertion 'info->width <= meta->width'
@@ -435,10 +442,25 @@ class CapturePipeline:
         # pareceria que a captura (ximagesrc/--pattern) está morta.
         if self._probe_id is not None:
             self._report_id = GLib.timeout_add_seconds(2, self._report_frames)
+        self._handshake_id = GLib.timeout_add_seconds(HANDSHAKE_SECONDS, self._check_handshake)
+        return False
+
+    def _check_handshake(self) -> bool:
+        # Corrida dentro do whipsink: às vezes o webrtcbin nunca dispara a oferta e fica em
+        # "new" pra sempre, com o app dizendo "transmitindo" e 0 pacotes saindo. Reiniciar resolve.
+        self._handshake_id = None
+        webrtc = self.pipeline.get_by_name("whip-webrtcbin")
+        state = webrtc.get_property("connection-state").value_nick if webrtc is not None else "connected"
+        if state in ("new", "failed") and self._on_pipeline_error is not None:
+            log.warning("whip: conexão em '%s' após %ss, reiniciando", state, HANDSHAKE_SECONDS)
+            self._on_pipeline_error("a conexão com o servidor não iniciou")
         return False
 
     def stop(self) -> None:
         self._stop_heartbeat.set()
+        if self._handshake_id is not None:
+            GLib.source_remove(self._handshake_id)
+            self._handshake_id = None
         if self._report_id is not None:
             GLib.source_remove(self._report_id)
             self._report_id = None

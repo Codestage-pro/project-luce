@@ -447,7 +447,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self._stop_sharing()
             return
 
-        self._status.set_label("troca de tela detectada, reconectando…")
+        self._status.set_label("reconectando…")
         # shortcut: não tem como perguntar ao driver da NVIDIA se o contexto
         # EGL/CUDA da sessão NVENC anterior já terminou de ser liberado — só
         # dá pra esperar. 400ms fixo não bastava mesmo na primeira tentativa
