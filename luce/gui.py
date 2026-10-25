@@ -12,6 +12,7 @@ from __future__ import annotations
 import gc
 import subprocess
 import time
+import urllib.error
 
 import gi
 
@@ -268,6 +269,17 @@ class MainWindow(Gtk.ApplicationWindow):
         cfg = config.load()
         cfg["name"] = name
         config.save(cfg)
+        # Senha errada/vazia só aparecia como "erro geral nos recursos" do whipsink;
+        # o roster responde 401 na hora e dá pra dizer o motivo de verdade.
+        try:
+            roster.list_paths(cfg["base_url"], config.auth_token())
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                self._status.set_label("senha do grupo errada ou vazia: confira em Configurações")
+                return
+        except Exception as exc:
+            self._status.set_label(f"servidor não respondeu: {exc}")
+            return
 
         self._restart_count = 0
         fd = node = None
