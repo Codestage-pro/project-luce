@@ -1,21 +1,26 @@
 name: Windows build
 
-# Monta o app para Windows (bundle portátil .zip + instalador Inno Setup) e publica como Artifact.
-# Não cria release nem tag.
+# Monta o app para Windows (bundle portátil .zip + instalador Inno Setup).
+#  - push na windows-probe: atualiza a Prerelease "windows-test" (download direto, sem login)
+#  - tag v*: anexa o Luce-Setup.exe e o Luce-portable.zip na Release oficial (a do Flatpak)
 on:
   workflow_dispatch:
   push:
     branches: [windows-probe]
+    tags: ["v*"]
     paths:
       - luce/**
       - packaging/**
       - .github/workflows/windows-build.yml
 
+permissions:
+  contents: write  # criar/atualizar a Release e mover a tag windows-test
+
 jobs:
   bundle:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: msys2/setup-msys2@v2
         with:
@@ -84,15 +89,54 @@ jobs:
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress | Out-Null
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=1.0.15-probe.${{ github.run_number }}" packaging\windows\luce.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('1.0.15-probe.{0}', github.run_number) }}" packaging\windows\luce.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC falhou" }
           Get-ChildItem dist\*.exe, dist\*.zip | Format-Table Name, @{n='MB';e={[int]($_.Length/1MB)}}
 
-      - uses: actions/upload-artifact@v4
+      # Artifacts separados (o Setup sozinho tem ~290 MB); o caminho normal de download são as Releases
+      - uses: actions/upload-artifact@v6
         with:
-          name: luce-windows
-          path: |
-            dist/Luce-Setup.exe
-            dist/Luce-portable.zip
+          name: Luce-Setup-exe
+          path: dist/Luce-Setup.exe
           compression-level: 0
           retention-days: 14
+      - uses: actions/upload-artifact@v6
+        with:
+          name: Luce-portable
+          path: dist/Luce-portable.zip
+          compression-level: 0
+          retention-days: 14
+
+      # Tag v*: anexa na Release oficial (cria se o workflow do Flatpak ainda não criou)
+      - name: Anexa na Release oficial
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dist/Luce-Setup.exe
+            dist/Luce-portable.zip
+          fail_on_unmatched_files: true
+
+      # Branch: a tag windows-test anda para o commit deste build e a Prerelease é atualizada no lugar
+      - name: Move a tag windows-test
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        shell: pwsh
+        run: |
+          git tag -f windows-test ${{ github.sha }}
+          git push -f origin windows-test
+      - name: Atualiza a Prerelease windows-test
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: windows-test
+          name: Windows (teste)
+          body: |
+            Build de teste do app para Windows, gerado a cada push na branch `windows-probe`.
+            Baixe o `Luce-Setup.exe` (instalador) ou o `Luce-portable.zip` (sem instalar).
+            Commit: ${{ github.sha }}
+          prerelease: true
+          make_latest: "false"
+          files: |
+            dist/Luce-Setup.exe
+            dist/Luce-portable.zip
+          fail_on_unmatched_files: true
