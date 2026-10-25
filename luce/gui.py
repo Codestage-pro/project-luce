@@ -22,7 +22,7 @@ gi.require_version("GstGL", "1.0")
 gi.require_version("Gdk", "4.0")
 from gi.repository import GLib, Gdk, Gst, GstGL, Gtk
 
-from . import config, roster, stats
+from . import config, roster, stats, theme
 from .capture_pipeline import CapturePipeline
 from .portal import PortalError, ScreenCast, screencast_available, x11_session
 from .viewer import ViewerWindow
@@ -118,6 +118,7 @@ _ENCODER_LABELS = {"nvenc": "NVENC, GPU", "va": "VA-API, GPU", "x264": "x264, CP
 class SettingsWindow(Gtk.Window):
     def __init__(self, parent: Gtk.Window) -> None:
         super().__init__(title="Configurações", transient_for=parent, modal=True)
+        theme.load()
         self.set_default_size(360, 0)
         cfg = config.load()
         grid = Gtk.Grid(column_spacing=8, row_spacing=8, margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
@@ -167,7 +168,7 @@ class SettingsWindow(Gtk.Window):
         self._audio_check = Gtk.CheckButton(label="Transmitir áudio", active=cfg["audio"])
         grid.attach(self._audio_check, 0, next_row + 5, 2, 1)
 
-        save = Gtk.Button(label="Salvar")
+        save = Gtk.Button(label="Salvar", css_classes=["go"])
         save.connect("clicked", self._on_save)
         grid.attach(save, 0, next_row + 6, 2, 1)
 
@@ -190,7 +191,8 @@ class SettingsWindow(Gtk.Window):
 class MainWindow(Gtk.ApplicationWindow):
     def __init__(self, app: Gtk.Application) -> None:
         super().__init__(application=app, title="Project LUCE")
-        self.set_default_size(360, 420)
+        theme.load()
+        self.set_default_size(380, 580)
 
         self._capture: CapturePipeline | None = None
         self._portal: ScreenCast | None = None
@@ -215,41 +217,57 @@ class MainWindow(Gtk.ApplicationWindow):
         # EGL_BAD_CONTEXT — ver comentário em CapturePipeline._on_need_context.
         self._gl_display = GstGL.GLDisplay.new()
 
-        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin_top=14, margin_bottom=14, margin_start=14, margin_end=14)
         self.set_child(root)
 
-        top = Gtk.Box(spacing=8)
-        root.append(top)
+        # cabeçalho: logo, nome e o feixe de luz (vira magenta e respira no ar)
+        head = Gtk.Box(spacing=10)
+        if Gtk.IconTheme.get_for_display(Gdk.Display.get_default()).has_icon("pro.codestage.Luce"):
+            head.append(Gtk.Image(icon_name="pro.codestage.Luce", pixel_size=40))
+        title = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True)
+        title.append(Gtk.Label(label="LUCE", xalign=0, css_classes=["wordmark"]))
+        title.append(Gtk.Label(label="sua tela, ao vivo, com a galera", xalign=0, css_classes=["tagline"]))
+        head.append(title)
+        settings_btn = Gtk.Button(icon_name="emblem-system-symbolic", tooltip_text="Configurações", valign=Gtk.Align.CENTER)
+        settings_btn.add_css_class("flat")
+        settings_btn.connect("clicked", lambda _b: SettingsWindow(self).present())
+        head.append(settings_btn)
+        root.append(head)
+        root.append(Gtk.Box(css_classes=["beam"]))
+
         cfg = config.load()
         self._name_entry = Gtk.Entry(text=cfg["name"], placeholder_text="seu nome")
-        top.append(self._name_entry)
-        settings_btn = Gtk.Button(label="Configurações")
-        settings_btn.connect("clicked", lambda _b: SettingsWindow(self).present())
+        root.append(self._name_entry)
         if not cfg["auth_password"]:  # primeira abertura: sem senha do grupo nada conecta
             GLib.idle_add(SettingsWindow(self).present)  # present() devolve None: roda uma vez
-        top.append(settings_btn)
 
         share_row = Gtk.Box(spacing=8)
         root.append(share_row)
-        self._share_btn = Gtk.Button(label="Transmitir")
+        self._share_btn = Gtk.Button(label="Transmitir", hexpand=True, css_classes=["go"])
         self._share_btn.connect("clicked", self._on_share_clicked)
         share_row.append(self._share_btn)
         self._switch_btn = Gtk.Button(label="Trocar tela", visible=False)
         self._switch_btn.connect("clicked", self._on_switch_source_clicked)
         share_row.append(self._switch_btn)
 
-        self._status = Gtk.Label(label="", xalign=0)
-        root.append(self._status)
-        self._stats_label = Gtk.Label(label="", xalign=0)
-        self._stats_label.add_css_class("monospace")
+        status_pill = Gtk.Box(spacing=10, css_classes=["status"])
+        status_pill.append(Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["status-dot"]))
+        self._status = Gtk.Label(label="pronto para transmitir", xalign=0, wrap=True, hexpand=True)
+        status_pill.append(self._status)
+        root.append(status_pill)
+        self._stats_label = Gtk.Label(label="", xalign=0, css_classes=["monospace", "stats"])
         root.append(self._stats_label)
 
         self._preview = Gtk.Picture(hexpand=True, vexpand=True)
         self._preview.set_content_fit(Gtk.ContentFit.CONTAIN)
-        root.append(self._preview)
+        hint = Gtk.Label(label="A prévia da sua tela aparece aqui", css_classes=["stage-hint"])
+        self._preview.connect("notify::paintable", lambda p, _: hint.set_visible(p.get_paintable() is None))
+        stage = Gtk.Overlay(child=self._preview, css_classes=["stage"], overflow=Gtk.Overflow.HIDDEN)
+        stage.add_overlay(hint)
+        root.append(stage)
 
-        root.append(Gtk.Label(label="Quem está no ar:", xalign=0))
-        self._roster_box = Gtk.ListBox()
+        root.append(Gtk.Label(label="No ar agora", xalign=0, css_classes=["section"]))
+        self._roster_box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
         root.append(self._roster_box)
 
         self._refresh_roster()
@@ -350,6 +368,9 @@ class MainWindow(Gtk.ApplicationWindow):
             self._status.set_label(f"não deu pra transmitir: {exc}")
             return
         self._share_btn.set_label("Parar transmissão")
+        self._share_btn.remove_css_class("go")
+        self._share_btn.add_css_class("stop")
+        self.add_css_class("live")
         # Trocar de tela pede uma sessão nova do portal; no X11 cru a fonte é
         # sempre a tela inteira, então o botão não teria o que fazer.
         self._switch_btn.set_visible(not self._x11)
@@ -530,6 +551,9 @@ class MainWindow(Gtk.ApplicationWindow):
         # com o antigo ainda vivo (EGL_BAD_CONTEXT na NVIDIA).
         gc.collect()
         self._share_btn.set_label("Transmitir")
+        self._share_btn.remove_css_class("stop")
+        self._share_btn.add_css_class("go")
+        self.remove_css_class("live")
         self._switch_btn.set_visible(False)
 
     # --- assistir ---
@@ -619,9 +643,13 @@ class MainWindow(Gtk.ApplicationWindow):
                 Gtk.Label(label=f"servidor não respondeu: {exc}", xalign=0, wrap=True)
             )
             return True
+        if not names:
+            self._roster_box.append(Gtk.Label(label="Ninguém no ar. Que tal abrir a sala?", xalign=0, margin_top=6, css_classes=["dim"]))
         for name in names:
-            row = Gtk.Box(spacing=8, margin_top=4, margin_bottom=4, margin_start=4, margin_end=4)
+            row = Gtk.Box(spacing=10, margin_top=6, margin_bottom=6, margin_start=6, margin_end=6)
+            row.append(Gtk.Label(label=name[:1].upper(), css_classes=["avatar"], width_chars=2))
             row.append(Gtk.Label(label=name, xalign=0, hexpand=True))
+            row.append(Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["on-air"]))
             watch = self._watches.get(name)
             button = Gtk.Button(label="Parar" if watch is not None else "Assistir")
             button.connect("clicked", lambda _b, n=name, btn=button: self._toggle_watch(n, btn))
