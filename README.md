@@ -200,7 +200,7 @@ O publisher sempre manda uma faixa Opus (`pulsesrc` → funciona em PulseAudio e
 Marcar uma tag `vX.Y.Z` dispara o GitHub Actions: ele builda o Flatpak, **assina o repositório OSTree com GPG** e publica no GitHub Pages. Quem instalou pelo `.flatpakref` recebe a versão nova no próximo `flatpak update`.
 
 ```bash
-git tag v1.0.5 && git push origin main v1.0.5
+git tag v1.0.6 && git push origin main v1.0.6
 ```
 
 ---
