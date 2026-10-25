@@ -41,6 +41,7 @@ class _Tile(Gtk.Overlay):
         super().__init__(hexpand=True, vexpand=True)
         self.name = name
         self._hide_id = 0
+        self._last_xy: tuple[float, float] | None = None
         self.add_css_class("luce-tile")
         self.set_size_request(320, 180)
         self.set_child(Gtk.Picture(paintable=paintable, keep_aspect_ratio=True, hexpand=True, vexpand=True))
@@ -76,7 +77,7 @@ class _Tile(Gtk.Overlay):
         self.add_overlay(self._revealer)
 
         motion = Gtk.EventControllerMotion()
-        motion.connect("motion", lambda *_: self._show_bar())
+        motion.connect("motion", self._on_motion)
         motion.connect("leave", lambda *_: self._hide_bar())
         self.add_controller(motion)
         click = Gtk.GestureClick()
@@ -89,6 +90,14 @@ class _Tile(Gtk.Overlay):
 
     def set_focused(self, focused: bool) -> None:
         self._full.set_icon_name("view-restore-symbolic" if focused else "view-fullscreen-symbolic")
+
+    def _on_motion(self, _ctrl, x: float, y: float) -> None:
+        # O compositor reenvia "motion" com o mesmo ponto (a imagem muda, a
+        # grade se reorganiza): sem este filtro a barra e o cursor reaparecem
+        # sozinhos e nunca somem com o mouse parado em cima.
+        if (x, y) != self._last_xy:
+            self._last_xy = (x, y)
+            self._show_bar()
 
     def _show_bar(self) -> None:
         self._revealer.set_reveal_child(True)

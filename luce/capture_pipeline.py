@@ -156,7 +156,11 @@ class CapturePipeline:
             # é a reconexão com retry da Fase 4 do README que resolveria de verdade.
 
         rate = Gst.ElementFactory.make("videorate", "rate")
-        _try_set(rate, "drop-only", True)
+        # drop-only deixava passar de 60 a 100 quadros/s (e 12 Mbps com 8000 de
+        # alvo): o portal entrega na taxa do monitor com PTS irregular, e só
+        # descartar não segura o ritmo. Sem ele o videorate emite exatamente
+        # `fps` quadros por segundo (duplica se a tela parar de mudar).
+        _try_set(rate, "drop-only", False)
         _try_set(rate, "skip-to-first", True)
         _try_set(rate, "qos", False)
         caps = Gst.ElementFactory.make("capsfilter", "caps")

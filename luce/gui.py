@@ -214,6 +214,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self._last_stats: dict[str, dict] = {}
         self._last_enc: tuple[object, int, float] | None = None  # (captura, quadros codificados, instante) da leitura anterior
         self._ping_tick = 0
+        self._fps_shown = 0.0
+        self._missed: dict[str, int] = {}
         self._watch_stats: dict[str, Gtk.Label] = {}
         # Captura sem portal (ximagesrc): decidido a cada "Transmitir", porque
         # o backend do portal pode ser instalado com o app já aberto.
@@ -647,9 +649,13 @@ class MainWindow(Gtk.ApplicationWindow):
         cap = self._capture
         if cap is not None and cap.encoded_size is not None:
             now = (cap, cap.encoded_frames, time.monotonic())
-            before, self._last_enc = self._last_enc, now
-            # captura nova (reinício) zera o contador: sem leitura anterior válida
-            fps = (now[1] - before[1]) / (now[2] - before[2]) if before and before[0] is cap else 0.0
+            before = self._last_enc
+            # janela de ~3 s: a de 1 s oscila ±5 fps só pelo ritmo de entrega dos quadros
+            if before is None or before[0] is not cap or now[2] - before[2] > 3:
+                self._last_enc, self._fps_shown = now, (
+                    (now[1] - before[1]) / (now[2] - before[2]) if before and before[0] is cap else 0.0
+                )
+            fps = self._fps_shown
             w, h = cap.encoded_size
             line += f" · {w}×{h} · {fps:.0f} fps"
         self._stats_label.set_label(line)
@@ -690,6 +696,14 @@ class MainWindow(Gtk.ApplicationWindow):
                 Gtk.Label(label=f"servidor não respondeu: {exc}", xalign=0, wrap=True)
             )
             return True
+        # Duas leituras seguidas sem ele: quem reinicia a transmissão some do roster por instantes.
+        self._missed = {n: self._missed.get(n, 0) + 1 for n in self._watches if n not in live}
+        gone = [n for n, k in self._missed.items() if k >= 2]
+        if gone:  # quem eu assistia parou: o servidor tira do roster, o vídeo só congelaria
+            for n in gone:
+                self._stop_watch(n)  # fecha só a caixa dele (a janela fecha se era a última)
+            self._status.set_label(f"{', '.join(gone)} parou de transmitir")
+            return True  # o _stop_watch já redesenhou a lista
         self._show_viewers(live.get(cfg["name"], []))
         if not names:
             self._roster_box.append(Gtk.Label(label="Ninguém no ar. Que tal abrir a sala?", xalign=0, margin_top=6, css_classes=["dim"]))
