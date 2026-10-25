@@ -12,6 +12,7 @@ from __future__ import annotations
 import gc
 import os
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -26,11 +27,16 @@ from gi.repository import GLib, Gdk, Gst, GstGL, Gtk
 
 # O GSK Vulkan do GTK no mesmo processo faz o glupload do NVENC importar DMA-BUF
 # preto (niri + NVIDIA: transmissão toda preta, ~60 kbps). Com GL fica normal.
-os.environ.setdefault("GSK_RENDERER", "gl")
+WINDOWS = sys.platform == "win32"
+if not WINDOWS:
+    os.environ.setdefault("GSK_RENDERER", "gl")
 
 from . import config, roster, stats, theme
 from .capture_pipeline import CapturePipeline
-from .portal import PortalError, ScreenCast, screencast_available, x11_session
+if WINDOWS:
+    from .winsys import list_monitors
+else:  # o portal usa dbus, que não existe no Windows
+    from .portal import PortalError, ScreenCast, screencast_available, x11_session
 from .viewer import ViewerWindow
 from .watch_pipeline import WatchPipeline
 
@@ -119,7 +125,10 @@ def _choice_value(pairs: list[tuple[Gtk.ToggleButton, object]], fallback):
     return next((option for btn, option in pairs if btn.get_active()), fallback)
 
 
-_ENCODER_LABELS = {"nvenc": "NVENC, GPU", "va": "VA-API, GPU", "x264": "x264, CPU"}
+_ENCODER_LABELS = {
+    "nvenc": "NVENC, GPU", "nvd3d11": "NVENC, GPU", "va": "VA-API, GPU", "amf": "AMF, GPU",
+    "qsv": "Quick Sync, GPU", "mf": "Media Foundation, GPU", "x264": "x264, CPU",
+}
 
 
 class SettingsWindow(Gtk.Window):
@@ -206,7 +215,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self.set_default_size(380, 580)
 
         self._capture: CapturePipeline | None = None
-        self._portal: ScreenCast | None = None
+        self._portal = None  # ScreenCast (Linux)
+        self._monitor_handle: int | None = None  # HMONITOR escolhido (Windows)
         self._watches: dict[str, WatchPipeline] = {}
         self._viewer: ViewerWindow | None = None
         # Sobrevive ao rebuild do roster (a cada 3s) pra não perder o volume/mute
@@ -318,11 +328,15 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self._restart_count = 0
         fd = node = None
+        if WINDOWS:
+            if self._monitor_handle is None and not self._pick_windows_monitor():
+                return  # o diálogo chama _on_share_clicked de novo depois da escolha
+            self._status.set_label("capturando o monitor…")
         # Nem todo Linux tem portal de captura: ele depende de um backend do
         # ambiente (gnome/kde/wlr/hyprland). Quem só tem o backend gtk
         # (XFCE, Cinnamon, i3…) ficava esperando um seletor de tela que nunca
         # abria; no X11 dá pra capturar direto, sem portal e sem seletor.
-        self._x11 = not screencast_available()
+        self._x11 = not WINDOWS and not screencast_available()
         if self._x11 and not x11_session():
             self._status.set_label(
                 "sem como capturar a tela: falta o backend do portal "
@@ -337,7 +351,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 self._x11 = False  # o diálogo chama _on_share_clicked de novo depois da escolha
                 return
             self._status.set_label("sem portal: capturando o monitor escolhido (X11)…")
-        else:
+        elif not WINDOWS:
             self._status.set_label("escolha o monitor na janela do sistema…")
             self._portal = ScreenCast()
             try:
@@ -358,6 +372,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 x11_region=self._x11_region,
                 portal_fd=fd,
                 portal_node=node,
+                monitor_handle=self._monitor_handle,
                 preview_sink=self._make_preview_sink,
                 audio_enabled=cfg["audio"],
                 audio_bitrate_kbps=cfg["audio_bitrate"],
@@ -377,6 +392,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 self._portal.close()
                 self._portal = None
             self._x11 = False
+            self._monitor_handle = None
             self._preview.set_paintable(None)
             self._status.set_label(f"não deu pra transmitir: {exc}")
             return
@@ -386,7 +402,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.add_css_class("live")
         # Trocar de tela pede uma sessão nova do portal; no X11 cru a fonte é
         # sempre a tela inteira, então o botão não teria o que fazer.
-        self._switch_btn.set_visible(not self._x11)
+        self._switch_btn.set_visible(self._portal is not None)
         enc_label = _ENCODER_LABELS[self._capture.encoder_kind]
         self._status.set_label(f"transmitindo como {name} ({enc_label})")
 
@@ -502,7 +518,7 @@ class MainWindow(Gtk.ApplicationWindow):
         return sink
 
     def _do_restart_sharing(self) -> bool:
-        if self._portal is None and not self._x11:
+        if self._portal is None and not self._x11 and self._monitor_handle is None:
             return False
         name = self._name_entry.get_text().strip()
         if not name:
@@ -530,6 +546,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 x11_region=self._x11_region,
                 portal_fd=fd,
                 portal_node=node,
+                monitor_handle=self._monitor_handle,
                 preview_sink=self._make_preview_sink,
                 audio_enabled=cfg["audio"],
                 audio_bitrate_kbps=cfg["audio_bitrate"],
@@ -575,6 +592,30 @@ class MainWindow(Gtk.ApplicationWindow):
         dialog.choose(self, None, chosen)
         return False
 
+    def _pick_windows_monitor(self) -> bool:
+        """Define _monitor_handle. True se já dá pra seguir; False se abriu o diálogo de escolha."""
+        monitors = list_monitors()
+        if len(monitors) <= 1:
+            self._monitor_handle = monitors[0][0] if monitors else 0  # 0 = o principal
+            return True
+        dialog = Gtk.AlertDialog(
+            message="Qual monitor transmitir?",
+            buttons=[label for _h, label in monitors] + ["Cancelar"],
+            cancel_button=len(monitors),
+        )
+
+        def chosen(dlg, result):
+            try:
+                idx = dlg.choose_finish(result)
+            except GLib.Error:
+                return
+            if idx < len(monitors):
+                self._monitor_handle = monitors[idx][0]
+                self._on_share_clicked(self._share_btn)
+
+        dialog.choose(self, None, chosen)
+        return False
+
     def _stop_sharing(self) -> None:
         self._restart_count = 0
         if self._capture is not None:
@@ -585,6 +626,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self._portal = None
         self._x11 = False
         self._x11_region = None
+        self._monitor_handle = None
         self._preview.set_paintable(None)
         self._stats_label.set_label("")
         self._viewers_label.set_visible(False)

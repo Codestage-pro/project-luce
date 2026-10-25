@@ -14,7 +14,6 @@ from gi.repository import GLib, Gst
 
 from . import config
 from .capture_pipeline import CapturePipeline
-from .portal import PortalError, ScreenCast
 from .watch_pipeline import WatchPipeline
 
 
@@ -48,7 +47,10 @@ def _run_loop(stop, on_ready=None) -> int:
 
 def cmd_share(args: argparse.Namespace) -> int:
     fd = node = None
-    if not args.pattern:
+    portal = None
+    if not args.pattern and sys.platform != "win32":  # no Windows a CLI captura o monitor principal
+        from .portal import PortalError, ScreenCast
+
         print("escolha o monitor na janela do sistema…", flush=True)
         portal = ScreenCast()
         try:
@@ -57,8 +59,6 @@ def cmd_share(args: argparse.Namespace) -> int:
             print(str(exc), file=sys.stderr)
             return 1
         print(f"capturando o monitor (nó PipeWire {node})", flush=True)
-    else:
-        portal = None
 
     endpoint = config.whip_endpoint(args.path)
     fail = [lambda _code: None]

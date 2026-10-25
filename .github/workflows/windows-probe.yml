@@ -65,41 +65,54 @@ jobs:
           print("gtk4paintablesink:", Gst.ElementFactory.find("gtk4paintablesink") is not None)
           PY
 
-      - name: DLLs dos plugins de GPU (elementos só registram com driver)
-        run: |
-          ls /ucrt64/lib/gstreamer-1.0 | grep -iE "nvcodec|amfcodec|qsv|d3d11|d3d12|mediafoundation|wasapi2|rswebrtc|webrtchttp|gtk4|x264|libav" || true
-          echo "--- elementos do plugin d3d11 / mediafoundation / wasapi2 sem GPU:"
-          gst-inspect-1.0 d3d11 | grep -E "^\s+[a-z0-9]+:" || true
-          gst-inspect-1.0 mediafoundation | grep -E "^\s+[a-z0-9]+:" || true
-          echo "--- nvcodec / amfcodec / qsv:"
-          gst-inspect-1.0 nvcodec 2>&1 | head -20 || true
-          gst-inspect-1.0 amfcodec 2>&1 | head -5 || true
-          gst-inspect-1.0 qsv 2>&1 | head -5 || true
+      - uses: actions/checkout@v4
 
-      - name: Enum do loopback-mode e propriedades do whipclientsink
+      - name: Cadeia D3D11 -> x264 (sem GPU: só confere o encaixe dos elementos)
+        continue-on-error: true
         run: |
-          gst-inspect-1.0 wasapi2src | grep -A6 "GstWasapi2SrcLoopbackMode"
-          gst-inspect-1.0 whipclientsink | grep -E "signaller|video-caps|congestion|use-link-headers|auth-token|whip-endpoint|ice-" || true
+          gst-launch-1.0 -e d3d11testsrc num-buffers=30 ! "video/x-raw(memory:D3D11Memory),framerate=30/1" \
+            ! d3d11convert ! "video/x-raw(memory:D3D11Memory),format=NV12,width=1280,height=720" \
+            ! d3d11download ! x264enc tune=zerolatency ! h264parse ! fakesink
 
-      - name: d3d11screencapturesrc completo
+      - name: Monitores (winsys) e imports do app sem dbus
+        continue-on-error: true
         run: |
-          gst-inspect-1.0 d3d11screencapturesrc
-          echo "--- d3d12screencapturesrc:"
-          gst-inspect-1.0 d3d12screencapturesrc | sed -n '/Element Properties/,$p'
-          echo "--- x264enc / openh264enc:"
-          gst-inspect-1.0 x264enc >/dev/null 2>&1 && echo "OK x264enc" || echo "FALTA x264enc"
-          gst-inspect-1.0 openh264enc >/dev/null 2>&1 && echo "OK openh264enc" || echo "FALTA openh264enc"
-          echo "--- wasapi2src enum:"
-          gst-inspect-1.0 wasapi2src | sed -n '/loopback-mode/,/loopback-target-pid/p'
+          python - <<'PY'
+          import sys
+          print("platform", sys.platform)
+          from luce import winsys
+          print("monitores:", winsys.list_monitors())
+          import luce.gui, luce.watch_pipeline, luce.__main__
+          print("imports ok")
+          PY
 
-      - name: Quem captura janela? x264? crop é dinâmico?
+      - name: CapturePipeline monta no Windows (D3D11 + wasapi2src)
+        continue-on-error: true
+        env:
+          LUCE_ENCODER: x264enc
         run: |
-          echo "--- elementos com capture/screen/window/wgc no nome ou descrição:"
-          gst-inspect-1.0 | grep -iE "capture|screen|window|wgc|gdi" || true
-          echo "--- x264/openh264:"
-          gst-inspect-1.0 x264enc >/dev/null 2>&1 && echo "OK x264enc" || echo "FALTA x264enc"
-          gst-inspect-1.0 openh264enc >/dev/null 2>&1 && echo "OK openh264enc" || echo "FALTA openh264enc"
-          echo "--- flags (mutável em PLAYING?) do crop/monitor no d3d11screencapturesrc:"
-          gst-inspect-1.0 d3d11screencapturesrc | grep -A3 -E "crop-x|crop-width|monitor-index" | grep -E "crop|monitor|flags" || true
-          echo "--- winscreencap/gdiscreencapsrc:"
-          gst-inspect-1.0 gdiscreencapsrc 2>&1 | grep -E "^  (x|y|width|height|monitor|cursor|window)" || true
+          python - <<'PY'
+          from luce.capture_pipeline import CapturePipeline
+          p = CapturePipeline("http://127.0.0.1:1/x/whip", width=1280, height=720, fps=30, preview=False)
+          a = p.pipeline.get_by_name("audio-src")
+          print("encoder:", p.encoder_kind)
+          print("loopback:", a.get_property("loopback"), "| modo:", a.get_property("loopback-mode").value_nick,
+                "| pid:", a.get_property("loopback-target-pid"))
+          print("elementos:", sorted(e.get_name() for e in p.pipeline.children))
+          PY
+
+      - name: CapturePipeline com preview (ramo D3D11 -> download -> appsink)
+        continue-on-error: true
+        env:
+          LUCE_ENCODER: x264enc
+        run: |
+          python - <<'PY'
+          from luce.capture_pipeline import CapturePipeline
+          p = CapturePipeline("http://127.0.0.1:1/x/whip", fps=60, preview_sink=lambda: None)
+          print("ok:", sorted(e.get_name() for e in p.pipeline.children))
+          PY
+
+      - name: Captura de verdade por 3 s (runner sem GPU: pode falhar)
+        continue-on-error: true
+        run: |
+          timeout 20 gst-launch-1.0 -e d3d11screencapturesrc num-buffers=60 ! d3d11convert ! d3d11download ! fakesink 2>&1 | tail -15

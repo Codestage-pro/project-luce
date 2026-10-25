@@ -8,6 +8,8 @@ por pessoa (mesh). O WHIP delega toda a negociação SDP/ICE pro `whipsink`.
 from __future__ import annotations
 
 import logging
+import os
+import sys
 import threading
 
 import gi
@@ -39,6 +41,27 @@ def _try_set(element: Gst.Element, name: str, value) -> None:
         log.debug("%s=%r ignorado: %s", name, value, exc)
 
 
+WINDOWS = sys.platform == "win32"
+# Ordem de preferência. No Windows o elemento só registra se o driver da GPU existir
+# (o nvcodec sem nvcuda.dll tem 0 elementos), então a escolha é feita em runtime.
+LINUX_ENCODERS = (
+    ("nvh264enc", "nvenc", "NVENC (GPU NVIDIA)"),
+    ("vah264enc", "va", "VA-API (GPU AMD/Intel)"),
+    ("vah264lpenc", "va", "VA-API low-power (GPU Intel/AMD)"),
+    ("x264enc", "x264", "x264 (CPU, sem encoder de GPU disponível)"),
+)
+WINDOWS_ENCODERS = (
+    ("nvd3d11h264enc", "nvd3d11", "NVENC D3D11 (GPU NVIDIA)"),
+    ("amfh264enc", "amf", "AMF (GPU AMD)"),
+    ("qsvh264enc", "qsv", "Quick Sync (GPU Intel)"),
+    ("mfh264enc", "mf", "Media Foundation (GPU)"),
+    ("x264enc", "x264", "x264 (CPU, sem encoder de GPU disponível)"),
+)
+# Encoders de GPU que leem a textura D3D11 direto (d3d11screencapturesrc ! d3d11convert ! enc)
+D3D11_KINDS = ("nvd3d11", "amf", "qsv", "mf")
+NVENC_KINDS = ("nvenc", "nvd3d11")  # os dois têm VBV por quadro
+
+
 def _make_encoder() -> tuple[Gst.Element, str]:
     """GPU primeiro (NVENC, depois VA-API de AMD/Intel), CPU só se não houver GPU que codifique.
 
@@ -51,17 +74,14 @@ def _make_encoder() -> tuple[Gst.Element, str]:
     foi validada. Se os nomes de propriedade abaixo estiverem errados, _try_set
     ignora e cai nos defaults do driver.
     """
-    for factory, kind, label in (
-        ("nvh264enc", "nvenc", "NVENC (GPU NVIDIA)"),
-        ("vah264enc", "va", "VA-API (GPU AMD/Intel)"),
-        ("vah264lpenc", "va", "VA-API low-power (GPU Intel/AMD)"),
-        ("x264enc", "x264", "x264 (CPU, sem encoder de GPU disponível)"),
-    ):
+    table = WINDOWS_ENCODERS if WINDOWS else LINUX_ENCODERS
+    forced = os.environ.get("LUCE_ENCODER")  # ex.: LUCE_ENCODER=x264enc se o encoder da GPU travar
+    for factory, kind, label in [row for row in table if row[0] == forced] or table:
         enc = Gst.ElementFactory.make(factory, "enc")
         if enc is not None:
             print(f"codificando com {label}", flush=True)
             return enc, kind
-    raise RuntimeError("nenhum encoder H.264 (nvh264enc, vah264enc, vah264lpenc ou x264enc) instalado")
+    raise RuntimeError(f"nenhum encoder H.264 instalado ({', '.join(row[0] for row in table)})")
 
 
 class CapturePipeline:
@@ -79,6 +99,7 @@ class CapturePipeline:
         x11_region: tuple[int, int, int, int] | None = None,
         portal_fd: int | None = None,
         portal_node: int | None = None,
+        monitor_handle: int | None = None,  # Windows: HMONITOR; None = monitor principal
         preview: bool = True,
         preview_sink=None,  # função que cria o gtk4paintablesink (ver _preview_bridge)
         audio_enabled: bool = True,
@@ -98,6 +119,7 @@ class CapturePipeline:
         self._fps = fps
         self._pattern = pattern
         self._x11 = x11
+        self._d3d11 = WINDOWS and not pattern
         self._frames = 0
         self._reported = -1
         self._last_pts = 0
@@ -133,6 +155,14 @@ class CapturePipeline:
                     src.set_property(prop, value)
             _try_set(src, "show-pointer", True)
             _try_set(src, "do-timestamp", True)
+        elif WINDOWS:
+            # Só monitor inteiro: o d3d11screencapturesrc não tem window-handle (1.28.8).
+            src = Gst.ElementFactory.make("d3d11screencapturesrc", "src")
+            if src is None:
+                raise RuntimeError("falta o d3d11screencapturesrc (gst-plugins-bad)")
+            if monitor_handle:
+                src.set_property("monitor-handle", monitor_handle)
+            _try_set(src, "show-cursor", True)
         else:
             src = Gst.ElementFactory.make("pipewiresrc", "src")
             src.set_property("fd", int(portal_fd))
@@ -171,8 +201,9 @@ class CapturePipeline:
         self.encoder_kind = enc_kind
 
         # x264 lê memória comum: o mesmo caminho do ximagesrc, só que com o pipewiresrc na frente.
-        sysmem = raw_source or enc_kind == "x264"
-        if not raw_source:
+        sysmem = raw_source or (enc_kind == "x264" and not self._d3d11)
+        mixer = None
+        if not raw_source and not self._d3d11:  # o d3d11screencapturesrc já carimba o PTS direito
             self._probe_id = src.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, self._restamp)
         if sysmem:
             raw_preview = False
@@ -187,6 +218,25 @@ class CapturePipeline:
                 Gst.Caps.from_string(
                     f"video/x-raw,format=NV12,{size}framerate={fps}/1"
                 ),
+            )
+        elif self._d3d11:
+            # Tudo na VRAM: o d3d11convert converte BGRA->NV12 e escala (com barras, sem esticar)
+            # sem a CPU tocar no pixel. Só o x264 baixa a textura (d3d11download, mais abaixo).
+            raw_preview = False
+            conv = Gst.ElementFactory.make("d3d11convert", "d3d11conv")
+            src_caps = Gst.ElementFactory.make("capsfilter", "src-caps")
+            if conv is None or src_caps is None:
+                raise RuntimeError("falta o d3d11convert (gst-plugins-bad)")
+            _try_set(conv, "add-borders", True)
+            # o framerate na saída da fonte faz ela entregar `fps`, não a taxa do monitor
+            src_caps.set_property(
+                "caps", Gst.Caps.from_string(f"video/x-raw(memory:D3D11Memory),framerate={fps}/1")
+            )
+            size = f"width={width},height={height}," if width and height else ""
+            front = [src, src_caps, conv, rate]
+            caps.set_property(
+                "caps",
+                Gst.Caps.from_string(f"video/x-raw(memory:D3D11Memory),format=NV12,{size}framerate={fps}/1"),
             )
         else:
             # O portal manda DMA-BUF e todos os quadros chegam com o mesmo PTS;
@@ -205,7 +255,6 @@ class CapturePipeline:
                 color = Gst.ElementFactory.make("glcolorconvert", "glcolor")
                 if upload is None or color is None:
                     raise RuntimeError("faltam os elementos GL (pacote gst-plugins-base com OpenGL)")
-                mixer = None
                 post_chain = [upload, color]
                 if not native:
                     # glcolorscale (usado antes) sempre estica pro tamanho
@@ -246,7 +295,7 @@ class CapturePipeline:
                 front = [src, raw_tee, raw_queue, *post_chain, rate]
             caps.set_property("caps", Gst.Caps.from_string(front_caps))
 
-        if enc_kind == "nvenc":
+        if enc_kind in NVENC_KINDS:
             _try_set(enc, "bitrate", bitrate_kbps)
             # IDR a cada 1 s: quem entra ou perde pacote espera no máx. 1 s por imagem limpa.
             _try_set(enc, "gop-size", fps)
@@ -259,6 +308,15 @@ class CapturePipeline:
             _try_set(enc, "tune", "ultra-low-latency")
             _try_set(enc, "bframes", 0)
             _try_set(enc, "cabac", False)
+        elif enc_kind in ("amf", "qsv", "mf"):
+            # shortcut: nomes de propriedade conferidos só no gst-inspect, nunca rodaram numa GPU
+            # de verdade; _try_set ignora o que não existir e o encoder cai no default.
+            _try_set(enc, "bitrate", bitrate_kbps)
+            _try_set(enc, "rate-control" if enc_kind != "mf" else "rc-mode", "cbr")
+            _try_set(enc, "gop-size", fps)
+            _try_set(enc, "b-frames" if enc_kind == "qsv" else "bframes", 0)
+            _try_set(enc, "low-latency", True)
+            _try_set(enc, "usage", "ultra-low-latency")  # amf
         elif enc_kind == "x264":
             _try_set(enc, "bitrate", bitrate_kbps)
             _try_set(enc, "tune", "zerolatency")
@@ -349,6 +407,15 @@ class CapturePipeline:
             _try_set(prev_queue, "leaky", "downstream")
             if preview_sink is not None:
                 prev_tail = [self._preview_bridge(preview_sink)]
+                if self._d3d11:
+                    # a GTK lê memória comum: baixa da VRAM só o ramo da preview, a 15 fps
+                    # shortcut: no tamanho nativo (4K = 12 MB/quadro); escalar na GPU quando doer.
+                    rate15 = Gst.ElementFactory.make("videorate", "preview-rate")
+                    _try_set(rate15, "drop-only", True)
+                    cap15 = Gst.ElementFactory.make("capsfilter", "preview-rate-caps")
+                    cap15.set_property("caps", Gst.Caps.from_string("video/x-raw(memory:D3D11Memory),framerate=15/1"))
+                    prev_tail = [rate15, cap15, Gst.ElementFactory.make("d3d11download", "preview-download"),
+                                 Gst.ElementFactory.make("videoconvert", "preview-convert"), *prev_tail]
             elif sysmem:
                 prev_tail = [
                     Gst.ElementFactory.make("videoconvert", "preview-convert"),
@@ -357,6 +424,8 @@ class CapturePipeline:
             else:
                 prev_tail = [Gst.ElementFactory.make("glimagesink", "preview-sink")]
             _try_set(prev_tail[-1], "sync", False)
+            if None in prev_tail:
+                raise RuntimeError("faltam elementos da preview (d3d11download, videoconvert ou videorate)")
             for element in (tee, enc_queue, prev_queue, *prev_tail):
                 self.pipeline.add(element)
             if not caps.link(tee) or not tee.link(enc_queue) or not tee.link(prev_queue):
@@ -367,8 +436,10 @@ class CapturePipeline:
                     raise RuntimeError(f"não liguei {left.get_name()} em {right.get_name()}")
             encode_src = enc_queue
 
-        encode_chain = (encode_src, enc, h264caps, parse, queue, pay, whip)
-        for element in (enc, h264caps, parse, queue, pay, whip):
+        download = Gst.ElementFactory.make("d3d11download", "enc-download") if self._d3d11 and enc_kind == "x264" else None
+        head = (encode_src, download, enc) if download is not None else (encode_src, enc)
+        encode_chain = (*head, h264caps, parse, queue, pay, whip)
+        for element in (*head[1:], h264caps, parse, queue, pay, whip):
             self.pipeline.add(element)
         for left, right in zip(encode_chain, encode_chain[1:]):
             if not left.link(right):
@@ -398,6 +469,19 @@ class CapturePipeline:
             _try_set(audio_src, "client-name", "Project LUCE")
             audio_src_caps = Gst.ElementFactory.make("capsfilter", "audio-src-caps")
             audio_src_caps.set_property("caps", Gst.Caps.from_string("audio/x-raw,channels=2"))
+        elif WINDOWS:
+            audio_src = Gst.ElementFactory.make("wasapi2src", "audio-src")
+            if audio_src is None:
+                raise RuntimeError("falta o wasapi2src (gst-plugins-bad)")
+            if audio_device:  # microfone escolhido nas Configurações
+                _try_set(audio_src, "device", audio_device)
+            else:
+                # Áudio do sistema, menos o do próprio LUCE: senão a voz de quem assiste volta pra transmissão.
+                # Process Loopback exige Windows 10 build 20348+ (ou 11); antes disso o wasapi2src falha ao abrir.
+                _try_set(audio_src, "loopback", True)
+                _try_set(audio_src, "loopback-mode", "exclude-process-tree")
+                _try_set(audio_src, "loopback-target-pid", os.getpid())
+            _try_set(audio_src, "low-latency", True)
         else:
             audio_src = Gst.ElementFactory.make("pulsesrc", "audio-src")
             # client-name é o que aparece no qpwgraph/pavucontrol pra rotear
@@ -583,7 +667,7 @@ class CapturePipeline:
         """Muda a qualidade do vídeo sem reiniciar (o encoder reconfigura em voo)."""
         enc = self.pipeline.get_by_name("enc")
         _try_set(enc, "bitrate", kbps)
-        if self.encoder_kind == "nvenc":
+        if self.encoder_kind in NVENC_KINDS:
             _try_set(enc, "vbv-buffer-size", max(kbps // self._fps, 1))
 
     def set_audio_bitrate(self, kbps: int) -> None:
@@ -602,7 +686,7 @@ class CapturePipeline:
         --pattern); não se aplica à reconexão automática de _on_share_error,
         que já recebeu um erro do bus e precisa recriar tudo mesmo.
         """
-        if self._pattern or self._x11:
+        if self._pattern or self._x11 or self._d3d11:
             raise RuntimeError("switch_source só existe com o portal (pipewiresrc)")
         old_src = self.pipeline.get_by_name("src")
         pad = old_src.get_static_pad("src")

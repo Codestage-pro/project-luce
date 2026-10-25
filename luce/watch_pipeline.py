@@ -12,6 +12,7 @@ caps resultante pra montar a cadeia certa.
 from __future__ import annotations
 
 import logging
+import sys
 
 import gi
 
@@ -34,6 +35,18 @@ def _try_set(element: Gst.Element, name: str, value) -> None:
         log.debug("%s=%r ignorado: %s", name, value, exc)
 
 
+LINUX_DECODERS = (
+    ("nvh264dec", "NVDEC (GPU NVIDIA)"),
+    ("vah264dec", "VAAPI (GPU AMD/Intel)"),
+    ("avdec_h264", "software/CPU (gst-libav)"),
+)
+WINDOWS_DECODERS = (
+    ("d3d11h264dec", "D3D11 (GPU)"),
+    ("nvh264dec", "NVDEC (GPU NVIDIA)"),
+    ("avdec_h264", "software/CPU (gst-libav)"),
+)
+
+
 def _make_decoder() -> Gst.Element | None:
     """NVDEC, senão VAAPI (AMD/Intel), senão software.
 
@@ -45,11 +58,8 @@ def _make_decoder() -> Gst.Element | None:
     shortcut: igual ao _make_encoder de capture_pipeline.py, nunca testado
     decodificando de verdade num driver VAAPI (esta máquina só tem NVIDIA).
     """
-    for factory, label in (
-        ("nvh264dec", "NVDEC (GPU NVIDIA)"),
-        ("vah264dec", "VAAPI (GPU AMD/Intel)"),
-        ("avdec_h264", "software/CPU (gst-libav)"),
-    ):
+    # No Windows o d3d11h264dec (DXVA) serve qualquer GPU; só existe se o driver estiver lá.
+    for factory, label in WINDOWS_DECODERS if sys.platform == "win32" else LINUX_DECODERS:
         dec = Gst.ElementFactory.make(factory, "dec")
         if dec is not None:
             print(f"decodificando com {label}", flush=True)
@@ -177,7 +187,17 @@ class WatchPipeline:
             self._fail("falta o elemento videoconvert (gst-plugins-base)")
             return
 
-        chain: list[Gst.Element] = [dec, convert]
+        chain: list[Gst.Element] = [dec]
+        if dec.get_factory().get_name().startswith("d3d11"):
+            # memory:D3D11Memory não entra no videoconvert nem no gtk4paintablesink: converte
+            # na GPU e baixa pra RAM, senão a abertura da transmissão dá not-negotiated.
+            gpu_convert = Gst.ElementFactory.make("d3d11convert", "convert-d3d11")
+            download = Gst.ElementFactory.make("d3d11download", "download-d3d11")
+            if gpu_convert is None or download is None:
+                self._fail("falta d3d11convert/d3d11download (gst-plugins-bad)")
+                return
+            chain += [gpu_convert, download]
+        chain.append(convert)
         if is_gtk:
             # O GSK Vulkan do GTK tem um bug grave ao subir buffers planares
             # YUV crus (I420/Y444 que o avdec_h264 produz): o driver Vulkan

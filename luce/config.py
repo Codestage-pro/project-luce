@@ -9,7 +9,8 @@ from typing import Any
 
 # XDG_CONFIG_HOME: no Flatpak ele aponta pra ~/.var/app/<id>/config; o ~/.config de
 # verdade não existe lá dentro e o que se gravasse nele não ficaria.
-CONFIG_FILE = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "project-luce" / "config.toml"
+_CONFIG_HOME = os.environ.get("APPDATA") if os.name == "nt" else os.environ.get("XDG_CONFIG_HOME")
+CONFIG_FILE = Path(_CONFIG_HOME or Path.home() / ".config") / "project-luce" / "config.toml"
 # Default de sistema (pacote Arch, ver packaging/config.toml) — deixa o
 # pacote já vir configurado pro servidor certo, sem a pessoa editar nada.
 # /app/etc é onde o Flatpak instala o equivalente (o /etc dele é do runtime).
