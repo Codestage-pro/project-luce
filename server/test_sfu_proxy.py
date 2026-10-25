@@ -40,6 +40,7 @@ class ProxyTest(unittest.TestCase):
         p.sfu = self.sfu
         p.cfg.update(password="segredo")
         p.publishers.clear()
+        p.viewers.clear()
         p.WHEP_DELAY = 0
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), p.Handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -78,7 +79,7 @@ class ProxyTest(unittest.TestCase):
         self.assertEqual((code, body), (201, "ANSWER"))
         sid = headers["Location"].rsplit("/", 1)[1]
         self.assertTrue(headers["Location"].startswith("/ana/whip/"))
-        self.assertEqual(json.loads(self.call("GET", "/v3/paths/list")[1]), {"items": [{"name": "ana", "ready": True}]})
+        self.assertEqual(json.loads(self.call("GET", "/v3/paths/list")[1]), {"items": [{"name": "ana", "ready": True, "viewers": []}]})
         self.assertEqual(self.call("PATCH", "/ana/whip")[0], 204)
         self.assertEqual(self.call("DELETE", "/ana/whip/outra")[0], 200)  # sessão antiga: não derruba
         self.assertIn("ana", p.publishers)
@@ -113,6 +114,19 @@ class ProxyTest(unittest.TestCase):
         p.publishers["ana"]["seen"] = time.monotonic() - p.TTL - 1
         p.expire()
         self.assertEqual(p.publishers, {})
+
+    def test_viewers_listed_and_expire(self):
+        self.call("POST", "/ana/whip", OFFER.encode())
+        self.assertEqual(self.call("PATCH", "/ana/watch?viewer=bia")[0], 204)
+        self.call("PATCH", "/ana/watch?viewer=caio")
+        self.assertEqual(self.call("PATCH", "/ana/watch")[0], 400)
+        roster = lambda: json.loads(self.call("GET", "/v3/paths/list")[1])["items"][0]["viewers"]
+        self.assertEqual(roster(), ["bia", "caio"])
+        self.assertEqual(self.call("DELETE", "/ana/watch?viewer=bia")[0], 200)
+        self.assertEqual(roster(), ["caio"])
+        p.viewers["ana"]["caio"] -= p.TTL + 1
+        p.expire()
+        self.assertEqual(roster(), [])
 
 
 if __name__ == "__main__":

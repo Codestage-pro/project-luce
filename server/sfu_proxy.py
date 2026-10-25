@@ -12,7 +12,9 @@ Rotas (todas exigem `Authorization: Bearer bdk:<BDK_PASSWORD>`):
   DELETE /{nome}/whip[/{sessão}]   encerra e tira do roster
   POST   /{nome}/whep              assiste; 201 + Location /{nome}/whep/{sessão}
   DELETE /{nome}/whep/{sessão}     no-op (o SFU recolhe a sessão do viewer)
-  GET    /v3/paths/list            roster, mesmo JSON que o MediaMTX devolvia
+  PATCH  /{nome}/watch?viewer=X    X segue assistindo {nome} (heartbeat, ~10 s)
+  DELETE /{nome}/watch?viewer=X    X parou de assistir
+  GET    /v3/paths/list            roster (+ "viewers": [nomes] por transmissão)
 
 Quem para de mandar heartbeat por TTL segundos (kill -9, queda de rede) sai do
 roster sozinho. Estado só em memória: reiniciar o proxy esquece quem estava no
@@ -29,6 +31,7 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 TTL = 30  # segundos sem heartbeat até tirar do roster (o cliente manda a cada 10)
 WHEP_TRIES = 6  # o ICE do publisher pode estar subindo: o SFU responde not_found_track_error
@@ -41,6 +44,7 @@ USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Ge
 
 cfg = {"base": "", "secret": "", "password": ""}
 publishers: dict[str, dict] = {}  # nome -> {session, tracks: [{trackName, mid}], seen}
+viewers: dict[str, dict[str, float]] = {}  # transmissão -> {quem assiste: último heartbeat}
 lock = threading.Lock()
 
 
@@ -159,6 +163,7 @@ def unpublish(stream: str, session: str | None) -> bool:
         if pub is None or (session and pub["session"] != session):
             return False
         del publishers[stream]
+        viewers.pop(stream, None)
     close_tracks(pub)
     log(f"fora do ar: {stream}")
     return True
@@ -170,6 +175,16 @@ def heartbeat(stream: str) -> bool:
         if pub:
             pub["seen"] = time.monotonic()
         return pub is not None
+
+
+def watching(stream: str, viewer: str | None, on: bool = True) -> None:
+    if viewer is None or not NAME.fullmatch(viewer):
+        raise HttpError(400, "viewer inválido")
+    with lock:
+        if on:
+            viewers.setdefault(stream, {})[viewer] = time.monotonic()
+        else:
+            viewers.get(stream, {}).pop(viewer, None)
 
 
 def subscribe(stream: str, offer: str) -> tuple[str, str]:
@@ -202,6 +217,10 @@ def expire() -> None:
     for name in stale:
         log(f"{name}: sem heartbeat há {TTL}s")
         unpublish(name, None)
+    with lock:
+        for who in viewers.values():
+            for viewer in [v for v, seen in who.items() if now - seen > TTL]:
+                del who[viewer]
 
 
 def reap() -> None:
@@ -257,7 +276,8 @@ class Handler(BaseHTTPRequestHandler):
             if parts != ["v3", "paths", "list"]:
                 raise HttpError(404, "rota desconhecida")
             with lock:
-                items = [{"name": name, "ready": True} for name in publishers]
+                items = [{"name": name, "ready": True, "viewers": sorted(viewers.get(name, {}))}
+                         for name in publishers]
             self._reply(200, json.dumps({"items": items}).encode(), "application/json")
         self._handle(run)
 
@@ -277,8 +297,14 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(201, answer.encode(), "application/sdp", {"Location": f"/{stream}/{kind}/{session}"})
         self._handle(run)
 
+    def _viewer(self) -> str | None:
+        return parse_qs(urlparse(self.path).query).get("viewer", [None])[0]
+
     def do_PATCH(self):
         def run(parts):
+            if len(parts) == 2 and parts[1] == "watch":
+                watching(self._route(parts, "watch"), self._viewer())
+                return self._reply(204)
             stream = self._route(parts, "whip")
             self._body()
             if not heartbeat(stream):
@@ -288,6 +314,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         def run(parts):
+            if len(parts) == 2 and parts[1] == "watch":
+                watching(self._route(parts, "watch"), self._viewer(), on=False)
+                return self._reply(200)
             if len(parts) >= 2 and parts[1] == "whep":
                 return self._reply(200)
             stream = self._route(parts, "whip")

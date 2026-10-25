@@ -86,7 +86,8 @@ Fora do Flatpak, quem não tem NVIDIA precisa de um driver VA-API: `intel-media-
 - 🖥️ **Transmitir a tela** com um clique — pelo portal do sistema, escolhendo o monitor (Wayland) ou direto pelo X11
 - 👀 **Assistir** quem está no ar, com **vários streams ao mesmo tempo** no visualizador
 - 🔊 **Áudio Opus** com mute e volume **por pessoa**
-- 📊 **Estatísticas ao vivo** da transmissão (pacotes, bitrate e perda, de quem transmite e de cada transmissão que você assiste)
+- 📊 **Estatísticas ao vivo** da transmissão (pacotes, bitrate e perda, de quem transmite e de cada transmissão que você assiste; para quem transmite, também a resolução e os fps reais saindo do encoder)
+- 👁 **Quem está assistindo você**: contagem e nomes dos espectadores da sua transmissão
 - 🎛️ **Configurações em botões** (resolução, fps, qualidade) — nada de digitar um valor que o encoder ou a rede não aguentam
 - 🛟 **Recuperação de perda**: NACK + RTX, GOP de 1 s e VBV controlado para a imagem voltar rápido
 - 🔁 **Reconexão automática** quando a tela é trocada ou a conexão cai
@@ -200,7 +201,7 @@ O publisher sempre manda uma faixa Opus (`pulsesrc` → funciona em PulseAudio e
 Marcar uma tag `vX.Y.Z` dispara o GitHub Actions: ele builda o Flatpak, **assina o repositório OSTree com GPG** e publica no GitHub Pages. Quem instalou pelo `.flatpakref` recebe a versão nova no próximo `flatpak update`.
 
 ```bash
-git tag v1.0.12 && git push origin main v1.0.12
+git tag v1.0.13 && git push origin main v1.0.13
 ```
 
 ---

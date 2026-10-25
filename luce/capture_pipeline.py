@@ -107,6 +107,8 @@ class CapturePipeline:
         self._handshake_id: int | None = None
         self._flow_id: int | None = None
         self._sent = 0
+        self.encoded_frames = 0  # o que o encoder de fato entrega: base do fps/resolução na GUI
+        self.encoded_size: tuple[int, int] | None = None
         self._probe_id: int | None = None
         self.pipeline = Gst.Pipeline.new("luce-capture")
 
@@ -273,6 +275,9 @@ class CapturePipeline:
         )
         parse = Gst.ElementFactory.make("h264parse", "parse")
         _try_set(parse, "config-interval", -1)
+        parse.get_static_pad("src").add_probe(
+            Gst.PadProbeType.BUFFER | Gst.PadProbeType.EVENT_DOWNSTREAM, self._count_encoded
+        )
         queue = Gst.ElementFactory.make("queue", "queue")
         _try_set(queue, "max-size-buffers", 3)
         _try_set(queue, "leaky", "downstream")
@@ -466,6 +471,19 @@ class CapturePipeline:
         else:
             self._flow_id = GLib.timeout_add_seconds(FLOW_SECONDS, self._check_flow, self._sent)
         return False
+
+    def _count_encoded(self, _pad, info) -> Gst.PadProbeReturn:
+        if info.type & Gst.PadProbeType.BUFFER:
+            self.encoded_frames += 1
+        else:
+            event = info.get_event()
+            if event.type == Gst.EventType.CAPS:
+                st = event.parse_caps().get_structure(0)
+                ok_w, w = st.get_int("width")
+                ok_h, h = st.get_int("height")
+                if ok_w and ok_h:
+                    self.encoded_size = (w, h)
+        return Gst.PadProbeReturn.OK
 
     def _count_sent(self, _pad, _info) -> Gst.PadProbeReturn:
         self._sent += 1

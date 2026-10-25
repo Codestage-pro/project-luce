@@ -12,6 +12,7 @@ from __future__ import annotations
 import gc
 import os
 import subprocess
+import threading
 import time
 import urllib.error
 
@@ -211,6 +212,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self._restart_count: int = 0
         # Última leitura de stats por chave ("share" ou nome de quem se assiste), pra calcular o bitrate.
         self._last_stats: dict[str, dict] = {}
+        self._last_enc: tuple[object, int, float] | None = None  # (captura, quadros codificados, instante) da leitura anterior
+        self._ping_tick = 0
         self._watch_stats: dict[str, Gtk.Label] = {}
         # Captura sem portal (ximagesrc): decidido a cada "Transmitir", porque
         # o backend do portal pode ser instalado com o app já aberto.
@@ -263,6 +266,8 @@ class MainWindow(Gtk.ApplicationWindow):
         root.append(status_pill)
         self._stats_label = Gtk.Label(label="", xalign=0, css_classes=["monospace", "stats"])
         root.append(self._stats_label)
+        self._viewers_label = Gtk.Label(label="", xalign=0, wrap=True, visible=False, css_classes=["dim"])
+        root.append(self._viewers_label)
 
         self._preview = Gtk.Picture(hexpand=True, vexpand=True)
         self._preview.set_content_fit(Gtk.ContentFit.CONTAIN)
@@ -548,7 +553,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self._x11_region = None
         self._preview.set_paintable(None)
         self._stats_label.set_label("")
+        self._viewers_label.set_visible(False)
         self._last_stats.pop("share", None)
+        self._last_enc = None
         # Mesmo gc do auto-restart em _on_share_error: libera o contexto
         # GL/EGL do pipeline antigo agora, e não quando o GC cíclico quiser —
         # clicar "Transmitir" logo depois de "Parar" criava o contexto novo
@@ -588,6 +595,7 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         self._watches[name] = watch
         watch.start()
+        self._tell_watching(name, True)
         self._viewer.present()
         self._refresh_roster()
 
@@ -596,6 +604,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._forget_stats(name)
         if watch is not None:
             watch.stop()
+            self._tell_watching(name, False)
         if self._viewer is not None:
             self._viewer.remove(name)  # fecha a janela quando era a última tela
         self._refresh_roster()
@@ -622,23 +631,57 @@ class MainWindow(Gtk.ApplicationWindow):
             stats.request(element, done)
 
         if self._capture is not None:
-            ask("share", self._capture.pipeline.get_by_name("whip"), "↑", self._stats_label.set_label)
+            ask("share", self._capture.pipeline.get_by_name("whip"), "↑", self._show_share_stats)
+        self._ping_tick += 1
+        if self._ping_tick % 10 == 0:  # servidor tira quem some por 30 s da lista de espectadores
+            for name in self._watches:
+                self._tell_watching(name, True)
         for name, watch in self._watches.items():
             label = self._watch_stats.get(name)
             if label is not None:
                 ask(name, watch.pipeline.get_by_name("src"), "↓", label.set_label)
         return True
 
+    def _show_share_stats(self, line: str) -> None:
+        """Soma resolução e fps medidos na saída do encoder: é o que prova que a config vale."""
+        cap = self._capture
+        if cap is not None and cap.encoded_size is not None:
+            now = (cap, cap.encoded_frames, time.monotonic())
+            before, self._last_enc = self._last_enc, now
+            # captura nova (reinício) zera o contador: sem leitura anterior válida
+            fps = (now[1] - before[1]) / (now[2] - before[2]) if before and before[0] is cap else 0.0
+            w, h = cap.encoded_size
+            line += f" · {w}×{h} · {fps:.0f} fps"
+        self._stats_label.set_label(line)
+
+    def _tell_watching(self, name: str, on: bool) -> None:
+        """Avisa o servidor (fora da thread da GUI) que estou assistindo `name`."""
+        cfg = config.load()
+
+        def run():
+            try:
+                roster.watching(cfg["base_url"], name, cfg["name"], config.auth_token(), on)
+            except Exception:  # servidor sem a rota ou rede caída: só some da lista de espectadores
+                pass
+        threading.Thread(target=run, daemon=True).start()
+
     def _on_watch_error(self, name: str, message: str) -> None:
         self._status.set_label(f"assistir {name} caiu: {message}")
         self._stop_watch(name)
+
+    def _show_viewers(self, who: list[str]) -> None:
+        self._viewers_label.set_visible(self._capture is not None)
+        self._viewers_label.set_label(
+            f"👁 {len(who)} assistindo: {', '.join(who)}" if who else "👁 ninguém assistindo ainda"
+        )
 
     def _refresh_roster(self) -> bool:
         cfg = config.load()
         for child in list(self._roster_box):
             self._roster_box.remove(child)
         try:
-            names = [n for n in roster.list_paths(cfg["base_url"], config.auth_token()) if n != cfg["name"]]
+            live = roster.list_paths(cfg["base_url"], config.auth_token())
+            names = [n for n in live if n != cfg["name"]]
         except Exception as exc:
             # Falha de rede vira mensagem na própria lista: antes virava lista
             # vazia indistinguível de "ninguém no ar", que foi o que escondeu
@@ -647,6 +690,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 Gtk.Label(label=f"servidor não respondeu: {exc}", xalign=0, wrap=True)
             )
             return True
+        self._show_viewers(live.get(cfg["name"], []))
         if not names:
             self._roster_box.append(Gtk.Label(label="Ninguém no ar. Que tal abrir a sala?", xalign=0, margin_top=6, css_classes=["dim"]))
         for name in names:
