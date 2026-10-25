@@ -1,0 +1,65 @@
+name: Windows probe
+
+# Só verifica quais elementos GStreamer existem no MSYS2 ucrt64. Não gera release.
+on:
+  workflow_dispatch:
+  push:
+    branches: [windows-probe]
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gstreamer
+            mingw-w64-ucrt-x86_64-gst-plugins-base
+            mingw-w64-ucrt-x86_64-gst-plugins-good
+            mingw-w64-ucrt-x86_64-gst-plugins-bad
+            mingw-w64-ucrt-x86_64-gst-plugins-rs
+            mingw-w64-ucrt-x86_64-gst-libav
+            mingw-w64-ucrt-x86_64-gst-python
+            mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-python-gobject
+
+      - name: Versões
+        run: |
+          gst-inspect-1.0 --version
+          python --version
+          pacman -Q | grep -E "gstreamer|gst-plugins|gtk4|python-gobject|gst-python"
+
+      - name: Elementos que o LUCE usa
+        run: |
+          for e in whipsink whepsrc whipclientsink whepclientsrc gtk4paintablesink \
+                   d3d11screencapturesrc d3d12screencapturesrc \
+                   nvh264enc nvd3d11h264enc amfh264enc qsvh264enc mfh264enc x264enc \
+                   nvh264dec d3d11h264dec avdec_h264 \
+                   wasapi2src opusenc rtpopuspay rtph264pay h264parse \
+                   videorate glupload glcolorconvert d3d11convert d3d11download; do
+            if gst-inspect-1.0 "$e" >/dev/null 2>&1; then echo "OK      $e"; else echo "FALTA   $e"; fi
+          done
+
+      - name: Propriedades do wasapi2src
+        run: |
+          gst-inspect-1.0 wasapi2src | grep -iE "loopback|low-latency|device" || echo "wasapi2src sem as propriedades"
+
+      - name: Propriedades do d3d11screencapturesrc
+        run: |
+          gst-inspect-1.0 d3d11screencapturesrc | grep -iE "monitor|window|handle|show-cursor|framerate" || true
+
+      - name: Python importa Gst e Gtk
+        run: |
+          python - <<'PY'
+          import gi
+          gi.require_version("Gst", "1.0"); gi.require_version("Gtk", "4.0")
+          from gi.repository import Gst, Gtk
+          Gst.init(None)
+          print("Gst", Gst.version_string(), "| Gtk", Gtk.get_major_version(), Gtk.get_minor_version())
+          print("gtk4paintablesink:", Gst.ElementFactory.find("gtk4paintablesink") is not None)
+          PY
