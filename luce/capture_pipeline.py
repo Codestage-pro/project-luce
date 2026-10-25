@@ -19,7 +19,7 @@ gi.require_version("GstVideo", "1.0")
 gi.require_version("GstGL", "1.0")
 from gi.repository import GLib, Gst, GstGL, GstVideo
 
-from . import roster, rtc
+from . import roster, rtc, winsys
 
 log = logging.getLogger("luce.capture")
 
@@ -42,8 +42,27 @@ def _try_set(element: Gst.Element, name: str, value) -> None:
 
 
 WINDOWS = sys.platform == "win32"
+FOLLOW_MS = 150  # de quanto em quanto tempo o crop acompanha a janela transmitida
 # Ordem de preferência. No Windows o elemento só registra se o driver da GPU existir
 # (o nvcodec sem nvcuda.dll tem 0 elementos), então a escolha é feita em runtime.
+def _set_loopback(src: Gst.Element, mode: str, pid: int) -> None:
+    """Áudio por processo no wasapi2src. Falha alto: sem o modo certo a voz de quem assiste volta pra transmissão."""
+    problems = [n for n in ("loopback", "loopback-mode", "loopback-target-pid") if src.find_property(n) is None]
+    if not problems:
+        try:
+            src.set_property("loopback", True)
+            Gst.util_set_object_arg(src, "loopback-mode", mode)
+            src.set_property("loopback-target-pid", pid)
+            got = src.get_property("loopback-mode").value_nick
+            if got != mode or src.get_property("loopback-target-pid") != pid:
+                problems.append(f"ficou {got}/{src.get_property('loopback-target-pid')}")
+        except Exception as exc:
+            problems.append(str(exc))
+    if problems:
+        log.warning("áudio por processo (%s, pid %d) não aplicou: %s", mode, pid, ", ".join(problems))
+        print(f"aviso: áudio por processo não aplicou ({', '.join(problems)})", flush=True)
+
+
 LINUX_ENCODERS = (
     ("nvh264enc", "nvenc", "NVENC (GPU NVIDIA)"),
     ("vah264enc", "va", "VA-API (GPU AMD/Intel)"),
@@ -100,6 +119,7 @@ class CapturePipeline:
         portal_fd: int | None = None,
         portal_node: int | None = None,
         monitor_handle: int | None = None,  # Windows: HMONITOR; None = monitor principal
+        window_handle: int | None = None,  # Windows: HWND; vira monitor + crop que acompanha a janela
         preview: bool = True,
         preview_sink=None,  # função que cria o gtk4paintablesink (ver _preview_bridge)
         audio_enabled: bool = True,
@@ -120,6 +140,16 @@ class CapturePipeline:
         self._pattern = pattern
         self._x11 = x11
         self._d3d11 = WINDOWS and not pattern
+        self._window = window_handle if self._d3d11 else None
+        self._follow_id: int | None = None
+        crop = (0, 0, 0, 0)
+        if self._window:
+            winsys.bring_to_front(self._window)  # nada por cima dela quando a captura começar
+            monitor_handle, *crop = winsys.crop_for(self._window)
+            if not (width and height):  # "Fonte": tamanho fixo = o da janela agora; depois a GPU escala
+                width, height = crop[2], crop[3]
+        self._monitor = monitor_handle
+        self._crop = tuple(crop)
         self._frames = 0
         self._reported = -1
         self._last_pts = 0
@@ -156,13 +186,16 @@ class CapturePipeline:
             _try_set(src, "show-pointer", True)
             _try_set(src, "do-timestamp", True)
         elif WINDOWS:
-            # Só monitor inteiro: o d3d11screencapturesrc não tem window-handle (1.28.8).
+            # Sem window-handle no d3d11screencapturesrc (1.28.8): janela = monitor + crop-*.
             src = Gst.ElementFactory.make("d3d11screencapturesrc", "src")
             if src is None:
                 raise RuntimeError("falta o d3d11screencapturesrc (gst-plugins-bad)")
             if monitor_handle:
                 src.set_property("monitor-handle", monitor_handle)
             _try_set(src, "show-cursor", True)
+            if self._window:
+                for prop, value in zip(("crop-x", "crop-y", "crop-width", "crop-height"), self._crop):
+                    src.set_property(prop, value)
         else:
             src = Gst.ElementFactory.make("pipewiresrc", "src")
             src.set_property("fd", int(portal_fd))
@@ -332,11 +365,11 @@ class CapturePipeline:
             _try_set(enc, "b-frames", 0)
             _try_set(enc, "target-usage", 6)
         h264caps = Gst.ElementFactory.make("capsfilter", "h264caps")
+        # Encoder de GPU no Windows (AMF/QSV/MF) nem sempre emite constrained-baseline: not-negotiated.
+        profile = "(string){ constrained-baseline, baseline, main }" if WINDOWS else "constrained-baseline"
         h264caps.set_property(
             "caps",
-            Gst.Caps.from_string(
-                "video/x-h264,profile=constrained-baseline,stream-format=byte-stream,alignment=au"
-            ),
+            Gst.Caps.from_string(f"video/x-h264,profile={profile},stream-format=byte-stream,alignment=au"),
         )
         parse = Gst.ElementFactory.make("h264parse", "parse")
         _try_set(parse, "config-interval", -1)
@@ -478,9 +511,10 @@ class CapturePipeline:
             else:
                 # Áudio do sistema, menos o do próprio LUCE: senão a voz de quem assiste volta pra transmissão.
                 # Process Loopback exige Windows 10 build 20348+ (ou 11); antes disso o wasapi2src falha ao abrir.
-                _try_set(audio_src, "loopback", True)
-                _try_set(audio_src, "loopback-mode", "exclude-process-tree")
-                _try_set(audio_src, "loopback-target-pid", os.getpid())
+                if self._window:  # só o áudio do app da janela (e dos filhos dele)
+                    _set_loopback(audio_src, "include-process-tree", winsys.window_pid(self._window))
+                else:
+                    _set_loopback(audio_src, "exclude-process-tree", os.getpid())
             _try_set(audio_src, "low-latency", True)
         else:
             audio_src = Gst.ElementFactory.make("pulsesrc", "audio-src")
@@ -548,7 +582,47 @@ class CapturePipeline:
         if self._probe_id is not None:
             self._report_id = GLib.timeout_add_seconds(2, self._report_frames)
         self._handshake_id = GLib.timeout_add_seconds(HANDSHAKE_SECONDS, self._check_handshake)
+        if self._window:
+            self._follow_id = GLib.timeout_add(FOLLOW_MS, self._follow_window)
         return False
+
+    def _follow_window(self) -> bool:
+        """Move o crop junto com a janela. O tamanho de saída é fixo (caps após o d3d11convert):
+        se a janela muda de tamanho a GPU reescala, o encoder e o WebRTC não renegociam.
+
+        shortcut: o monitor-handle só muda em NULL/READY, então janela que troca de monitor
+        reinicia a captura (via on_pipeline_error); as 4 crop-* são aplicadas uma a uma e um
+        quadro pode pegar o retângulo pela metade.
+        """
+        hwnd = self._window
+        if not winsys.is_window(hwnd):
+            self._follow_id = None
+            if self._on_pipeline_error is not None:
+                self._on_pipeline_error("a janela transmitida foi fechada")
+            return False
+        if winsys.is_iconic(hwnd):  # minimizada: mantém o último crop até restaurar
+            return True
+        try:
+            hmon, *crop = winsys.crop_for(hwnd)
+        except OSError:
+            return True
+        if hmon != self._monitor:
+            self._follow_id = None
+            if self._on_pipeline_error is not None:
+                self._on_pipeline_error("a janela mudou de monitor")
+            return False
+        if tuple(crop) != self._crop:
+            src = self.pipeline.get_by_name("src")
+            old = self._crop
+            for pos, size in ((0, 2), (1, 3)):  # eixos x/largura e y/altura
+                # encolhendo: tamanho antes da posição; crescendo: posição antes. O retângulo
+                # parcial nunca passa do monitor.
+                order = (size, pos) if crop[size] < old[size] else (pos, size)
+                for i in order:
+                    if crop[i] != old[i]:
+                        src.set_property(("crop-x", "crop-y", "crop-width", "crop-height")[i], crop[i])
+            self._crop = tuple(crop)
+        return True
 
     def _check_handshake(self) -> bool:
         # Corrida dentro do whipsink: às vezes o webrtcbin nunca dispara a oferta e fica em
@@ -591,6 +665,9 @@ class CapturePipeline:
 
     def stop(self) -> None:
         self._stop_heartbeat.set()
+        if self._follow_id is not None:
+            GLib.source_remove(self._follow_id)
+            self._follow_id = None
         if self._handshake_id is not None:
             GLib.source_remove(self._handshake_id)
             self._handshake_id = None

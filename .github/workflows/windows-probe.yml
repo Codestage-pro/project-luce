@@ -116,3 +116,6 @@ jobs:
         continue-on-error: true
         run: |
           timeout 20 gst-launch-1.0 -e d3d11screencapturesrc num-buffers=60 ! d3d11convert ! d3d11download ! fakesink 2>&1 | tail -15
+
+      - name: Captura de janela (monitor + crop dinâmico + áudio por PID)
+        run: python packaging/windows/ci_window_test.py
