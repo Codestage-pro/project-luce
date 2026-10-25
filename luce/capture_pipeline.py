@@ -19,7 +19,7 @@ gi.require_version("GstVideo", "1.0")
 gi.require_version("GstGL", "1.0")
 from gi.repository import GLib, Gst, GstGL, GstVideo
 
-from . import roster, rtc, winsys
+from . import linux_audio, roster, rtc, winsys
 
 log = logging.getLogger("luce.capture")
 
@@ -137,6 +137,7 @@ class CapturePipeline:
         self._gl_display = gl_display
         self._preview_pipeline: Gst.Pipeline | None = None
         self._preview_make = None
+        self._system_audio: linux_audio.SystemAudioExcept | None = None
         self._fps = fps
         self._pattern = pattern
         self._x11 = x11
@@ -531,6 +532,10 @@ class CapturePipeline:
             _try_set(audio_src, "client-name", "Project LUCE")
             if audio_device:
                 _try_set(audio_src, "device", audio_device)
+            elif mute_app:  # sem microfone escolhido: áudio do sistema menos o app silenciado
+                self._system_audio = linux_audio.SystemAudioExcept(mute_app)
+                audio_src = self._system_audio.build()
+                print(f"silenciando {mute_app} na transmissão", flush=True)
         audio_convert = Gst.ElementFactory.make("audioconvert", "audio-convert")
         audio_resample = Gst.ElementFactory.make("audioresample", "audio-resample")
         self._audio_volume = Gst.ElementFactory.make("volume", "audio-volume")
@@ -708,6 +713,9 @@ class CapturePipeline:
         bus.remove_signal_watch()
         self.pipeline.set_state(Gst.State.NULL)
         self.pipeline.get_state(Gst.CLOCK_TIME_NONE)
+        if self._system_audio is not None:
+            self._system_audio.stop()
+            self._system_audio = None
         if self._preview_pipeline is not None:
             self._preview_pipeline.set_state(Gst.State.NULL)
             self._preview_pipeline = None
