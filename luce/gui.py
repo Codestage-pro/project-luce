@@ -10,6 +10,7 @@ janela única de viewer.py (uma tela por pessoa, em grade).
 from __future__ import annotations
 
 import gc
+import os
 import subprocess
 import time
 import urllib.error
@@ -71,6 +72,7 @@ def _list_audio_sources() -> list[tuple[str, str]]:
     try:
         out = subprocess.run(
             ["pactl", "list", "sources"],
+            env={**os.environ, "LC_ALL": "C"},  # em pt_BR o pactl imprime "Nome:"/"Descrição:" e nada casava
             capture_output=True,
             text=True,
             check=True,

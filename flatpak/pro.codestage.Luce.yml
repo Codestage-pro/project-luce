@@ -12,6 +12,9 @@ finish-args:
   - --socket=wayland
   - --socket=fallback-x11
   - --socket=pulseaudio
+  # pw-dump (lista do áudio de cada app) e o pipewiresrc com target-object falam direto com o
+  # PipeWire; só o socket do PulseAudio não basta.
+  - --filesystem=xdg-run/pipewire-0
   # GPU: NVENC/NVDEC (extensão NVIDIA do Flatpak) e VA-API (Mesa). A captura de tela
   # vem do portal (xdg-desktop-portal), que já é acessível por padrão.
   - --device=dri
