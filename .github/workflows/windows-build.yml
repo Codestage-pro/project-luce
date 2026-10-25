@@ -52,7 +52,9 @@ jobs:
             | sed 's|^/||' | sort -u > files.txt
           # o idioma do app é pt-BR: mantém só a tradução dele
           xargs -a pkgs.txt pacman -Ql | awk '{print $2}' | grep -E '^/ucrt64/share/locale/pt_BR/' | grep -v '/$' | sed 's|^/||' >> files.txt
-          (cd / && tar -T "$OLDPWD/files.txt" -cf -) | tar -C "$out" -xf -
+          # alguns pacotes listam arquivos que não existem (links soltos): fora
+          while read -r f; do [ -e "/$f" ] && echo "$f"; done < files.txt | sort -u > present.txt
+          (cd / && tar -T "$OLDPWD/present.txt" -cf -) | tar -C "$out" -xf -
           cp -r luce "$out/luce"
           cp packaging/windows/luce_launcher.pyw "$out/"
           find "$out" -name __pycache__ -type d -prune -exec rm -rf {} +
