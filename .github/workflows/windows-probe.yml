@@ -91,3 +91,15 @@ jobs:
           gst-inspect-1.0 openh264enc >/dev/null 2>&1 && echo "OK openh264enc" || echo "FALTA openh264enc"
           echo "--- wasapi2src enum:"
           gst-inspect-1.0 wasapi2src | sed -n '/loopback-mode/,/loopback-target-pid/p'
+
+      - name: Quem captura janela? x264? crop é dinâmico?
+        run: |
+          echo "--- elementos com capture/screen/window/wgc no nome ou descrição:"
+          gst-inspect-1.0 | grep -iE "capture|screen|window|wgc|gdi" || true
+          echo "--- x264/openh264:"
+          gst-inspect-1.0 x264enc >/dev/null 2>&1 && echo "OK x264enc" || echo "FALTA x264enc"
+          gst-inspect-1.0 openh264enc >/dev/null 2>&1 && echo "OK openh264enc" || echo "FALTA openh264enc"
+          echo "--- flags (mutável em PLAYING?) do crop/monitor no d3d11screencapturesrc:"
+          gst-inspect-1.0 d3d11screencapturesrc | grep -A3 -E "crop-x|crop-width|monitor-index" | grep -E "crop|monitor|flags" || true
+          echo "--- winscreencap/gdiscreencapsrc:"
+          gst-inspect-1.0 gdiscreencapsrc 2>&1 | grep -E "^  (x|y|width|height|monitor|cursor|window)" || true
