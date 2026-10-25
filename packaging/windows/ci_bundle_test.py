@@ -18,7 +18,8 @@ registry = data / "gst-registry.bin"
 assert not registry.exists(), "o registro já existia antes da primeira abertura"
 assert not list(root.rglob("registry*.bin")), "o bundle não pode levar registro do runner"
 
-for icon in ("version.txt", "luce.ico", "ucrt64/share/icons/hicolor/256x256/apps/pro.codestage.Luce.png"):
+assert (root / "version.txt").read_text().strip(), "falta o version.txt"
+for icon in ("luce.ico", "ucrt64/share/icons/hicolor/256x256/apps/pro.codestage.Luce.png"):
     assert (root / icon).stat().st_size > 1000, f"falta o ícone {icon}"
 
 import gi  # noqa: E402
