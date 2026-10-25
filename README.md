@@ -8,7 +8,7 @@
 
 ### Divida a sua tela com a galera. Sem Electron, sem travar, sem queimar a CPU.
 
-**Locação Universal Centralizada de Entretenimento** — o *Go Live* que o Linux merecia.
+**Localização Universal Centralizada de Entretenimento** — o *Go Live* que o Linux merecia.
 
 <br/>
 
