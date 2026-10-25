@@ -63,3 +63,19 @@ jobs:
           print("Gst", Gst.version_string(), "| Gtk", Gtk.get_major_version(), Gtk.get_minor_version())
           print("gtk4paintablesink:", Gst.ElementFactory.find("gtk4paintablesink") is not None)
           PY
+
+      - name: DLLs dos plugins de GPU (elementos só registram com driver)
+        run: |
+          ls /ucrt64/lib/gstreamer-1.0 | grep -iE "nvcodec|amfcodec|qsv|d3d11|d3d12|mediafoundation|wasapi2|rswebrtc|webrtchttp|gtk4|x264|libav" || true
+          echo "--- elementos do plugin d3d11 / mediafoundation / wasapi2 sem GPU:"
+          gst-inspect-1.0 d3d11 | grep -E "^\s+[a-z0-9]+:" || true
+          gst-inspect-1.0 mediafoundation | grep -E "^\s+[a-z0-9]+:" || true
+          echo "--- nvcodec / amfcodec / qsv:"
+          gst-inspect-1.0 nvcodec 2>&1 | head -20 || true
+          gst-inspect-1.0 amfcodec 2>&1 | head -5 || true
+          gst-inspect-1.0 qsv 2>&1 | head -5 || true
+
+      - name: Enum do loopback-mode e propriedades do whipclientsink
+        run: |
+          gst-inspect-1.0 wasapi2src | grep -A6 "GstWasapi2SrcLoopbackMode"
+          gst-inspect-1.0 whipclientsink | grep -E "signaller|video-caps|congestion|use-link-headers|auth-token|whip-endpoint|ice-" || true
