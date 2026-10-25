@@ -13,3 +13,4 @@ graphify-out/
 
 # credenciais do Cloudflare Realtime SFU e senha do grupo (ver server/.env.example)
 server/.env
+.vscode/

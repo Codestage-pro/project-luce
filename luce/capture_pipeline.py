@@ -25,6 +25,7 @@ log = logging.getLogger("luce.capture")
 HEARTBEAT_SECONDS = 10
 # O WHIP normal conecta em ~1 s; passou disso sem sair do "new", a negociação não começou.
 HANDSHAKE_SECONDS = 6
+FLOW_SECONDS = 3
 
 Gst.init(None)
 
@@ -104,6 +105,8 @@ class CapturePipeline:
         self._src_height: int | None = None
         self._report_id: int | None = None
         self._handshake_id: int | None = None
+        self._flow_id: int | None = None
+        self._sent = 0
         self._probe_id: int | None = None
         self.pipeline = Gst.Pipeline.new("luce-capture")
 
@@ -140,7 +143,9 @@ class CapturePipeline:
             # O compositor só manda quadro quando a tela muda (niri, GNOME...). Tela parada =
             # nenhum quadro = encoder sem IDR: 0 kbps pra quem transmite e tela preta pra quem
             # entra depois. Reenviar o último quadro mantém o fluxo (o videorate corta o excesso).
-            _try_set(src, "keepalive-time", max(1000 // fps, 1))
+            # Abaixo de 33 ms (1000 // 60 = 16) ele dispara antes de cada quadro real do compositor
+            # (16,7 ms a 60 Hz) e esgota o pool do PipeWire: a captura trava em 2-5 quadros, 0 kbps.
+            _try_set(src, "keepalive-time", max(1000 // fps, 33))
             # shortcut: capturando uma janela específica, se ela for redimensionada
             # no meio da transmissão o pipewiresrc derruba o pipeline com
             # "gst_video_frame_map_id: assertion 'info->width <= meta->width'
@@ -275,6 +280,7 @@ class CapturePipeline:
         _try_set(pay, "pt", 96)
         _try_set(pay, "config-interval", -1)
         _try_set(pay, "aggregate-mode", "zero-latency")
+        pay.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, self._count_sent)
         whip = Gst.ElementFactory.make("whipsink", "whip")
         if whip is None:
             raise RuntimeError("whipsink não está instalado (gst-plugin-webrtchttp)")
@@ -457,6 +463,21 @@ class CapturePipeline:
         if state in ("new", "failed") and self._on_pipeline_error is not None:
             log.warning("whip: conexão em '%s' após %ss, reiniciando", state, HANDSHAKE_SECONDS)
             self._on_pipeline_error("a conexão com o servidor não iniciou")
+        else:
+            self._flow_id = GLib.timeout_add_seconds(FLOW_SECONDS, self._check_flow, self._sent)
+        return False
+
+    def _count_sent(self, _pad, _info) -> Gst.PadProbeReturn:
+        self._sent += 1
+        return Gst.PadProbeReturn.OK
+
+    def _check_flow(self, sent_before: int) -> bool:
+        # Outra corrida do webrtcbin: conecta (ICE "completed") e mesmo assim para de aceitar
+        # quadros após os 4 primeiros, 0 pacotes saindo. Vídeo a 30+ fps passa de 10 em 3 s.
+        self._flow_id = None
+        if self._sent - sent_before < 10 and self._on_pipeline_error is not None:
+            log.warning("whip: só %d quadros enviados em %ss, reiniciando", self._sent - sent_before, FLOW_SECONDS)
+            self._on_pipeline_error("o envio travou")
         return False
 
     def stop(self) -> None:
@@ -464,6 +485,9 @@ class CapturePipeline:
         if self._handshake_id is not None:
             GLib.source_remove(self._handshake_id)
             self._handshake_id = None
+        if self._flow_id is not None:
+            GLib.source_remove(self._flow_id)
+            self._flow_id = None
         if self._report_id is not None:
             GLib.source_remove(self._report_id)
             self._report_id = None
