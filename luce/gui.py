@@ -34,7 +34,8 @@ if not WINDOWS:
 from . import config, roster, stats, theme
 from .capture_pipeline import CapturePipeline
 if WINDOWS:
-    from .winsys import is_window, list_monitors, list_windows
+    from . import updater
+    from .winsys import apply_icon, is_window, list_monitors, list_windows
 else:  # o portal usa dbus, que não existe no Windows
     from .portal import PortalError, ScreenCast, screencast_available, x11_session
 from .viewer import ViewerWindow
@@ -260,6 +261,13 @@ class MainWindow(Gtk.ApplicationWindow):
         head.append(settings_btn)
         root.append(head)
         root.append(Gtk.Box(css_classes=["beam"]))
+
+        if WINDOWS:  # o Flatpak se atualiza sozinho; o instalador do Windows não
+            self._update_btn = Gtk.Button(visible=False, css_classes=["suggested-action"])
+            self._update_btn.connect("clicked", self._on_update_clicked)
+            root.append(self._update_btn)
+            self._update: tuple[str, str, str | None] | None = None
+            self._run_in_thread(updater.find_update, self._on_update_found)
 
         cfg = config.load()
         self._name_entry = Gtk.Entry(text=cfg["name"], placeholder_text="seu nome")
@@ -772,6 +780,41 @@ class MainWindow(Gtk.ApplicationWindow):
             line += f" · {w}×{h} · {fps:.0f} fps"
         self._stats_label.set_label(line)
 
+    @staticmethod
+    def _run_in_thread(work, done) -> None:
+        """work() fora da thread da GUI; done(resultado, erro) de volta nela."""
+        def run():
+            try:
+                result, error = work(), None
+            except Exception as exc:  # sem rede / GitHub fora do ar / limite da API
+                result, error = None, exc
+            GLib.idle_add(done, result, error)
+        threading.Thread(target=run, daemon=True).start()
+
+    def _on_update_found(self, found, error) -> None:
+        if error is not None or found is None:  # na checagem, falhar em silêncio: não atrapalha quem só quer transmitir
+            return
+        self._update = found
+        self._update_btn.set_label(f"Nova versão {found[0]} disponível · Atualizar agora")
+        self._update_btn.set_visible(True)
+
+    def _on_update_clicked(self, _btn) -> None:
+        _version, url, sha256 = self._update
+        self._update_btn.set_sensitive(False)
+        self._update_btn.set_label("Baixando… 0%")
+        self._run_in_thread(
+            lambda: updater.download(url, sha256, lambda f: GLib.idle_add(self._update_btn.set_label, f"Baixando… {f:.0%}")),
+            self._on_update_downloaded,
+        )
+
+    def _on_update_downloaded(self, installer, error) -> None:
+        if error is not None:
+            self._update_btn.set_label(f"Não consegui baixar ({error}) · Tentar de novo")
+            self._update_btn.set_sensitive(True)
+            return
+        updater.run_installer(installer)  # fecha o app e abre de novo quando terminar
+        self.get_application().quit()
+
     def _tell_watching(self, name: str, on: bool) -> None:
         """Avisa o servidor (fora da thread da GUI) que estou assistindo `name`."""
         cfg = config.load()
@@ -847,6 +890,8 @@ class MainWindow(Gtk.ApplicationWindow):
 class LuceApp(Gtk.Application):
     def __init__(self) -> None:
         super().__init__(application_id="pro.codestage.Luce")
+        if WINDOWS:
+            self.connect("window-added", lambda _a, win: win.connect("map", lambda _w: GLib.idle_add(apply_icon)))
 
     def do_activate(self) -> None:
         MainWindow(self).present()

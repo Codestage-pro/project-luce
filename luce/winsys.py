@@ -12,6 +12,7 @@ import os
 import sys
 import time
 from ctypes import wintypes
+from pathlib import Path
 
 Rect = tuple[int, int, int, int]  # left, top, right, bottom
 
@@ -63,6 +64,8 @@ if sys.platform == "win32":
         ("GetWindowThreadProcessId", [_H, ctypes.POINTER(wintypes.DWORD)], wintypes.DWORD),
         ("MonitorFromWindow", [_H, wintypes.DWORD], _H),
         ("GetMonitorInfoW", [_H, ctypes.POINTER(_MonitorInfo)], _B),
+        ("LoadImageW", [_H, wintypes.LPCWSTR, wintypes.UINT, ctypes.c_int, ctypes.c_int, wintypes.UINT], _H),
+        ("SendMessageW", [_H, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM], wintypes.LPARAM),
     ):
         getattr(user32, _fn).argtypes, getattr(user32, _fn).restype = _args, _res
     dwmapi.DwmGetWindowAttribute.argtypes = [_H, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
@@ -135,6 +138,23 @@ if sys.platform == "win32":
                 time.sleep(0.05)
             time.sleep(0.2)
         user32.SetForegroundWindow(hwnd)  # pode ser recusado pelo Windows; nesse caso só segue
+
+    def apply_icon() -> None:
+        """Põe o logo na barra de título/Alt-Tab das janelas do LUCE: o GTK4 no Windows não faz isso."""
+        ico = Path(__file__).resolve().parents[1] / "luce.ico"
+        if not ico.exists():  # rodando do repositório, sem bundle
+            return
+        me = os.getpid()
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HANDLE, wintypes.LPARAM)
+        def visit(hwnd, _data):
+            if window_pid(hwnd) == me and user32.IsWindowVisible(hwnd):
+                for kind, size in ((1, 32), (0, 16)):  # ICON_BIG, ICON_SMALL
+                    icon = user32.LoadImageW(None, str(ico), 1, size, size, 0x10)  # IMAGE_ICON, LR_LOADFROMFILE
+                    user32.SendMessageW(hwnd, 0x80, kind, icon)  # WM_SETICON
+            return True
+
+        user32.EnumWindows(visit, 0)
 
     def list_windows() -> list[tuple[int, str]]:
         """[(HWND, título)] das janelas de aplicativo visíveis, menos as do próprio LUCE."""

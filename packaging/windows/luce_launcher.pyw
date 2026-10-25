@@ -1,12 +1,16 @@
-"""Ponto de entrada do Project LUCE no Windows (atalho do Menu Iniciar).
+r"""Ponto de entrada do Project LUCE no Windows (atalho do Menu Iniciar).
 
 pythonw não tem console: tudo que o app imprime vai para %LOCALAPPDATA%\LUCE\luce.log, e o
 GStreamer (aviso/erro) para gst.log. Mande esses dois arquivos quando algo não funcionar.
 """
 
+import ctypes
 import os
 import sys
 from pathlib import Path
+
+# mesmo ID do atalho do instalador: a barra de tarefas agrupa e mostra o ícone dele
+ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("pro.codestage.Luce")
 
 root = Path(__file__).resolve().parent
 sys.path.insert(0, str(root))

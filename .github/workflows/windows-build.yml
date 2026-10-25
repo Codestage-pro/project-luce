@@ -61,12 +61,23 @@ jobs:
           while read -r f; do [ -e "/$f" ] && echo "$f"; done < files.txt | sort -u > present.txt
           (cd / && tar -T "$OLDPWD/present.txt" -cf -) | tar -C "$out" -xf -
           cp -r luce "$out/luce"
-          cp packaging/windows/luce_launcher.pyw "$out/"
+          cp packaging/windows/luce_launcher.pyw packaging/windows/luce.ico "$out/"
+          # o logo no cabeçalho do app vem do tema de ícones (mesmo nome do Linux)
+          for n in 48 128 256; do
+            install -Dm644 "packaging/windows/icons/$n.png" "$out/ucrt64/share/icons/hicolor/${n}x${n}/apps/pro.codestage.Luce.png"
+          done
           find "$out" -name __pycache__ -type d -prune -exec rm -rf {} +
           # o registro do GStreamer nasce no PC da pessoa (winenv.py); o do runner nunca vai junto
           find "$out" \( -iname 'registry*.bin' -o -iname 'gst-registry*' \) -print -delete
           test -z "$(find "$out" -iname '*registry*.bin')"
           du -sh "$out"
+
+      - name: Versão (o app compara com a última Release)
+        shell: pwsh
+        run: |
+          $v = "${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('1.0.15-probe.{0}', github.run_number) }}".TrimStart('v')
+          Set-Content -NoNewline -Path dist\LUCE\version.txt -Value $v
+          "LUCE_VERSION=$v" >> $env:GITHUB_ENV
 
       - name: Testa o bundle (python do bundle, PATH limpo, sem MSYS2)
         shell: pwsh
@@ -89,7 +100,7 @@ jobs:
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress | Out-Null
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('1.0.15-probe.{0}', github.run_number) }}" packaging\windows\luce.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:LUCE_VERSION" packaging\windows\luce.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC falhou" }
           Get-ChildItem dist\*.exe, dist\*.zip | Format-Table Name, @{n='MB';e={[int]($_.Length/1MB)}}
 
