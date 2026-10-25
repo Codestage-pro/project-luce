@@ -256,6 +256,8 @@ class CapturePipeline:
             # Tudo na VRAM: o d3d11convert converte BGRA->NV12 e escala (com barras, sem esticar)
             # sem a CPU tocar no pixel. Só o x264 baixa a textura (d3d11download, mais abaixo).
             raw_preview = False
+            # pixel-aspect-ratio=1/1 é o que faz as barras valerem: sem ele o d3d11convert estica a imagem
+            # e avisa a diferença num PAR que o WebRTC ignora (visto no CI: 4:3 virava 16:9 com PAR 3/4).
             conv = Gst.ElementFactory.make("d3d11convert", "d3d11conv")
             src_caps = Gst.ElementFactory.make("capsfilter", "src-caps")
             if conv is None or src_caps is None:
@@ -269,7 +271,7 @@ class CapturePipeline:
             front = [src, src_caps, conv, rate]
             caps.set_property(
                 "caps",
-                Gst.Caps.from_string(f"video/x-raw(memory:D3D11Memory),format=NV12,{size}framerate={fps}/1"),
+                Gst.Caps.from_string(f"video/x-raw(memory:D3D11Memory),format=NV12,{size}pixel-aspect-ratio=1/1,framerate={fps}/1"),
             )
         else:
             # O portal manda DMA-BUF e todos os quadros chegam com o mesmo PTS;

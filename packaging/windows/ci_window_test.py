@@ -93,7 +93,7 @@ def main() -> int:
         pipe = Gst.parse_launch(
             f"d3d11screencapturesrc name=s monitor-handle={hmon} crop-x={x} crop-y={y} crop-width={w} crop-height={h} "
             "! video/x-raw(memory:D3D11Memory),framerate=30/1 ! d3d11convert add-borders=true "
-            "! video/x-raw(memory:D3D11Memory),format=NV12,width=1280,height=720,framerate=30/1 "
+            "! video/x-raw(memory:D3D11Memory),format=NV12,width=1280,height=720,pixel-aspect-ratio=1/1,framerate=30/1 "
             "! d3d11download ! fakesink name=f sync=false"
         )
         errors, count = [], [0]
@@ -117,6 +117,8 @@ def main() -> int:
         print("quadros antes/depois:", before, count[0], "| avisos:", errors, "| caps na saída:", caps)
         assert count[0] > before > 0, "a captura parou ao mudar o crop"
         assert "width=(int)1280" in caps and "height=(int)720" in caps, caps
+        assert "pixel-aspect-ratio=(fraction)1/1" in caps, "sem PAR 1/1 o d3d11convert estica em vez de pôr barras"
+        assert "pixel-aspect-ratio=1/1" in p.pipeline.get_by_name("caps").get_property("caps").to_string().replace("(fraction)", "")
         assert not any("rror" in e for e in errors), errors
         p.stop()
     finally:
