@@ -22,6 +22,6 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-python
       - run: |
-          g++ -O2 -shared luce/windows/wgc_capture.cpp -o luce_wgc.dll -ld3d11 -ldxgi -lole32
+          g++ -O2 -shared luce/windows/wgc_capture.cpp -o luce_wgc.dll -lruntimeobject -ld3d11 -ldxgi -lole32
           ls -lh luce_wgc.dll
           python -c "import ctypes; lib = ctypes.CDLL('./luce_wgc.dll'); print('wgc supported:', lib.luce_wgc_is_supported())"
