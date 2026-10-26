@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 import threading
+import time
 
 import gi
 
@@ -164,6 +165,8 @@ class CapturePipeline:
         self.encoded_frames = 0  # o que o encoder de fato entrega: base do fps/resolução na GUI
         self.encoded_size: tuple[int, int] | None = None
         self._probe_id: int | None = None
+        self._last_frame: Gst.Buffer | None = None  # o que o _keepalive_loop reenvia com a tela parada
+        self._last_frame_at = 0.0
         self.pipeline = Gst.Pipeline.new("luce-capture")
 
         # ximagesrc e videotestsrc entregam quadro cru na memória comum; o
@@ -207,12 +210,10 @@ class CapturePipeline:
             src.set_property("do-timestamp", True)
             _try_set(src, "provide-clock", False)
             _try_set(src, "client-name", "ProjectLUCE")
-            # O compositor só manda quadro quando a tela muda (niri, GNOME...). Tela parada =
-            # nenhum quadro = encoder sem IDR: 0 kbps pra quem transmite e tela preta pra quem
-            # entra depois. Reenviar o último quadro mantém o fluxo (o videorate corta o excesso).
-            # Abaixo de 33 ms (1000 // 60 = 16) ele dispara antes de cada quadro real do compositor
-            # (16,7 ms a 60 Hz) e esgota o pool do PipeWire: a captura trava em 2-5 quadros, 0 kbps.
-            _try_set(src, "keepalive-time", max(1000 // fps, 33))
+            # Tela parada = o compositor não manda quadro: quem reenvia é o _keepalive_loop.
+            # O keepalive-time do pipewiresrc não serve: o quadro reenviado sai com PTS = hora
+            # absoluta do relógio e, com o GstSystemClock (o áudio "Silenciar app" não dá relógio),
+            # o basesrc espera horas por ele: a captura congela em ~5 s e tudo fica preto.
             # shortcut: capturando uma janela específica, se ela for redimensionada
             # no meio da transmissão o pipewiresrc derruba o pipeline com
             # "gst_video_frame_map_id: assertion 'info->width <= meta->width'
@@ -489,7 +490,6 @@ class CapturePipeline:
         # oferta toda com "codecs not supported by client" (ver watch_pipeline.py).
         # "transmitir áudio ou não" é então mute no `volume`, não a decisão de
         # montar o ramo.
-        audio_src_caps = None
         if pattern:
             audio_src = Gst.ElementFactory.make("audiotestsrc", "audio-src")
             audio_src.set_property("is-live", True)
@@ -500,13 +500,12 @@ class CapturePipeline:
             # não só buffers chegando — alvo inválido cai silenciosamente pro
             # dispositivo padrão em vez de dar erro, então se o app fechar no
             # meio a transmissão não quebra, só volta a pegar o microfone).
-            audio_src = Gst.ElementFactory.make("pipewiresrc", "audio-src")
-            _try_set(audio_src, "target-object", audio_device[len("app:"):])
+            app_src = Gst.ElementFactory.make("pipewiresrc", None)
+            _try_set(app_src, "target-object", audio_device[len("app:"):])
             # Sem isso o nó aparece no qpwgraph como "python3.14" (nome
             # genérico do processo) em vez de algo reconhecível.
-            _try_set(audio_src, "client-name", "Project LUCE")
-            audio_src_caps = Gst.ElementFactory.make("capsfilter", "audio-src-caps")
-            audio_src_caps.set_property("caps", Gst.Caps.from_string("audio/x-raw,channels=2"))
+            _try_set(app_src, "client-name", "Project LUCE")
+            audio_src = linux_audio.with_silence(app_src)  # app pausado não trava a transmissão
         elif WINDOWS:
             audio_src = Gst.ElementFactory.make("wasapi2src", "audio-src")
             if audio_src is None:
@@ -524,18 +523,20 @@ class CapturePipeline:
                 else:
                     _set_loopback(audio_src, "exclude-process-tree", os.getpid())
             _try_set(audio_src, "low-latency", True)
+        elif mute_app and not audio_device:  # sem microfone escolhido: áudio do sistema menos o app silenciado
+            self._system_audio = linux_audio.SystemAudioExcept(mute_app)
+            audio_src = self._system_audio.build()
+            print(f"silenciando {mute_app} na transmissão", flush=True)
         else:
-            audio_src = Gst.ElementFactory.make("pulsesrc", "audio-src")
+            mic = Gst.ElementFactory.make("pulsesrc", None)
             # client-name é o que aparece no qpwgraph/pavucontrol pra rotear
             # o áudio; funciona tanto em PulseAudio quanto em PipeWire (via
             # pipewire-pulse), sem código separado pros dois.
-            _try_set(audio_src, "client-name", "Project LUCE")
+            _try_set(mic, "client-name", "Project LUCE")
             if audio_device:
-                _try_set(audio_src, "device", audio_device)
-            elif mute_app:  # sem microfone escolhido: áudio do sistema menos o app silenciado
-                self._system_audio = linux_audio.SystemAudioExcept(mute_app)
-                audio_src = self._system_audio.build()
-                print(f"silenciando {mute_app} na transmissão", flush=True)
+                _try_set(mic, "device", audio_device)
+            # microfone mudo ou ligado pelo WirePlumber num app parado não trava a transmissão
+            audio_src = linux_audio.with_silence(mic)
         audio_convert = Gst.ElementFactory.make("audioconvert", "audio-convert")
         audio_resample = Gst.ElementFactory.make("audioresample", "audio-resample")
         self._audio_volume = Gst.ElementFactory.make("volume", "audio-volume")
@@ -545,11 +546,7 @@ class CapturePipeline:
         _try_set(audio_enc, "audio-type", "restricted-lowdelay")
         audio_pay = Gst.ElementFactory.make("rtpopuspay", "audio-pay")
         _try_set(audio_pay, "pt", 97)
-        audio_chain = (
-            (audio_src, audio_src_caps, audio_convert, audio_resample, self._audio_volume, audio_enc, audio_pay)
-            if audio_src_caps is not None
-            else (audio_src, audio_convert, audio_resample, self._audio_volume, audio_enc, audio_pay)
-        )
+        audio_chain = (audio_src, audio_convert, audio_resample, self._audio_volume, audio_enc, audio_pay)
         for element in audio_chain:
             self.pipeline.add(element)
         for left, right in zip(audio_chain, audio_chain[1:]):
@@ -583,6 +580,23 @@ class CapturePipeline:
             except OSError as exc:  # queda de rede passageira: o próximo tenta de novo
                 log.debug("heartbeat falhou: %s", exc)
 
+    def _keepalive_loop(self) -> None:
+        """Tela parada: reenvia o último quadro do portal.
+
+        O compositor só manda quadro quando a tela muda (niri, GNOME...). Sem quadro o
+        encoder não solta IDR: 0 kbps pra quem transmite e tela preta pra quem entra
+        depois. A cópia passa pela _restamp (PTS = agora) e o videorate corta o excesso.
+        O chain do pad seguinte trava o stream lock, então não cruza com o quadro real.
+        """
+        interval = max(1000 // self._fps, 33) / 1000
+        while not self._stop_heartbeat.wait(interval):
+            frame = self._last_frame
+            if frame is None or time.monotonic() - self._last_frame_at < interval:
+                continue
+            src = self.pipeline.get_by_name("src")
+            if src is not None:
+                src.get_static_pad("src").push(frame.copy())
+
     def start(self) -> bool:
         self.pipeline.set_state(Gst.State.PLAYING)
         if self._preview_make is not None:
@@ -592,6 +606,7 @@ class CapturePipeline:
         # portal; sem ela o relatório imprimiria "0 frames" pra sempre e
         # pareceria que a captura (ximagesrc/--pattern) está morta.
         if self._probe_id is not None:
+            threading.Thread(target=self._keepalive_loop, daemon=True).start()
             self._report_id = GLib.timeout_add_seconds(2, self._report_frames)
         self._handshake_id = GLib.timeout_add_seconds(HANDSHAKE_SECONDS, self._check_handshake)
         if self._window:
@@ -677,6 +692,7 @@ class CapturePipeline:
 
     def stop(self) -> None:
         self._stop_heartbeat.set()
+        self._last_frame = None  # segurar o buffer do PipeWire trava a ida pra NULL
         if self._follow_id is not None:
             GLib.source_remove(self._follow_id)
             self._follow_id = None
@@ -793,6 +809,7 @@ class CapturePipeline:
         if self._probe_id is not None:
             pad.remove_probe(self._probe_id)
             self._probe_id = None
+        self._last_frame = None
         pad.unlink(peer)
         old_src.set_state(Gst.State.NULL)
         self.pipeline.remove(old_src)
@@ -869,6 +886,8 @@ class CapturePipeline:
             buf.dts = Gst.CLOCK_TIME_NONE
             buf.duration = step
             self._frames += 1
+            self._last_frame = buf
+            self._last_frame_at = time.monotonic()
         except Exception as exc:
             if not getattr(self, "_restamp_warned", False):
                 print(f"aviso do vídeo: {exc}", flush=True)

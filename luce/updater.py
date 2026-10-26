@@ -1,6 +1,7 @@
-"""Atualização do app no Windows: acha a Release mais nova no GitHub, baixa o instalador e roda.
+"""Atualização do app no Windows e no Linux (Flatpak).
 
-O Flatpak se atualiza sozinho; no Windows o Luce-Setup.exe da Release oficial (tag v*) faz isso.
+No Windows: acha a Release mais nova no GitHub, baixa o Luce-Setup.exe e roda.
+No Linux (Flatpak): avisa quando há versão nova no GitHub e dispara a atualização via portal.
 Prerelease (windows-test) não conta: só quem instala dela atualiza dela, na mão.
 """
 
@@ -8,8 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
+import sys
 import tempfile
 import urllib.request
 from pathlib import Path
@@ -18,13 +21,24 @@ API = "https://api.github.com/repos/Codestage-pro/project-luce/releases/latest"
 ROOT = Path(__file__).resolve().parents[1]  # no bundle: a pasta com version.txt e luce.ico
 
 
+def is_flatpak() -> bool:
+    return Path("/.flatpak-info").exists()
+
+
 def _numbers(version: str) -> tuple[int, ...]:
     """'v1.0.16' / '1.0.15-probe.7' -> (1, 0, 16) / (1, 0, 15)."""
     return tuple(int(n) for n in re.findall(r"\d+", version.split("-")[0].lstrip("v")))
 
 
 def current_version() -> str | None:
-    """None fora do bundle (rodando do repositório): nesse caso não há o que atualizar."""
+    """None fora do bundle ou flatpak (rodando do repositório): nesse caso não há o que atualizar."""
+    if is_flatpak():
+        try:
+            xml = Path("/app/share/metainfo/pro.codestage.Luce.metainfo.xml").read_text()
+            m = re.search(r'<release\s+version="([^"]+)"', xml)
+            return m.group(1) if m else None
+        except OSError:
+            return None
     try:
         return (ROOT / "version.txt").read_text().strip()
     except OSError:
@@ -39,12 +53,15 @@ def find_update() -> tuple[str, str, str | None] | None:
     req = urllib.request.Request(API, headers={"Accept": "application/vnd.github+json", "User-Agent": "project-luce"})
     with urllib.request.urlopen(req, timeout=10) as resp:
         release = json.load(resp)
-    if _numbers(release["tag_name"]) <= _numbers(mine):
+    tag = release["tag_name"].lstrip("v")
+    if _numbers(tag) <= _numbers(mine):
         return None
+    if is_flatpak():
+        return tag, "", None
     for asset in release["assets"]:
         if asset["name"] == "Luce-Setup.exe":
             digest = asset.get("digest") or ""
-            return release["tag_name"].lstrip("v"), asset["browser_download_url"], digest.removeprefix("sha256:") or None
+            return tag, asset["browser_download_url"], digest.removeprefix("sha256:") or None
     return None
 
 
@@ -71,3 +88,71 @@ def download(url: str, sha256: str | None, progress) -> Path:
 def run_installer(path: Path) -> None:
     """Instala por cima (mesma pasta, mesmo AppId); o instalador fecha o app e abre de novo no fim."""
     subprocess.Popen([str(path), "/SILENT", "/CLOSEAPPLICATIONS"], creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+
+
+def flatpak_update(progress_cb, done_cb) -> None:
+    """Atualiza o Flatpak via portal e avisa progress_cb(0..100) e done_cb(erro | None)."""
+    import dbus
+    from dbus.mainloop.glib import DBusGMainLoop
+    from gi.repository import GLib
+
+    DBusGMainLoop(set_as_default=True)
+    bus = dbus.SessionBus()
+
+    # Se a gente tiver acesso ao PermissionStore (finish-args), já garante a permissão
+    try:
+        ps = bus.get_object("org.freedesktop.impl.portal.PermissionStore", "/org/freedesktop/impl/portal/PermissionStore")
+        iface_ps = dbus.Interface(ps, "org.freedesktop.impl.portal.PermissionStore")
+        iface_ps.SetPermission("flatpak", dbus.Boolean(True), "updates", "pro.codestage.Luce", ["yes"])
+    except Exception:
+        pass
+
+    portal = bus.get_object("org.freedesktop.portal.Flatpak", "/org/freedesktop/portal/Flatpak")
+    portal_iface = dbus.Interface(portal, "org.freedesktop.portal.Flatpak")
+    monitor_path = portal_iface.CreateUpdateMonitor({})
+    monitor = bus.get_object("org.freedesktop.portal.Flatpak", monitor_path)
+    monitor_iface = dbus.Interface(monitor, "org.freedesktop.portal.Flatpak.UpdateMonitor")
+
+    finished = False
+
+    def on_progress(info):
+        nonlocal finished
+        if finished:
+            return
+        status = int(info.get("status", 0))
+        prog = int(info.get("progress", 0))
+        if status == 0:  # RUNNING
+            GLib.idle_add(progress_cb, prog)
+        elif status in (1, 2):  # 1: EMPTY, 2: DONE
+            finished = True
+            GLib.idle_add(done_cb, None)
+        elif status == 3:  # ERROR
+            finished = True
+            err_msg = str(info.get("error_message") or info.get("error") or "Erro ao atualizar Flatpak")
+            GLib.idle_add(done_cb, RuntimeError(err_msg))
+
+    bus.add_signal_receiver(
+        on_progress,
+        dbus_interface="org.freedesktop.portal.Flatpak.UpdateMonitor",
+        signal_name="Progress",
+        path=monitor_path,
+    )
+
+    try:
+        monitor_iface.Update("", {})
+    except Exception as exc:
+        if not finished:
+            finished = True
+            GLib.idle_add(done_cb, exc)
+
+
+def restart_flatpak() -> None:
+    """Roda a versão nova via portal Spawn (LATEST_VERSION = 2) e encerra o processo atual."""
+    import dbus
+    bus = dbus.SessionBus()
+    portal = bus.get_object("org.freedesktop.portal.Flatpak", "/org/freedesktop/portal/Flatpak")
+    iface = dbus.Interface(portal, "org.freedesktop.portal.Flatpak")
+    cmd = [dbus.ByteArray(b"sh"), dbus.ByteArray(b"-c"), dbus.ByteArray(b"sleep 1 && exec luce")]
+    iface.Spawn(dbus.ByteArray(b""), cmd, {}, {}, dbus.UInt32(2), {})
+    sys.exit(0)
+

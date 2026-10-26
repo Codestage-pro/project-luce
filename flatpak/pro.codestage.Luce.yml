@@ -18,6 +18,9 @@ finish-args:
   # GPU: NVENC/NVDEC (extensão NVIDIA do Flatpak) e VA-API (Mesa). A captura de tela
   # vem do portal (xdg-desktop-portal), que já é acessível por padrão.
   - --device=dri
+  # Auto-atualização no Flatpak via portal e bandeja do sistema (StatusNotifierItem)
+  - --talk-name=org.freedesktop.impl.portal.PermissionStore
+  - --talk-name=org.kde.StatusNotifierWatcher
 
 modules:
   # O runtime GNOME 51 tem GStreamer 1.28 com gtk4paintablesink, nvcodec e va, mas não

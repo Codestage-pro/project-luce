@@ -49,6 +49,55 @@ def wanted_streams(graph: list[dict], mute_app: str) -> tuple[set[int], set[int]
     return present, running
 
 
+def _silent_mixer() -> tuple[Gst.Bin, Gst.Element]:
+    """Bin "audio-src" com um audiomixer que nunca para: silêncio ao vivo num pad, as fontes nos outros."""
+    bin_ = Gst.Bin.new("audio-src")
+    silence = Gst.ElementFactory.make("audiotestsrc", None)
+    silence.set_property("wave", 4)  # silence
+    silence.set_property("is-live", True)
+    caps = Gst.ElementFactory.make("capsfilter", None)
+    caps.set_property("caps", Gst.Caps.from_string(_CAPS))
+    mixer = Gst.ElementFactory.make("audiomixer", None)
+    for element in (silence, caps, mixer):
+        bin_.add(element)
+    silence.link(caps)
+    caps.link(mixer)
+    bin_.add_pad(Gst.GhostPad.new("src", mixer.get_static_pad("src")))
+    return bin_, mixer
+
+
+def _branch(src: Gst.Element, name: str | None = None) -> Gst.Bin:
+    """src -> estéreo -> caps do mixer, numa bin com pad "src"."""
+    branch = Gst.Bin.new(name)
+    audio = Gst.ElementFactory.make("capsfilter", None)  # sem caps de áudio o pipewiresrc não acha o alvo
+    audio.set_property("caps", Gst.Caps.from_string("audio/x-raw,channels=2"))
+    convert = Gst.ElementFactory.make("audioconvert", None)
+    resample = Gst.ElementFactory.make("audioresample", None)
+    caps = Gst.ElementFactory.make("capsfilter", None)
+    caps.set_property("caps", Gst.Caps.from_string(_CAPS))
+    chain = (src, audio, convert, resample, caps)
+    for element in chain:
+        branch.add(element)
+    for left, right in zip(chain, chain[1:]):
+        left.link(right)
+    branch.add_pad(Gst.GhostPad.new("src", caps.get_static_pad("src")))
+    return branch
+
+
+def with_silence(src: Gst.Element) -> Gst.Bin:
+    """`src` (microfone, app) somado com silêncio: se ele não mandar nada, a transmissão anda igual.
+
+    Fonte muda (app pausado, pulsesrc que o WirePlumber ligou num app parado) segurava o opusenc
+    sem caps, o whipsink sem oferta e, se o relógio fosse dela, o vídeo inteiro: tela preta.
+    """
+    src.set_property("provide-clock", False)
+    bin_, mixer = _silent_mixer()
+    branch = _branch(src)
+    bin_.add(branch)
+    branch.get_static_pad("src").link(mixer.request_pad_simple("sink_%u"))
+    return bin_
+
+
 class SystemAudioExcept:
     """`build()` devolve o elemento que o pipeline usa no lugar do pulsesrc; `stop()` para de acompanhar os apps."""
 
@@ -58,18 +107,7 @@ class SystemAudioExcept:
         self._branches: dict[int, tuple[Gst.Bin, Gst.Pad]] = {}
 
     def build(self) -> Gst.Bin:
-        self._bin = Gst.Bin.new("audio-src")
-        silence = Gst.ElementFactory.make("audiotestsrc", None)  # o mixer não para de andar sem nenhum app tocando
-        silence.set_property("wave", 4)  # silence
-        silence.set_property("is-live", True)
-        caps = Gst.ElementFactory.make("capsfilter", None)
-        caps.set_property("caps", Gst.Caps.from_string(_CAPS))
-        self._mixer = Gst.ElementFactory.make("audiomixer", None)
-        for element in (silence, caps, self._mixer):
-            self._bin.add(element)
-        silence.link(caps)
-        caps.link(self._mixer)
-        self._bin.add_pad(Gst.GhostPad.new("src", self._mixer.get_static_pad("src")))
+        self._bin, self._mixer = _silent_mixer()
         threading.Thread(target=self._loop, daemon=True).start()
         return self._bin
 
@@ -90,24 +128,12 @@ class SystemAudioExcept:
             self._stop.wait(_POLL_S)
 
     def _add(self, serial: int) -> None:
-        branch = Gst.Bin.new(f"app-{serial}")
         src = Gst.ElementFactory.make("pipewiresrc", None)
         src.set_property("target-object", str(serial))
         src.set_property("client-name", "Project LUCE")
         # sem isso um alvo que some faz o stream cair no dispositivo padrão (o microfone)
         src.set_property("stream-properties", Gst.Structure.from_string("props,node.dont-fallback=true,node.dont-reconnect=true")[0])
-        audio = Gst.ElementFactory.make("capsfilter", None)  # sem caps de áudio o pipewiresrc não acha o alvo
-        audio.set_property("caps", Gst.Caps.from_string("audio/x-raw,channels=2"))
-        convert = Gst.ElementFactory.make("audioconvert", None)
-        resample = Gst.ElementFactory.make("audioresample", None)
-        caps = Gst.ElementFactory.make("capsfilter", None)
-        caps.set_property("caps", Gst.Caps.from_string(_CAPS))
-        chain = (src, audio, convert, resample, caps)
-        for element in chain:
-            branch.add(element)
-        for left, right in zip(chain, chain[1:]):
-            left.link(right)
-        branch.add_pad(Gst.GhostPad.new("src", caps.get_static_pad("src")))
+        branch = _branch(src, f"app-{serial}")
         self._bin.add(branch)
         pad = self._mixer.request_pad_simple("sink_%u")
         branch.get_static_pad("src").link(pad)

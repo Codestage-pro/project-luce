@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import urllib.error
+from pathlib import Path
 
 import gi
 
@@ -31,10 +32,11 @@ WINDOWS = sys.platform == "win32"
 if not WINDOWS:
     os.environ.setdefault("GSK_RENDERER", "gl")
 
-from . import config, roster, stats, theme
+from . import config, roster, stats, theme, updater
 from .capture_pipeline import CapturePipeline
+from .tray import Tray
 if WINDOWS:
-    from . import updater, winsys
+    from . import winsys
     from .winsys import apply_icon, is_window, list_monitors, list_windows
 else:  # o portal usa dbus, que não existe no Windows
     from .portal import PortalError, ScreenCast, screencast_available, x11_session
@@ -81,6 +83,17 @@ def _list_audio_sources() -> list[tuple[str, str]]:
     abre, não atualiza sozinha enquanto ela está aberta.
     """
     devices: list[tuple[str, str]] = [("", "Padrão do sistema")]
+    if WINDOWS:  # sem pactl/pw-dump: os microfones vêm do WASAPI, device.id é o que o wasapi2src aceita
+        monitor = Gst.DeviceMonitor.new()
+        monitor.add_filter("Audio/Source", None)
+        for dev in monitor.get_devices() or []:
+            props = dev.get_properties()
+            if props is None or not props.has_field("device.id"):
+                continue
+            if props.has_field("wasapi2.device.loopback") and props.get_value("wasapi2.device.loopback"):
+                continue  # o áudio do sistema já é o "Padrão do sistema"
+            devices.append((props.get_value("device.id"), dev.get_display_name()))
+        return devices
     try:
         out = subprocess.run(
             ["pactl", "list", "sources"],
@@ -134,8 +147,8 @@ def _list_mutable_apps() -> list[tuple[str, str]]:
                 if stem and stem.lower() not in seen:
                     seen.add(stem.lower())
                     apps.append((stem, f"{stem} ({title[:30]}…)" if len(title) > 30 else f"{stem} ({title})"))
-        except Exception:
-            pass
+        except Exception as exc:  # engolido sem log, um NameError deixou essa lista vazia
+            print(f"lista de apps: {exc}", flush=True)
     else:  # Linux: pega apps produzindo áudio via pw-dump
         try:
             import json
@@ -312,7 +325,13 @@ class MainWindow(Gtk.ApplicationWindow):
         root.append(head)
         root.append(Gtk.Box(css_classes=["beam"]))
 
-        if WINDOWS:  # o Flatpak se atualiza sozinho; o instalador do Windows não
+        self.connect("close-request", self._on_close_request)
+        self._tray = Tray(
+            on_open=lambda: GLib.idle_add(self.present),
+            on_quit=lambda: GLib.idle_add(self.quit_app),
+        )
+
+        if WINDOWS or updater.is_flatpak():
             self._update_btn = Gtk.Button(visible=False, css_classes=["suggested-action"])
             self._update_btn.connect("clicked", self._on_update_clicked)
             root.append(self._update_btn)
@@ -851,13 +870,28 @@ class MainWindow(Gtk.ApplicationWindow):
         self._update_btn.set_visible(True)
 
     def _on_update_clicked(self, _btn) -> None:
-        _version, url, sha256 = self._update
         self._update_btn.set_sensitive(False)
+        if updater.is_flatpak():
+            self._update_btn.set_label("Atualizando… 0%")
+            updater.flatpak_update(
+                lambda p: self._update_btn.set_label(f"Atualizando… {p}%"),
+                self._on_flatpak_updated,
+            )
+            return
+        _version, url, sha256 = self._update
         self._update_btn.set_label("Baixando… 0%")
         self._run_in_thread(
             lambda: updater.download(url, sha256, lambda f: GLib.idle_add(self._update_btn.set_label, f"Baixando… {f:.0%}")),
             self._on_update_downloaded,
         )
+
+    def _on_flatpak_updated(self, error) -> None:
+        if error is not None:
+            self._update_btn.set_label(f"Falha ao atualizar ({error}) · Tentar de novo")
+            self._update_btn.set_sensitive(True)
+            return
+        self._update_btn.set_label("Atualizado! Reiniciando…")
+        GLib.timeout_add_seconds(1, updater.restart_flatpak)
 
     def _on_update_downloaded(self, installer, error) -> None:
         if error is not None:
@@ -865,6 +899,20 @@ class MainWindow(Gtk.ApplicationWindow):
             self._update_btn.set_sensitive(True)
             return
         updater.run_installer(installer)  # fecha o app e abre de novo quando terminar
+        self.get_application().quit()
+
+    def _on_close_request(self, _win) -> bool:
+        self.set_visible(False)
+        return True
+
+    def quit_app(self) -> None:
+        self._on_stop_clicked()
+        for w in list(self._watches.values()):
+            w.stop()
+        if self._viewer:
+            self._viewer.close()
+        if self._tray:
+            self._tray.close()
         self.get_application().quit()
 
     def _tell_watching(self, name: str, on: bool) -> None:
@@ -942,11 +990,18 @@ class MainWindow(Gtk.ApplicationWindow):
 class LuceApp(Gtk.Application):
     def __init__(self) -> None:
         super().__init__(application_id="pro.codestage.Luce")
+        self._held = False
+        self._main_window: MainWindow | None = None
         if WINDOWS:
             self.connect("window-added", lambda _a, win: win.connect("map", lambda _w: GLib.idle_add(apply_icon)))
 
     def do_activate(self) -> None:
-        MainWindow(self).present()
+        if not self._held:
+            self.hold()
+            self._held = True
+        if self._main_window is None:
+            self._main_window = MainWindow(self)
+        self._main_window.present()
 
 
 def main() -> int:
