@@ -28,6 +28,7 @@ jobs:
           update: true
           install: >-
             pacman-contrib
+            mingw-w64-ucrt-x86_64-binutils
             mingw-w64-ucrt-x86_64-gstreamer
             mingw-w64-ucrt-x86_64-gst-plugins-base
             mingw-w64-ucrt-x86_64-gst-plugins-good
@@ -64,6 +65,8 @@ jobs:
           cp packaging/windows/luce_launcher.pyw packaging/windows/luce.ico "$out/"
           # luce.exe = cópia do pythonw.exe: o Gerenciador de Tarefas mostra nome/ícone do exe, não do script
           cp "$out/ucrt64/bin/pythonw.exe" "$out/ucrt64/bin/luce.exe"
+          # tira plugins e DLLs que o app não usa (o bundle cai de ~900 MB para uma fração); o teste abaixo valida
+          python packaging/windows/prune_bundle.py "$out"
           # o logo no cabeçalho do app vem do tema de ícones (mesmo nome do Linux)
           for n in 48 128 256; do
             install -Dm644 "packaging/windows/icons/$n.png" "$out/ucrt64/share/icons/hicolor/${n}x${n}/apps/pro.codestage.Luce.png"

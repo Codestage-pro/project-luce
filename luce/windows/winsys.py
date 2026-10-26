@@ -65,6 +65,17 @@ if sys.platform == "win32":
         ("DeleteDC", [ctypes.c_void_p], _B),
     ):
         getattr(gdi32, _fn).argtypes, getattr(gdi32, _fn).restype = _args, _res
+    class _CursorInfo(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD), ("hCursor", ctypes.c_void_p), ("ptScreenPos", wintypes.POINT)]
+
+    class _IconInfo(ctypes.Structure):
+        _fields_ = [("fIcon", wintypes.BOOL), ("xHotspot", wintypes.DWORD), ("yHotspot", wintypes.DWORD),
+                    ("hbmMask", ctypes.c_void_p), ("hbmColor", ctypes.c_void_p)]
+
+    user32.GetCursorInfo.argtypes, user32.GetCursorInfo.restype = [ctypes.POINTER(_CursorInfo)], _B
+    user32.GetIconInfo.argtypes, user32.GetIconInfo.restype = [ctypes.c_void_p, ctypes.POINTER(_IconInfo)], _B
+    user32.DrawIconEx.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, wintypes.UINT, ctypes.c_void_p, wintypes.UINT]
+    user32.DrawIconEx.restype = _B
     dwmapi.DwmGetWindowAttribute.argtypes = [_H, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
     # Sem isso o GetWindowRect devolve pixels "virtualizados" num monitor com escala, e o crop erra.
     # Falha sem problema se o GTK já definiu (é o mesmo modo).
@@ -124,14 +135,14 @@ if sys.platform == "win32":
     class WindowGrabber:
         """Copia o conteúdo de uma janela como BGRx (PrintWindow + PW_RENDERFULLCONTENT).
 
-        shortcut: é cópia por CPU (~10-25 ms em 1080p), então segura ~60 quadros/s no máximo, e o
-        cursor não aparece; jogo em tela cheia exclusiva pode vir preto. Upgrade: Windows.Graphics.Capture.
+        shortcut: é cópia por CPU (~10-25 ms em 1080p), então segura ~60 quadros/s no máximo; jogo em tela cheia exclusiva pode vir preto. Upgrade: Windows.Graphics.Capture.
         """
 
         def __init__(self, hwnd: int) -> None:
             self.hwnd = hwnd
             self._size = (0, 0)
             self._dc = self._bitmap = self._old = self._bits = None
+            self._hotspots: dict[int, tuple[int, int]] = {}
 
         def _free(self) -> None:
             if self._dc:
@@ -165,6 +176,7 @@ if sys.platform == "win32":
                 self._alloc(fw, fh)
             if not user32.PrintWindow(self.hwnd, self._dc, 2):  # PW_RENDERFULLCONTENT
                 return None
+            self._draw_cursor(full.left, full.top)
             data = ctypes.string_at(self._bits, fw * fh * 4)
             # tira a borda invisível de sombra: só o retângulo visível da janela
             left, top, right, bottom = window_rect(self.hwnd)
@@ -175,6 +187,23 @@ if sys.platform == "win32":
             stride = fw * 4
             rows = (data[(y0 + y) * stride + x0 * 4:(y0 + y) * stride + (x0 + w) * 4] for y in range(h))
             return w, h, b"".join(rows)
+
+        def _draw_cursor(self, left: int, top: int) -> None:
+            """O PrintWindow não desenha o mouse: põe o cursor do sistema (com a forma atual) em cima do quadro."""
+            info = _CursorInfo(cbSize=ctypes.sizeof(_CursorInfo))
+            if not user32.GetCursorInfo(ctypes.byref(info)) or not info.flags & 1 or not info.hCursor:  # CURSOR_SHOWING
+                return
+            handle = int(info.hCursor)
+            if handle not in self._hotspots:
+                icon = _IconInfo()
+                if not user32.GetIconInfo(handle, ctypes.byref(icon)):
+                    return
+                for bmp in (icon.hbmMask, icon.hbmColor):  # GetIconInfo cria cópias que a gente tem de apagar
+                    if bmp:
+                        gdi32.DeleteObject(bmp)
+                self._hotspots[handle] = (icon.xHotspot, icon.yHotspot)
+            hot_x, hot_y = self._hotspots[handle]
+            user32.DrawIconEx(self._dc, info.ptScreenPos.x - left - hot_x, info.ptScreenPos.y - top - hot_y, handle, 0, 0, 0, None, 3)  # DI_NORMAL
 
         def close(self) -> None:
             self._free()

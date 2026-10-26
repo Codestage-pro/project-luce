@@ -167,9 +167,12 @@ class SettingsWindow(Gtk.Window):
         self._audio_check = Gtk.CheckButton(label="Transmitir áudio", active=cfg["audio"])
         grid.attach(self._audio_check, 0, next_row + 6, 2, 1)
 
+        self._tray_check = Gtk.CheckButton(label="Manter na bandeja ao fechar", active=cfg["keep_in_tray"])
+        grid.attach(self._tray_check, 0, next_row + 7, 2, 1)
+
         save = Gtk.Button(label="Salvar", css_classes=["go"])
         save.connect("clicked", self._on_save)
-        grid.attach(save, 0, next_row + 7, 2, 1)
+        grid.attach(save, 0, next_row + 8, 2, 1)
 
     def _on_save(self, _button: Gtk.Button) -> None:
         cfg = config.load()
@@ -187,6 +190,7 @@ class SettingsWindow(Gtk.Window):
         if 0 <= mute_idx < len(self._mute_apps):
             cfg["mute_app"] = self._mute_apps[mute_idx][0]
         cfg["audio"] = self._audio_check.get_active()
+        cfg["keep_in_tray"] = self._tray_check.get_active()
         config.save(cfg)
         self.close()
         if self._on_saved is not None:
@@ -247,12 +251,8 @@ class MainWindow(Gtk.ApplicationWindow):
         root.append(Gtk.Box(css_classes=["beam"]))
 
         self.connect("close-request", self._on_close_request)
-        self._tray = Tray(
-            # Sem lambda que devolva algo: o tray agenda isso com idle_add, e retorno truthy
-            # faz o GLib repetir o callback pra sempre (travava a sessão inteira).
-            on_open=self.present,
-            on_quit=self.quit_app,
-        )
+        self._tray = None
+        self._apply_tray(config.load()["keep_in_tray"])
 
         if WINDOWS or updater.is_flatpak():
             self._update_btn = Gtk.Button(visible=False, css_classes=["suggested-action"])
@@ -421,6 +421,7 @@ class MainWindow(Gtk.ApplicationWindow):
         inteira, então a captura é refeita — o mesmo reinício da troca de tela,
         sem pedir o seletor de novo.
         """
+        self._apply_tray(new["keep_in_tray"])
         cap = self._capture
         if cap is None:
             return
@@ -814,7 +815,12 @@ class MainWindow(Gtk.ApplicationWindow):
             self._update_btn.set_sensitive(True)
             return
         self._update_btn.set_label("Atualizado! Reiniciando…")
-        GLib.timeout_add_seconds(1, updater.restart_flatpak)
+        try:
+            updater.restart_flatpak()
+        except Exception as exc:  # sem reabrir sozinho, ao menos não deixa o botão preso
+            self._update_btn.set_label(f"Atualizado! Abra o LUCE de novo ({exc})")
+            return
+        self.quit_app()
 
     def _on_update_downloaded(self, installer, error) -> None:
         if error is not None:
@@ -824,8 +830,21 @@ class MainWindow(Gtk.ApplicationWindow):
         updater.run_installer(installer)  # fecha o app e abre de novo quando terminar
         self.get_application().quit()
 
+    def _apply_tray(self, enabled: bool) -> None:
+        """Cria ou remove o ícone da bandeja conforme "Manter na bandeja ao fechar"."""
+        if enabled and self._tray is None:
+            # Sem lambda que devolva algo: o tray agenda isso com idle_add, e retorno truthy
+            # faz o GLib repetir o callback pra sempre (travava a sessão inteira).
+            self._tray = Tray(on_open=self.present, on_quit=self.quit_app)
+        elif not enabled and self._tray is not None:
+            self._tray.close()
+            self._tray = None
+
     def _on_close_request(self, _win) -> bool:
-        self.set_visible(False)
+        if self._tray is None:  # sem bandeja, fechar a janela encerra o app
+            self.quit_app()
+        else:
+            self.set_visible(False)
         return True
 
     def quit_app(self) -> None:

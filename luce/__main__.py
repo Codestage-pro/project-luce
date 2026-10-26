@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import signal
 import sys
 import time
@@ -138,7 +139,17 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _name_process() -> None:
+    """Linux: btop/top/htop mostram o nome do executável ("python3"); troca por "luce" (PR_SET_NAME)."""
+    if sys.platform.startswith("linux"):
+        try:
+            ctypes.CDLL(None).prctl(15, b"luce", 0, 0, 0)
+        except (OSError, AttributeError):
+            pass
+
+
 def main() -> int:
+    _name_process()
     parser = argparse.ArgumentParser(prog="luce")
     sub = parser.add_subparsers(dest="command", required=True)
 

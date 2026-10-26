@@ -19,8 +19,10 @@ OutputDir=..\..\dist
 OutputBaseFilename=Luce-Setup
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-Compression=lzma2/fast
+Compression=lzma2/ultra64
 SolidCompression=yes
+; Só o luce.exe precisa ser checado pelo Restart Manager; com o padrão (*.exe,*.dll) ele varria todos os arquivos antes de instalar
+CloseApplicationsFilter=luce.exe
 WizardStyle=modern
 UninstallDisplayName=Project LUCE
 SetupIconFile=luce.ico

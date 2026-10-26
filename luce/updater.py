@@ -87,7 +87,7 @@ def download(url: str, sha256: str | None, progress) -> Path:
 
 def run_installer(path: Path) -> None:
     """Instala por cima (mesma pasta, mesmo AppId); o instalador fecha o app e abre de novo no fim."""
-    subprocess.Popen([str(path), "/SILENT", "/CLOSEAPPLICATIONS"], creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+    subprocess.Popen([str(path), "/SILENT", "/CLOSEAPPLICATIONS", "/NORESTART"], creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
 
 
 def flatpak_update(progress_cb, done_cb) -> None:
@@ -147,12 +147,12 @@ def flatpak_update(progress_cb, done_cb) -> None:
 
 
 def restart_flatpak() -> None:
-    """Roda a versão nova via portal Spawn (LATEST_VERSION = 2) e encerra o processo atual."""
+    """Abre a versão nova via portal Spawn (LATEST_VERSION = 2); quem chama encerra o app logo depois."""
     import dbus
     bus = dbus.SessionBus()
     portal = bus.get_object("org.freedesktop.portal.Flatpak", "/org/freedesktop/portal/Flatpak")
     iface = dbus.Interface(portal, "org.freedesktop.portal.Flatpak")
-    cmd = [dbus.ByteArray(b"sh"), dbus.ByteArray(b"-c"), dbus.ByteArray(b"sleep 1 && exec luce")]
-    iface.Spawn(dbus.ByteArray(b""), cmd, {}, {}, dbus.UInt32(2), {})
-    sys.exit(0)
-
+    # Cada argumento precisa do NUL no fim: sem ele o portal devolve um PID e nunca roda o comando.
+    # O sleep deixa a instância velha soltar o nome no D-Bus (senão a nova só ativa a velha e sai).
+    cmd = [dbus.ByteArray(arg + b"\0") for arg in (b"sh", b"-c", b"sleep 2 && exec luce")]
+    iface.Spawn(dbus.ByteArray(b"/\0"), cmd, {}, {}, dbus.UInt32(2), {})

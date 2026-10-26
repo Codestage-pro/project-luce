@@ -36,10 +36,16 @@ print("GStreamer", Gst.version_string(), "| registro novo em", registry, registr
 
 need = ["x264enc", "h264parse", "rtph264pay", "opusenc", "whipsink", "whepsrc", "gtk4paintablesink",
         "d3d11screencapturesrc", "d3d11convert", "d3d11download", "wasapi2src", "avdec_h264", "videorate",
-        "opusdec", "audioconvert", "audioresample", "volume", "autoaudiosink", "parsebin", "tee"]
+        "opusdec", "audioconvert", "audioresample", "volume", "autoaudiosink", "parsebin", "tee",
+        "appsrc", "d3d11upload", "webrtcbin", "videoconvert", "queue", "capsfilter"]
 missing = [e for e in need if Gst.ElementFactory.find(e) is None]
 assert not missing, f"faltam no bundle: {missing}"
 print("elementos ok:", len(need))
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import GdkPixbuf  # noqa: E402
+
+for icon in ("luce.ico", "ucrt64/share/icons/hicolor/256x256/apps/pro.codestage.Luce.png"):  # loaders podados
+    GdkPixbuf.Pixbuf.new_from_file(str(root / icon))
 print("plugins:", len(Gst.Registry.get().get_plugin_list()))
 
 os.environ["LUCE_ENCODER"] = "x264enc"

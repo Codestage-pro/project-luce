@@ -87,6 +87,14 @@ def main() -> int:
         assert any(data[i] for i in range(0, len(data), 4097)), "quadro todo preto"
         print("grab ok:", w, "x", h)
 
+        # cursor: informativo (o runner pode não ter cursor visível)
+        left, top, right, bottom = winsys.window_rect(hwnd)
+        winsys.user32.SetCursorPos(0, 0)
+        away = grabber.grab()
+        winsys.user32.SetCursorPos((left + right) // 2, (top + bottom) // 2)
+        over = grabber.grab()
+        print("cursor aparece no quadro:", bool(away and over and away[2] != over[2]))
+
         pipe = Gst.parse_launch(
             "appsrc name=a is-live=true format=time do-timestamp=true "
             f"caps=video/x-raw,format=BGRx,width={w},height={h},framerate=30/1 "
