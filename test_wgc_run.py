@@ -3,10 +3,15 @@ import time
 from ctypes import wintypes
 
 user32 = ctypes.WinDLL("user32")
+gdi32 = ctypes.WinDLL("gdi32")
 kernel32 = ctypes.WinDLL("kernel32")
 
-# Cria uma janela Win32 de teste
-WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_longlong, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+# Corrige tipos de 64 bits para evitar overflow
+LRESULT = ctypes.c_longlong
+WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.DefWindowProcW.restype = LRESULT
+
 def def_wnd_proc(hwnd, msg, wp, lp):
     return user32.DefWindowProcW(hwnd, msg, wp, lp)
 proc = WNDPROC(def_wnd_proc)
@@ -24,10 +29,9 @@ class WNDCLASSEXW(ctypes.Structure):
 cls = WNDCLASSEXW()
 cls.cbSize = ctypes.sizeof(cls)
 cls.lpfnWndProc = proc
-cls.lpszClassName = "LuceWGCTestWindow"
+cls.lpszClassName = "LuceWGCTestWindow2"
 cls.hInstance = kernel32.GetModuleHandleW(None)
 atom = user32.RegisterClassExW(ctypes.byref(cls))
-print("RegisterClassExW:", atom)
 
 hwnd = user32.CreateWindowExW(
     0, cls.lpszClassName, "Luce WGC Test Window",
@@ -35,18 +39,8 @@ hwnd = user32.CreateWindowExW(
     100, 100, 800, 600,
     None, None, cls.hInstance, None
 )
-print("CreateWindowExW hwnd:", hwnd)
 assert hwnd, "Janela falhou"
 
-# Processa mensagens para renderizar a janela
-msg = wintypes.MSG()
-for _ in range(10):
-    if user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
-        user32.TranslateMessage(ctypes.byref(msg))
-        user32.DispatchMessageW(ctypes.byref(msg))
-    time.sleep(0.01)
-
-# Carrega DLL e testa WGC
 lib = ctypes.CDLL("./luce_wgc.dll")
 lib.luce_wgc_is_supported.restype = ctypes.c_int
 lib.luce_wgc_create.argtypes = [wintypes.HWND, ctypes.c_int]
@@ -62,10 +56,11 @@ lib.luce_wgc_grab_frame.argtypes = [
 lib.luce_wgc_grab_frame.restype = ctypes.c_int
 lib.luce_wgc_destroy.argtypes = [ctypes.c_void_p]
 
-print("is_supported:", lib.luce_wgc_is_supported())
 handle = lib.luce_wgc_create(hwnd, 1)
-print("handle:", handle)
 assert handle, "luce_wgc_create falhou"
+
+hdc = user32.GetDC(hwnd)
+msg = wintypes.MSG()
 
 try:
     buf_size = 1920 * 1080 * 4
@@ -76,8 +71,14 @@ try:
 
     frames = 0
     t0 = time.time()
-    for i in range(30):
-        # processa mensagens
+    rect = wintypes.RECT(0, 0, 800, 600)
+
+    for i in range(20):
+        # Altera a cor de fundo da janela para gerar frames reais no DWM
+        brush = gdi32.CreateSolidBrush((i * 12) & 0xFF | (((i * 25) & 0xFF) << 8))
+        user32.FillRect(hdc, ctypes.byref(rect), brush)
+        gdi32.DeleteObject(brush)
+
         while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
@@ -93,14 +94,15 @@ try:
         if res == 1:
             frames += 1
             if frames == 1:
-                print(f"Primeiro quadro capturado: {out_w.value}x{out_h.value}, byte sample: {list(buf[:8])}")
+                print(f"Quadro capturado: {out_w.value}x{out_h.value}, byte sample: {list(buf[:8])}")
         time.sleep(0.016)
 
     dt = time.time() - t0
-    print(f"Total quadros capturados: {frames} em {dt:.2f}s")
-    assert frames > 0, "Nenhum quadro capturado!"
+    print(f"Total quadros capturados: {frames}/20 em {dt:.2f}s")
+    assert frames > 0
 finally:
+    user32.ReleaseDC(hwnd, hdc)
     lib.luce_wgc_destroy(handle)
     user32.DestroyWindow(hwnd)
 
-print("SUCESSO: WGC funcionou perfeitamente!")
+print("SUCESSO COMPLETO!")
