@@ -231,6 +231,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self._missed: dict[str, int] = {}
         self._roster_busy = False
         self._watch_stats: dict[str, Gtk.Label] = {}
+        self._watch_stalls: dict[str, int] = {}
+        self._last_watch_reconnect: dict[str, float] = {}
         # Captura sem portal (ximagesrc): decidido a cada "Transmitir", porque
         # o backend do portal pode ser instalado com o app já aberto.
         self._x11: bool = False
@@ -727,6 +729,42 @@ class MainWindow(Gtk.ApplicationWindow):
         self._viewer.present()
         self._refresh_roster()
 
+    def _reconnect_watch(self, name: str) -> None:
+        """Reinicia o WHEP de uma transmissão que congelou ou reiniciou, sem fechar a janela."""
+        if name not in self._watches:
+            return
+        now = time.monotonic()
+        if now - self._last_watch_reconnect.get(name, 0.0) < 3.0:
+            return
+        self._last_watch_reconnect[name] = now
+        print(f"transmissão de {name} congelou ou reiniciou: reconectando automaticamente", flush=True)
+
+        watch = self._watches.pop(name, None)
+        if watch is not None:
+            watch.stop()
+        self._last_stats.pop(name, None)
+        self._watch_stalls[name] = 0
+
+        sink = Gst.ElementFactory.make("gtk4paintablesink", None)
+        if sink is None:
+            self._stop_watch(name)
+            return
+
+        if self._viewer is not None:
+            self._viewer.update_paintable(name, sink.get_property("paintable"))
+
+        new_watch = WatchPipeline(
+            whep_endpoint=config.whep_endpoint(name),
+            auth_token=config.auth_token(),
+            on_pipeline_error=lambda msg, n=name: self._on_watch_error(n, msg),
+            video_sink=sink,
+        )
+        new_watch.set_volume(self._volumes.get(name, 1.0))
+        new_watch.set_muted(self._muted.get(name, False))
+        self._watches[name] = new_watch
+        new_watch.start()
+        self._tell_watching(name, True)
+
     def _stop_watch(self, name: str) -> None:
         watch = self._watches.pop(name, None)
         self._forget_stats(name)
@@ -746,6 +784,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def _forget_stats(self, key: str) -> None:
         self._watch_stats.pop(key, None)
         self._last_stats.pop(key, None)
+        self._watch_stalls.pop(key, None)
 
     def _poll_stats(self) -> bool:
         """A cada 1s mostra pacotes/bitrate/perda de quem transmite e de cada transmissão assistida."""
@@ -764,10 +803,27 @@ class MainWindow(Gtk.ApplicationWindow):
         if self._ping_tick % 10 == 0:  # servidor tira quem some por 30 s da lista de espectadores
             for name in self._watches:
                 self._tell_watching(name, True)
-        for name, watch in self._watches.items():
+        for name, watch in list(self._watches.items()):
             label = self._watch_stats.get(name)
             if label is not None:
-                ask(name, watch.pipeline.get_by_name("src"), "↓", label.set_label)
+                def on_stat(now, n=name, lbl=label):
+                    if now is None:
+                        return
+                    before = self._last_stats.get(n)
+                    line = stats.format_line("↓", now, before)
+                    self._last_stats[n] = now
+                    GLib.idle_add(lbl.set_label, line)
+                    if before is not None:
+                        delta_pkts = now["packets"] - before["packets"]
+                        if now["packets"] > 0 and delta_pkts == 0:
+                            stalls = self._watch_stalls.get(n, 0) + 1
+                            self._watch_stalls[n] = stalls
+                            if stalls >= 3:
+                                self._watch_stalls[n] = 0
+                                GLib.idle_add(self._reconnect_watch, n)
+                        elif delta_pkts > 0:
+                            self._watch_stalls[n] = 0
+                stats.request(watch.pipeline.get_by_name("src"), on_stat)
         return True
 
     def _show_share_stats(self, line: str) -> None:
@@ -884,6 +940,12 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _on_watch_error(self, name: str, message: str) -> None:
         self._status.set_label(f"assistir {name} caiu: {message}")
+        if name in self._watches:
+            stalls = self._watch_stalls.get(name, 0)
+            if stalls < 3:
+                self._watch_stalls[name] = stalls + 1
+                GLib.timeout_add(1000, self._reconnect_watch, name)
+                return
         self._stop_watch(name)
 
     def _show_viewers(self, who: list[str]) -> None:
@@ -914,10 +976,15 @@ class MainWindow(Gtk.ApplicationWindow):
             )
             return
         names = [n for n in live if n != cfg["name"]]
-        # Duas leituras seguidas sem ele: quem reinicia a transmissão some do roster por instantes.
+        # Leituras sem ele: quem reinicia a transmissão pode sumir do roster por instantes.
         self._missed = {n: self._missed.get(n, 0) + 1 for n in self._watches if n not in live}
-        gone = [n for n, k in self._missed.items() if k >= 2]
-        if gone:  # quem eu assistia parou: o servidor tira do roster, o vídeo só congelaria
+        # Se voltou a aparecer no ar depois de sumir temporariamente (ex: troca de tela), reconecta
+        for n in list(self._watches):
+            if n in live and self._missed.get(n, 0) > 0:
+                self._missed[n] = 0
+                self._reconnect_watch(n)
+        gone = [n for n, k in self._missed.items() if k >= 4]
+        if gone:  # quem eu assistia parou de transmitir de verdade: o servidor tira do roster
             for n in gone:
                 self._stop_watch(n)  # fecha só a caixa dele (a janela fecha se era a última)
             self._status.set_label(f"{', '.join(gone)} parou de transmitir")

@@ -44,7 +44,8 @@ class _Tile(Gtk.Overlay):
         self._last_xy: tuple[float, float] | None = None
         self.add_css_class("luce-tile")
         self.set_size_request(320, 180)
-        self.set_child(Gtk.Picture(paintable=paintable, keep_aspect_ratio=True, hexpand=True, vexpand=True))
+        self._picture = Gtk.Picture(paintable=paintable, keep_aspect_ratio=True, hexpand=True, vexpand=True)
+        self.set_child(self._picture)
 
         self.stats = Gtk.Label(label="conectando…", xalign=0)
         self.stats.add_css_class("monospace")
@@ -118,6 +119,11 @@ class _Tile(Gtk.Overlay):
             self._hide_id = 0
 
 
+    def update_paintable(self, paintable) -> None:
+        self._picture.set_paintable(paintable)
+        self.stats.set_label("reconectando…")
+
+
 class ViewerWindow(Gtk.Window):
     def __init__(self, on_volume, on_mute, on_close_tile, on_closed) -> None:
         super().__init__(title="LUCE")
@@ -132,6 +138,11 @@ class ViewerWindow(Gtk.Window):
         keys.connect("key-pressed", self._on_key)
         self.add_controller(keys)
         self.connect("close-request", lambda _w: on_closed() or False)
+
+    def update_paintable(self, name: str, paintable) -> None:
+        tile = self._tiles.get(name)
+        if tile is not None:
+            tile.update_paintable(paintable)
 
     def add(self, name: str, paintable, volume: float, muted: bool) -> Gtk.Label:
         """Nova tela na grade; devolve o label onde vão as estatísticas."""
