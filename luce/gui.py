@@ -178,7 +178,7 @@ class SettingsWindow(Gtk.Window):
         cfg = config.load()
         old = dict(cfg)
         for key, entry in self._fields.items():
-            cfg[key] = entry.get_text()
+            cfg[key] = entry.get_text().strip()
         cfg["width"], cfg["height"] = _choice_value(self._resolution, (cfg["width"], cfg["height"]))
         cfg["fps"] = _choice_value(self._fps, cfg["fps"])
         cfg["bitrate"] = _choice_value(self._bitrate, cfg["bitrate"])

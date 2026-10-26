@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -38,9 +39,15 @@ def load() -> dict[str, Any]:
     data = dict(DEFAULTS)
     for system_file in SYSTEM_CONFIG_FILES:
         if system_file.exists():
-            data.update(tomllib.loads(system_file.read_text()))
+            try:
+                data.update(tomllib.loads(system_file.read_text()))
+            except Exception as exc:
+                print(f"[config] erro ao ler {system_file}: {exc}", file=sys.stderr)
     if CONFIG_FILE.exists():
-        data.update(tomllib.loads(CONFIG_FILE.read_text()))
+        try:
+            data.update(tomllib.loads(CONFIG_FILE.read_text()))
+        except Exception as exc:
+            print(f"[config] {CONFIG_FILE} corrompido ou inválido ({exc}), usando padrões", file=sys.stderr)
     return data
 
 
@@ -51,7 +58,8 @@ def save(data: dict[str, Any]) -> None:
         if isinstance(value, bool):
             lines.append(f"{key} = {'true' if value else 'false'}")
         elif isinstance(value, str):
-            lines.append(f'{key} = "{value}"')
+            clean = value.replace("\r", "").replace("\n", "").replace('"', '\\"')
+            lines.append(f'{key} = "{clean}"')
         else:
             lines.append(f"{key} = {value}")
     CONFIG_FILE.write_text("\n".join(lines) + "\n")
