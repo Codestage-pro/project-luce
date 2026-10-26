@@ -75,6 +75,8 @@ jobs:
           # o registro do GStreamer nasce no PC da pessoa (winenv.py); o do runner nunca vai junto
           find "$out" \( -iname 'registry*.bin' -o -iname 'gst-registry*' \) -print -delete
           test -z "$(find "$out" -iname '*registry*.bin')"
+          # sem .pyc o Python recompila stdlib, gi e luce a CADA abertura: em Arquivos de Programas o usuário comum não grava __pycache__
+          python -m compileall -q -j 0 --invalidation-mode unchecked-hash "$out"/ucrt64/lib/python3.* "$out/luce"
           du -sh "$out"
 
       - name: Marca o luce.exe (nome e ícone no Gerenciador de Tarefas)
@@ -100,7 +102,8 @@ jobs:
           & dist\LUCE\ucrt64\bin\python.exe packaging\windows\ci_bundle_test.py dist\LUCE
           if ($LASTEXITCODE -ne 0) { throw "teste do bundle falhou ($LASTEXITCODE)" }
           # o launcher do atalho (pythonw): luce --help grava o uso no luce.log
-          Start-Process -Wait -FilePath dist\LUCE\ucrt64\bin\luce.exe -ArgumentList 'dist\LUCE\luce_launcher.pyw','--help'
+          $t = Measure-Command { Start-Process -Wait -FilePath dist\LUCE\ucrt64\bin\luce.exe -ArgumentList 'dist\LUCE\luce_launcher.pyw','--help' }
+          "launcher --help: $([int]$t.TotalMilliseconds) ms"
           Get-Content "$env:LOCALAPPDATA\LUCE\luce.log" -TotalCount 5
           if (-not (Select-String -Path "$env:LOCALAPPDATA\LUCE\luce.log" -Pattern 'usage')) { throw "launcher não rodou" }
 

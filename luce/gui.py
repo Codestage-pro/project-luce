@@ -220,6 +220,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._ping_tick = 0
         self._fps_shown = 0.0
         self._missed: dict[str, int] = {}
+        self._roster_busy = False
         self._watch_stats: dict[str, Gtk.Label] = {}
         # Captura sem portal (ximagesrc): decidido a cada "Transmitir", porque
         # o backend do portal pode ser instalado com o app já aberto.
@@ -882,20 +883,27 @@ class MainWindow(Gtk.ApplicationWindow):
         )
 
     def _refresh_roster(self) -> bool:
+        """Pede o roster fora da thread da GUI (servidor lento travava a janela, inclusive na abertura)."""
+        if not self._roster_busy:
+            self._roster_busy = True
+            base_url, token = config.load()["base_url"], config.auth_token()
+            self._run_in_thread(lambda: roster.list_paths(base_url, token), self._draw_roster)
+        return True
+
+    def _draw_roster(self, live, error) -> None:
+        self._roster_busy = False
         cfg = config.load()
         for child in list(self._roster_box):
             self._roster_box.remove(child)
-        try:
-            live = roster.list_paths(cfg["base_url"], config.auth_token())
-            names = [n for n in live if n != cfg["name"]]
-        except Exception as exc:
+        if error is not None:
             # Falha de rede vira mensagem na própria lista: antes virava lista
             # vazia indistinguível de "ninguém no ar", que foi o que escondeu
             # um 403 do Cloudflare.
             self._roster_box.append(
-                Gtk.Label(label=f"servidor não respondeu: {exc}", xalign=0, wrap=True)
+                Gtk.Label(label=f"servidor não respondeu: {error}", xalign=0, wrap=True)
             )
-            return True
+            return
+        names = [n for n in live if n != cfg["name"]]
         # Duas leituras seguidas sem ele: quem reinicia a transmissão some do roster por instantes.
         self._missed = {n: self._missed.get(n, 0) + 1 for n in self._watches if n not in live}
         gone = [n for n, k in self._missed.items() if k >= 2]
@@ -903,7 +911,7 @@ class MainWindow(Gtk.ApplicationWindow):
             for n in gone:
                 self._stop_watch(n)  # fecha só a caixa dele (a janela fecha se era a última)
             self._status.set_label(f"{', '.join(gone)} parou de transmitir")
-            return True  # o _stop_watch já redesenhou a lista
+            return  # o _stop_watch já pediu outro desenho da lista
         self._show_viewers(live.get(cfg["name"], []))
         if not names:
             self._roster_box.append(Gtk.Label(label="Ninguém no ar. Que tal abrir a sala?", xalign=0, margin_top=6, css_classes=["dim"]))
@@ -917,7 +925,6 @@ class MainWindow(Gtk.ApplicationWindow):
             button.connect("clicked", lambda _b, n=name, btn=button: self._toggle_watch(n, btn))
             row.append(button)
             self._roster_box.append(row)
-        return True
 
     def _on_mute_toggled(self, name: str, muted: bool) -> None:
         self._muted[name] = muted

@@ -6,6 +6,7 @@ Simula a primeira abertura no PC da pessoa: sem MSYS2, sem registro do GStreamer
 
 import os
 import sys
+import time
 from pathlib import Path
 
 root = Path(sys.argv[1]).resolve()
@@ -29,7 +30,9 @@ gi.require_version("Gst", "1.0")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gst, Gtk  # noqa: E402
 
+t0 = time.perf_counter()
 Gst.init(None)
+print(f"Gst.init com registro novo: {time.perf_counter() - t0:.1f}s")
 assert registry.exists(), "o registro não foi gerado na primeira abertura"
 assert str(root) not in str(registry), registry
 print("GStreamer", Gst.version_string(), "| registro novo em", registry, registry.stat().st_size, "bytes")
@@ -53,6 +56,9 @@ from luce.capture_pipeline import CapturePipeline  # noqa: E402
 p = CapturePipeline("http://127.0.0.1:1/x/whip", width=1280, height=720, fps=30, preview=False)
 print("CapturePipeline monta com", p.encoder_kind)
 p.stop()
+t0 = time.perf_counter()
 from luce import gui  # noqa: E402,F401  (imports de Gtk/winsys/config)
+
+print(f"import luce.gui: {time.perf_counter() - t0:.1f}s")
 
 print("BUNDLE OK")
