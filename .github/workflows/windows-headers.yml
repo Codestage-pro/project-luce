@@ -20,7 +20,6 @@ jobs:
           install: mingw-w64-ucrt-x86_64-gcc
       - run: |
           cat > test_wgc.cpp << 'CPP'
-          #define CINTERFACE
           #include <windows.h>
           #include <winstring.h>
           #include <roapi.h>
@@ -30,7 +29,7 @@ jobs:
           #include <windows.graphics.capture.interop.h>
           #include <windows.graphics.directx.direct3d11.h>
           #include <windows.graphics.directx.direct3d11.interop.h>
-          #include <wrl/client.h>
+          #include <wrl.h>
 
           using namespace Microsoft::WRL;
           using namespace ABI::Windows::Graphics::Capture;
