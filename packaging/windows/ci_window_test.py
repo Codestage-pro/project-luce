@@ -24,8 +24,17 @@ def child() -> None:
 
     def activate(app):
         win = Gtk.ApplicationWindow(application=app, title=TITLE, default_width=640, default_height=480)
-        win.set_child(Gtk.Label(label="LUCE"))
+        lbl = Gtk.Label(label="LUCE")
+        win.set_child(lbl)
         win.present()
+        counter = [0]
+
+        def tick():
+            counter[0] += 1
+            lbl.set_label(f"LUCE {counter[0]}")
+            return True
+
+        GLib.timeout_add(50, tick)
         GLib.timeout_add_seconds(60, app.quit)
 
     app = Gtk.Application(application_id="pro.codestage.LuceCi")
@@ -112,19 +121,24 @@ def main() -> int:
             "! d3d11upload ! d3d11convert "
             "! video/x-raw(memory:D3D11Memory),format=NV12,width=1280,height=720 ! d3d11download ! fakesink name=f sync=false"
         )
-        feed_stop = []
+        import threading
+        feed_stop = threading.Event()
 
         def feed():
-            while not feed_stop:
-                got = grabber.grab()
-                if got:
-                    pipe.get_by_name("a").emit("push-buffer", Gst.Buffer.new_wrapped(got[2]))
+            last = frame
+            while not feed_stop.is_set():
+                got = grabber.grab(timeout_ms=10)
+                if got is not None:
+                    last = got
+                if last is not None:
+                    pipe.get_by_name("a").emit("push-buffer", Gst.Buffer.new_wrapped(last[2]))
                 time.sleep(1 / 30)
 
-        import threading
-        threading.Thread(target=feed, daemon=True).start()
+        t = threading.Thread(target=feed)
+        t.start()
         n, errors = count_frames(pipe, "f", 3.0)
-        feed_stop.append(1)
+        feed_stop.set()
+        t.join(timeout=2.0)
         pipe.set_state(Gst.State.NULL)
         grabber.close()
         print("quadros no pipeline:", n, "| erros:", errors)

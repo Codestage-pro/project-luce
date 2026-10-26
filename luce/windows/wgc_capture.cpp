@@ -10,6 +10,7 @@
 #include <wrl/client.h>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 
 using namespace Microsoft::WRL;
 using namespace ABI::Windows::Foundation;
@@ -32,6 +33,7 @@ struct LuceWGC {
     uint32_t staging_height = 0;
     uint32_t width = 0;
     uint32_t height = 0;
+    std::mutex mutex;
 };
 
 template<typename T>
@@ -191,7 +193,9 @@ __declspec(dllexport) int luce_wgc_grab_frame(
     uint32_t buf_size,
     int timeout_ms
 ) {
-    if (!wgc || !wgc->pool) return -1;
+    if (!wgc || !wgc->pool || !out_w || !out_h || !out_buf) return -1;
+    std::lock_guard<std::mutex> lock(wgc->mutex);
+    if (!wgc->pool) return -1;
 
     ComPtr<IDirect3D11CaptureFrame> frame;
     HRESULT hr = S_OK;
@@ -273,25 +277,28 @@ __declspec(dllexport) int luce_wgc_grab_frame(
 __declspec(dllexport) void luce_wgc_destroy(LuceWGC* wgc) {
     if (!wgc) return;
 
-    if (wgc->session) {
-        ComPtr<IClosable> closable;
-        if (SUCCEEDED(wgc->session.As(&closable))) {
-            closable->Close();
+    {
+        std::lock_guard<std::mutex> lock(wgc->mutex);
+        if (wgc->session) {
+            ComPtr<IClosable> closable;
+            if (SUCCEEDED(wgc->session.As(&closable))) {
+                closable->Close();
+            }
+            wgc->session.Reset();
         }
-        wgc->session.Reset();
-    }
-    if (wgc->pool) {
-        ComPtr<IClosable> closable;
-        if (SUCCEEDED(wgc->pool.As(&closable))) {
-            closable->Close();
+        if (wgc->pool) {
+            ComPtr<IClosable> closable;
+            if (SUCCEEDED(wgc->pool.As(&closable))) {
+                closable->Close();
+            }
+            wgc->pool.Reset();
         }
-        wgc->pool.Reset();
+        wgc->staging.Reset();
+        wgc->winrt_device.Reset();
+        wgc->item.Reset();
+        wgc->context.Reset();
+        wgc->device.Reset();
     }
-    wgc->staging.Reset();
-    wgc->winrt_device.Reset();
-    wgc->item.Reset();
-    wgc->context.Reset();
-    wgc->device.Reset();
     delete wgc;
 }
 
