@@ -235,21 +235,28 @@ __declspec(dllexport) int luce_wgc_grab_frame(
     hr = wgc->context->Map(wgc->staging.Get(), 0, D3D11_MAP_READ, 0, &mapped);
     if (FAILED(hr)) return -1;
 
-    uint32_t needed = desc.Width * desc.Height * 4;
+    uint32_t even_w = desc.Width & ~1;
+    uint32_t even_h = desc.Height & ~1;
+    if (even_w == 0 || even_h == 0) {
+        wgc->context->Unmap(wgc->staging.Get(), 0);
+        return 0;
+    }
+
+    uint32_t line_bytes = even_w * 4;
+    uint32_t needed = even_w * even_h * 4;
     if (buf_size < needed) {
         wgc->context->Unmap(wgc->staging.Get(), 0);
-        *out_w = desc.Width;
-        *out_h = desc.Height;
+        *out_w = even_w;
+        *out_h = even_h;
         return -2;
     }
 
     const uint8_t* src_row = (const uint8_t*)mapped.pData;
     uint8_t* dst_row = out_buf;
-    uint32_t line_bytes = desc.Width * 4;
-    if (mapped.RowPitch == line_bytes) {
+    if (even_w == desc.Width && mapped.RowPitch == line_bytes && even_h == desc.Height) {
         memcpy(dst_row, src_row, needed);
     } else {
-        for (uint32_t y = 0; y < desc.Height; ++y) {
+        for (uint32_t y = 0; y < even_h; ++y) {
             memcpy(dst_row, src_row, line_bytes);
             src_row += mapped.RowPitch;
             dst_row += line_bytes;
@@ -258,8 +265,8 @@ __declspec(dllexport) int luce_wgc_grab_frame(
 
     wgc->context->Unmap(wgc->staging.Get(), 0);
 
-    *out_w = desc.Width;
-    *out_h = desc.Height;
+    *out_w = even_w;
+    *out_h = even_h;
     return 1;
 }
 

@@ -214,7 +214,9 @@ if sys.platform == "win32":
                 timeout_ms,
             )
             if res == 1:
-                w, h = self._out_w.value, self._out_h.value
+                w, h = self._out_w.value & ~1, self._out_h.value & ~1
+                if w == 0 or h == 0:
+                    return None
                 return (w, h, bytes(self._buf[: w * h * 4]))
             if res == -2:
                 self._buf_size = self._out_w.value * self._out_h.value * 4 + 4096
