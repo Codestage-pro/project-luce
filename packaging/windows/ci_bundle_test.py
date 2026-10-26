@@ -44,8 +44,7 @@ print("elementos ok:", len(need))
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import GdkPixbuf  # noqa: E402
 
-for icon in ("luce.ico", "ucrt64/share/icons/hicolor/256x256/apps/pro.codestage.Luce.png"):  # loaders podados
-    GdkPixbuf.Pixbuf.new_from_file(str(root / icon))
+GdkPixbuf.Pixbuf.new_from_file(str(root / "ucrt64/share/icons/hicolor/256x256/apps/pro.codestage.Luce.png"))  # loaders podados
 print("plugins:", len(Gst.Registry.get().get_plugin_list()))
 
 os.environ["LUCE_ENCODER"] = "x264enc"
