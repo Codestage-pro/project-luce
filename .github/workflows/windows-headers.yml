@@ -1,0 +1,26 @@
+name: Windows headers probe
+
+# Só verifica se o mingw-w64 do MSYS2 traz os cabeçalhos do Windows.Graphics.Capture. Não gera release.
+on:
+  workflow_dispatch:
+  push:
+    branches: [windows-probe]
+    paths: [.github/workflows/windows-headers.yml]
+
+jobs:
+  headers:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-gcc
+      - run: |
+          pacman -Q mingw-w64-ucrt-x86_64-headers-git mingw-w64-ucrt-x86_64-headers 2>&1 || true
+          ls /ucrt64/include | grep -iE "graphics|roapi|winstring|d3d11|dxgi|inspectable|asyncinfo|windows\.foundation" | head -60
+          ls /ucrt64/lib | grep -iE "runtimeobject|windowsapp|libd3d11|libdxgi|combase"
+          grep -n "CreateDirect3D11DeviceFromDXGIDevice\|IDirect3DDxgiInterfaceAccess" /ucrt64/include/*.h | head
+          grep -n "IGraphicsCaptureItemInterop" /ucrt64/include/*.h | head -5
