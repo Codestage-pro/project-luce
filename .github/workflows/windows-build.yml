@@ -46,7 +46,7 @@ jobs:
           set -euo pipefail
           out=dist/LUCE
           mkdir -p "$out"
-          tops="gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-rs gst-plugins-ugly gst-libav gst-python gtk4 python-gobject"
+          tops="gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-rs gst-plugins-ugly gst-python gtk4 python-gobject"
           for t in $tops; do pactree -u -l "mingw-w64-ucrt-x86_64-$t"; done | sort -u > pkgs.txt
           echo "$(wc -l < pkgs.txt) pacotes"
           # só arquivos (pacman -Ql lista pastas com / no fim), sem o que só serve para compilar ou documentar

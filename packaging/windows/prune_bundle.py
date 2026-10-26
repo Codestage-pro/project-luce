@@ -18,7 +18,7 @@ from pathlib import Path
 ELEMENTS = """
 queue tee capsfilter identity appsrc appsink audioconvert audioresample audiotestsrc videotestsrc
 videoconvert videoscale videorate volume audiomixer audiorate typefind decodebin3 parsebin
-h264parse opusparse opusenc opusdec x264enc avdec_h264 avdec_opus
+h264parse opusparse opusenc opusdec x264enc openh264dec
 rtph264pay rtph264depay rtpopuspay rtpopusdepay rtpbin rtpjitterbuffer rtprtxsend rtprtxreceive
 rtpulpfecenc rtpulpfecdec rtpredenc rtpreddec rtpstorage rtpfunnel rtpssrcdemux
 webrtcbin nicesrc nicesink dtlssrtpenc dtlssrtpdec srtpenc srtpdec sctpenc sctpdec whipsink whepsrc
@@ -46,7 +46,7 @@ DROP_DIRS = [
     "lib/itcl*", "lib/thread*", "lib/tdbc*", "lib/ImageMagick-*", "lib/python3.*/test", "lib/python3.*/idlelib",
     "lib/python3.*/tkinter", "lib/python3.*/turtledemo", "lib/python3.*/ensurepip", "lib/python3.*/pydoc_data",
     "lib/python3.*/lib2to3", "lib/python3.*/site-packages/pip*", "lib/python3.*/site-packages/setuptools*",
-    "lib/python3.*/site-packages/pkg_resources", "lib/python3.*/lib-dynload/_tkinter*",
+    "lib/python3.*/site-packages/pkg_resources", "lib/python3.*/site-packages/imath*", "lib/python3.*/lib-dynload/_tkinter*",
     "share/terminfo", "share/zoneinfo", "share/libwmf", "share/libmysofa", "share/sqlite", "share/xml",
     "share/iso-codes", "share/djvu", "share/ImageMagick-*", "share/ffmpeg", "share/gtk-4.0/emoji",
     "etc/ImageMagick-*",

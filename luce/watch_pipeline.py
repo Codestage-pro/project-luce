@@ -43,7 +43,7 @@ LINUX_DECODERS = (
 WINDOWS_DECODERS = (
     ("d3d11h264dec", "D3D11 (GPU)"),
     ("nvh264dec", "NVDEC (GPU NVIDIA)"),
-    ("avdec_h264", "software/CPU (gst-libav)"),
+    ("openh264dec", "software/CPU (OpenH264; o bundle não leva o gst-libav, que pesa 70 MB)"),
 )
 
 

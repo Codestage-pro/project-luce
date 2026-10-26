@@ -35,7 +35,7 @@ assert str(root) not in str(registry), registry
 print("GStreamer", Gst.version_string(), "| registro novo em", registry, registry.stat().st_size, "bytes")
 
 need = ["x264enc", "h264parse", "rtph264pay", "opusenc", "whipsink", "whepsrc", "gtk4paintablesink",
-        "d3d11screencapturesrc", "d3d11convert", "d3d11download", "wasapi2src", "avdec_h264", "videorate",
+        "d3d11screencapturesrc", "d3d11convert", "d3d11download", "wasapi2src", "openh264dec", "videorate",
         "opusdec", "audioconvert", "audioresample", "volume", "autoaudiosink", "parsebin", "tee",
         "appsrc", "d3d11upload", "webrtcbin", "videoconvert", "queue", "capsfilter"]
 missing = [e for e in need if Gst.ElementFactory.find(e) is None]
