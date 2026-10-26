@@ -8,7 +8,6 @@
 #include <windows.graphics.directx.direct3d11.h>
 #include <windows.graphics.directx.direct3d11.interop.h>
 #include <wrl/client.h>
-#include <wrl/event.h>
 #include <cstdint>
 #include <cstring>
 
@@ -33,8 +32,6 @@ struct LuceWGC {
     uint32_t staging_height = 0;
     uint32_t width = 0;
     uint32_t height = 0;
-    HANDLE frame_event = nullptr;
-    EventRegistrationToken frame_token{};
 };
 
 template<typename T>
@@ -154,18 +151,10 @@ __declspec(dllexport) LuceWGC* luce_wgc_create(HWND hwnd, int capture_cursor) {
     );
     if (FAILED(hr) || !wgc->pool) { delete wgc; return nullptr; }
 
-    wgc->frame_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    auto handler = Callback<ITypedEventHandler<Direct3D11CaptureFramePool*, IInspectable*>>(
-        [wgc](IDirect3D11CaptureFramePool*, IInspectable*) -> HRESULT {
-            if (wgc->frame_event) SetEvent(wgc->frame_event);
-            return S_OK;
-        }
-    );
-    wgc->pool->add_FrameArrived(handler.Get(), &wgc->frame_token);
+
 
     hr = wgc->pool->CreateCaptureSession(wgc->item.Get(), &wgc->session);
     if (FAILED(hr) || !wgc->session) {
-        CloseHandle(wgc->frame_event);
         delete wgc;
         return nullptr;
     }
@@ -181,14 +170,12 @@ __declspec(dllexport) LuceWGC* luce_wgc_create(HWND hwnd, int capture_cursor) {
     }
 
     if (!CreateStagingTexture(wgc, wgc->width, wgc->height)) {
-        CloseHandle(wgc->frame_event);
         delete wgc;
         return nullptr;
     }
 
     hr = wgc->session->StartCapture();
     if (FAILED(hr)) {
-        CloseHandle(wgc->frame_event);
         delete wgc;
         return nullptr;
     }
@@ -206,12 +193,16 @@ __declspec(dllexport) int luce_wgc_grab_frame(
 ) {
     if (!wgc || !wgc->pool) return -1;
 
-    if (wgc->frame_event && timeout_ms > 0) {
-        WaitForSingleObject(wgc->frame_event, (DWORD)timeout_ms);
-    }
-
     ComPtr<IDirect3D11CaptureFrame> frame;
-    HRESULT hr = wgc->pool->TryGetNextFrame(&frame);
+    HRESULT hr = S_OK;
+    DWORD start = GetTickCount();
+    do {
+        hr = wgc->pool->TryGetNextFrame(&frame);
+        if (FAILED(hr)) return -1;
+        if (frame) break;
+        if (timeout_ms <= 0) break;
+        Sleep(1);
+    } while ((int)(GetTickCount() - start) < timeout_ms);
     if (FAILED(hr)) return -1;
     if (!frame) return 0; // Nenhum quadro novo
 
@@ -283,18 +274,11 @@ __declspec(dllexport) void luce_wgc_destroy(LuceWGC* wgc) {
         wgc->session.Reset();
     }
     if (wgc->pool) {
-        if (wgc->frame_token.value != 0) {
-            wgc->pool->remove_FrameArrived(wgc->frame_token);
-        }
         ComPtr<IClosable> closable;
         if (SUCCEEDED(wgc->pool.As(&closable))) {
             closable->Close();
         }
         wgc->pool.Reset();
-    }
-    if (wgc->frame_event) {
-        CloseHandle(wgc->frame_event);
-        wgc->frame_event = nullptr;
     }
     wgc->staging.Reset();
     wgc->winrt_device.Reset();
