@@ -183,12 +183,10 @@ class CapturePipeline:
         self._d3d11 = WINDOWS and not pattern
         self._window = window_handle if self._d3d11 else None
         self._follow_id: int | None = None
-        # Janela que o PrintWindow não consegue copiar (app que desenha na GPU, jogo, janela elevada):
-        # captura o trecho do monitor sob ela, como o d3d11screencapturesrc faz com a tela inteira.
         self._crop: tuple[int, int, int, int, int] | None = None  # (HMONITOR, x, y, largura, altura)
-        if self._window and (os.environ.get("LUCE_WINDOW_MODE") == "crop" or not _printwindow_works(self._window)):
+        if self._window and os.environ.get("LUCE_WINDOW_MODE") == "crop":
             self._crop = _window_crop(self._window)
-        self._grab = bool(self._window) and self._crop is None  # quadros vêm do WindowGrabber, não do d3d11screencapturesrc
+        self._grab = bool(self._window) and self._crop is None  # quadros vêm do WindowGrabber (WGC ou PrintWindow)
         if self._window and not (width and height):  # "Fonte": tamanho fixo = o da janela agora; depois a GPU escala
             left, top, right, bottom = winsys.window_rect(self._window)
             width, height = max(64, (right - left) & ~1), max(64, (bottom - top) & ~1)
@@ -680,10 +678,12 @@ class CapturePipeline:
         return False
 
     def _grab_loop(self) -> None:
-        """Lê a janela a `fps` (no máx. 60: é cópia por CPU) e empurra no appsrc; minimizada = repete o último quadro."""
+        """Lê a janela a `fps` e empurra no appsrc; minimizada = repete o último quadro."""
         grabber = winsys.WindowGrabber(self._window)
         src = self.pipeline.get_by_name("src")
-        interval = 1 / min(self._fps, 60)
+        backend = "Windows.Graphics.Capture (GPU D3D11)" if grabber.is_wgc else "PrintWindow (GDI)"
+        print(f"captura da janela via {backend}", flush=True)
+        interval = 1 / (self._fps if grabber.is_wgc else min(self._fps, 60))
         last, shape, next_at, told = None, None, time.monotonic(), ""
         try:
             while not self._stop_heartbeat.is_set():

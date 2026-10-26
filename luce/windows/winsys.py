@@ -138,11 +138,101 @@ if sys.platform == "win32":
             ("biClrUsed", wintypes.DWORD), ("biClrImportant", wintypes.DWORD),
         ]
 
-    class WindowGrabber:
-        """Copia o conteúdo de uma janela como BGRx (PrintWindow + PW_RENDERFULLCONTENT).
+    class WgcGrabber:
+        """Captura de janela nativa via Windows.Graphics.Capture (WGC) e GPU D3D11."""
 
-        shortcut: é cópia por CPU (~10-25 ms em 1080p), então segura ~60 quadros/s no máximo; jogo em tela cheia exclusiva pode vir preto. Upgrade: Windows.Graphics.Capture.
-        """
+        _lib = None
+        _supported: bool | None = None
+
+        @classmethod
+        def is_available(cls) -> bool:
+            if cls._supported is not None:
+                return cls._supported
+            cls._supported = False
+            dll_candidates = [
+                Path(__file__).resolve().parent / "luce_wgc.dll",
+                Path(sys.prefix) / "bin" / "luce_wgc.dll",
+                Path(sys.executable).parent / "luce_wgc.dll",
+                Path("luce_wgc.dll"),
+            ]
+            for cand in dll_candidates:
+                if cand.exists():
+                    try:
+                        cls._lib = ctypes.CDLL(str(cand))
+                        break
+                    except Exception:
+                        pass
+            if cls._lib is None:
+                try:
+                    cls._lib = ctypes.CDLL("luce_wgc.dll")
+                except Exception:
+                    return False
+
+            try:
+                cls._lib.luce_wgc_is_supported.restype = ctypes.c_int
+                cls._lib.luce_wgc_create.argtypes = [wintypes.HWND, ctypes.c_int]
+                cls._lib.luce_wgc_create.restype = ctypes.c_void_p
+                cls._lib.luce_wgc_grab_frame.argtypes = [
+                    ctypes.c_void_p,
+                    ctypes.POINTER(ctypes.c_uint32),
+                    ctypes.POINTER(ctypes.c_uint32),
+                    ctypes.c_char_p,
+                    ctypes.c_uint32,
+                    ctypes.c_int,
+                ]
+                cls._lib.luce_wgc_grab_frame.restype = ctypes.c_int
+                cls._lib.luce_wgc_destroy.argtypes = [ctypes.c_void_p]
+                cls._supported = bool(cls._lib.luce_wgc_is_supported())
+            except Exception:
+                cls._supported = False
+            return cls._supported
+
+        def __init__(self, hwnd: int, cursor: bool = True) -> None:
+            self.hwnd = hwnd
+            if not self.is_available() or self._lib is None:
+                raise OSError("WGC não está disponível")
+            self._handle = self._lib.luce_wgc_create(hwnd, int(cursor))
+            if not self._handle:
+                raise OSError(f"luce_wgc_create falhou para hwnd {hwnd}")
+            self._buf_size = 3840 * 2160 * 4
+            self._buf = bytearray(self._buf_size)
+            self._c_buf = (ctypes.c_char * self._buf_size).from_buffer(self._buf)
+            self._out_w = ctypes.c_uint32(0)
+            self._out_h = ctypes.c_uint32(0)
+            self.reason = "wgc"
+            self.black = False
+
+        def grab(self, timeout_ms: int = 50) -> tuple[int, int, bytes] | None:
+            if not self._handle:
+                return None
+            res = self._lib.luce_wgc_grab_frame(
+                self._handle,
+                ctypes.byref(self._out_w),
+                ctypes.byref(self._out_h),
+                self._c_buf,
+                self._buf_size,
+                timeout_ms,
+            )
+            if res == 1:
+                w, h = self._out_w.value, self._out_h.value
+                return (w, h, bytes(self._buf[: w * h * 4]))
+            if res == -2:
+                self._buf_size = self._out_w.value * self._out_h.value * 4 + 4096
+                self._buf = bytearray(self._buf_size)
+                self._c_buf = (ctypes.c_char * self._buf_size).from_buffer(self._buf)
+                return None
+            if res == 0:
+                return None
+            self.reason = "janela fechada ou WGC falhou"
+            return None
+
+        def close(self) -> None:
+            if self._handle:
+                self._lib.luce_wgc_destroy(self._handle)
+                self._handle = None
+
+    class _GdiWindowGrabber:
+        """Copia o conteúdo de uma janela como BGRx (PrintWindow + PW_RENDERFULLCONTENT)."""
 
         def __init__(self, hwnd: int) -> None:
             self.hwnd = hwnd
@@ -220,6 +310,43 @@ if sys.platform == "win32":
 
         def close(self) -> None:
             self._free()
+
+    class WindowGrabber:
+        """Captura o conteúdo de uma janela como BGRx.
+
+        Prioridade: Windows.Graphics.Capture (WGC) via GPU D3D11 (rápido, captura jogos, navegadores, sem preto).
+        Fallback: PrintWindow (GDI CPU) caso WGC não esteja disponível.
+        """
+
+        def __init__(self, hwnd: int) -> None:
+            self.hwnd = hwnd
+            self._backend: WgcGrabber | _GdiWindowGrabber | None = None
+            self.is_wgc = False
+            self.reason = ""
+            self.black = False
+            if WgcGrabber.is_available():
+                try:
+                    self._backend = WgcGrabber(hwnd, cursor=True)
+                    self.is_wgc = True
+                    self.reason = "wgc"
+                    return
+                except Exception as exc:
+                    self.reason = f"wgc falhou ({exc}), usando PrintWindow"
+            self._backend = _GdiWindowGrabber(hwnd)
+            self.is_wgc = False
+
+        def grab(self) -> tuple[int, int, bytes] | None:
+            if not self._backend:
+                return None
+            frame = self._backend.grab()
+            self.reason = self._backend.reason
+            self.black = getattr(self._backend, "black", False)
+            return frame
+
+        def close(self) -> None:
+            if self._backend:
+                self._backend.close()
+                self._backend = None
 
     def is_window(hwnd: int) -> bool:
         return bool(user32.IsWindow(hwnd))
@@ -388,4 +515,31 @@ else:
 
     def list_mutable_apps() -> list[tuple[str, str]]:
         return [("", "Nenhum")]
+
+    class WgcGrabber:
+        @classmethod
+        def is_available(cls) -> bool:
+            return False
+
+        def __init__(self, _hwnd: int, _cursor: bool = True) -> None:
+            raise OSError("WGC não suportado nesta plataforma")
+
+        def grab(self, _timeout_ms: int = 50) -> tuple[int, int, bytes] | None:
+            return None
+
+        def close(self) -> None:
+            pass
+
+    class WindowGrabber:
+        def __init__(self, _hwnd: int) -> None:
+            self.hwnd = _hwnd
+            self.is_wgc = False
+            self.reason = "não suportado nesta plataforma"
+            self.black = False
+
+        def grab(self) -> tuple[int, int, bytes] | None:
+            return None
+
+        def close(self) -> None:
+            pass
 

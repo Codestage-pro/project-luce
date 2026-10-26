@@ -29,6 +29,7 @@ jobs:
           install: >-
             pacman-contrib
             mingw-w64-ucrt-x86_64-binutils
+            mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-gstreamer
             mingw-w64-ucrt-x86_64-gst-plugins-base
             mingw-w64-ucrt-x86_64-gst-plugins-good
@@ -65,6 +66,9 @@ jobs:
           cp packaging/windows/luce_launcher.pyw packaging/windows/luce.ico "$out/"
           # luce.exe = cópia do pythonw.exe: o Gerenciador de Tarefas mostra nome/ícone do exe, não do script
           cp "$out/ucrt64/bin/pythonw.exe" "$out/ucrt64/bin/luce.exe"
+          # WGC: captura nativa de janela via GPU DirectX (usada por OBS/Discord)
+          g++ -O2 -shared luce/windows/wgc_capture.cpp -o "$out/ucrt64/bin/luce_wgc.dll" -lruntimeobject -ld3d11 -ldxgi -lole32
+          cp "$out/ucrt64/bin/luce_wgc.dll" "$out/luce/windows/luce_wgc.dll"
           # tira plugins e DLLs que o app não usa (o bundle cai de ~900 MB para uma fração); o teste abaixo valida
           python packaging/windows/prune_bundle.py "$out"
           # o logo no cabeçalho do app vem do tema de ícones (mesmo nome do Linux)

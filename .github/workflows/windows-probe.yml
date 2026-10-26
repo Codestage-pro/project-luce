@@ -18,6 +18,7 @@ jobs:
           msystem: UCRT64
           update: true
           install: >-
+            mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-gstreamer
             mingw-w64-ucrt-x86_64-gst-plugins-base
             mingw-w64-ucrt-x86_64-gst-plugins-good
@@ -122,5 +123,12 @@ jobs:
         run: |
           timeout 20 gst-launch-1.0 -e d3d11screencapturesrc num-buffers=60 ! d3d11convert ! d3d11download ! fakesink 2>&1 | tail -15
 
-      - name: Captura de janela (PrintWindow + áudio por PID)
+      - name: Compila luce_wgc.dll (Windows.Graphics.Capture)
+        run: |
+          g++ -O2 -shared luce/windows/wgc_capture.cpp -o luce_wgc.dll -lruntimeobject -ld3d11 -ldxgi -lole32
+          cp luce_wgc.dll luce/windows/luce_wgc.dll
+          cp luce_wgc.dll /ucrt64/bin/luce_wgc.dll
+          ls -lh luce_wgc.dll
+
+      - name: Captura de janela (WGC / PrintWindow + áudio por PID)
         run: python packaging/windows/ci_window_test.py

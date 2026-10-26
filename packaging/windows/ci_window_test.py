@@ -85,17 +85,18 @@ def main() -> int:
 
         # 2) WindowGrabber devolve o conteúdo da janela (não preto) e os quadros atravessam upload -> convert -> download
         grabber = winsys.WindowGrabber(hwnd)
+        print(f"WindowGrabber backend: {'WGC (GPU D3D11)' if grabber.is_wgc else 'PrintWindow (GDI CPU)'}")
         frame = None
         for _ in range(20):  # o GTK demora um pouco pra desenhar a primeira vez
             frame = grabber.grab()
             if frame and any(frame[2][i] for i in range(0, len(frame[2]), 4097)):
                 break
             time.sleep(0.25)
-        assert frame, "PrintWindow não devolveu quadro"
+        assert frame, f"WindowGrabber não devolveu quadro ({grabber.reason})"
         w, h, data = frame
         assert w % 2 == 0 and h % 2 == 0 and len(data) == w * h * 4, (w, h, len(data))
         assert any(data[i] for i in range(0, len(data), 4097)), "quadro todo preto"
-        print("grab ok:", w, "x", h)
+        print(f"grab ok ({'wgc' if grabber.is_wgc else 'gdi'}):", w, "x", h)
 
         # cursor: informativo (o runner pode não ter cursor visível)
         left, top, right, bottom = winsys.window_rect(hwnd)

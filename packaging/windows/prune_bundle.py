@@ -41,6 +41,7 @@ TYPELIBS = {
 TOOLS = Path(sys.prefix) / "bin"  # python do MSYS2 UCRT64: gst-inspect e objdump moram ao lado
 PIXBUF_LOADERS = ("png", "jpeg", "gif", "ico", "bmp", "svg")  # svg: ícones simbólicos do tema
 KEEP_EXES = {"python.exe", "pythonw.exe", "luce.exe", "gspawn-win64-helper.exe", "gspawn-win64-helper-console.exe"}
+KEEP_DLLS = {"luce_wgc.dll"}
 DROP_DIRS = [
     "lib/frei0r-1", "lib/gst-validate-launcher", "lib/terminfo", "lib/sqlite3*", "lib/tcl*", "lib/tk*",
     "lib/itcl*", "lib/thread*", "lib/tdbc*", "lib/ImageMagick-*", "lib/python3.*/test", "lib/python3.*/idlelib",
@@ -135,7 +136,7 @@ def main(root: Path) -> None:
         wanted.update(m.decode().lower() for m in re.findall(rb"[\w.+-]+\.dll", tl.read_bytes()))
     cache: dict[Path, list[str]] = {}
     seen: set[Path] = set()
-    queue = list(roots) + [available[n] for n in wanted if n in available]
+    queue = list(roots) + [available[n] for n in wanted if n in available] + [available[n] for n in KEEP_DLLS if n in available]
     while queue:
         path = queue.pop()
         if path in seen:
