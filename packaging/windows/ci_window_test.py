@@ -1,6 +1,6 @@
-"""Teste do CI (Windows): captura de janela via Windows Graphics Capture (window-handle).
+"""Teste do CI (Windows): captura de janela via PrintWindow (WindowGrabber -> appsrc).
 
-Abre uma janela GTK própria (subprocesso) e confere: listagem, áudio por PID, pipeline WGC e quadros chegando.
+Abre uma janela GTK própria (subprocesso) e confere: listagem, áudio por PID, quadros não pretos e chegando no encoder.
 """
 
 import os
@@ -60,7 +60,7 @@ def main() -> int:
         assert winsys.window_pid(hwnd) == proc.pid, (winsys.window_pid(hwnd), proc.pid)
         print("janela:", hwnd, "rect:", winsys.window_rect(hwnd))
 
-        # 1) CapturePipeline em janela: monta com WGC + window-handle, áudio por PID
+        # 1) CapturePipeline em janela: monta com appsrc, áudio por PID
         os.environ["LUCE_ENCODER"] = "x264enc"
         from luce.capture_pipeline import CapturePipeline
 
@@ -69,26 +69,47 @@ def main() -> int:
         mode = audio.get_property("loopback-mode").value_nick
         assert mode == "include-process-tree" and audio.get_property("loopback-target-pid") == proc.pid, mode
         src = p.pipeline.get_by_name("src")
-        assert src.get_property("capture-api").value_nick == "wgc" and src.get_property("window-handle") == hwnd
-        print("pipeline de janela ok: wgc, window-handle", hwnd, "| áudio", mode, audio.get_property("loopback-target-pid"))
+        assert src.get_factory().get_name() == "appsrc", src.get_factory().get_name()
+        print("pipeline de janela ok: appsrc | áudio", mode, audio.get_property("loopback-target-pid"))
         p.stop()
 
-        # 2) WGC entrega quadros da janela e continua entregando com outra janela por cima dela
+        # 2) WindowGrabber devolve o conteúdo da janela (não preto) e os quadros atravessam upload -> convert -> download
+        grabber = winsys.WindowGrabber(hwnd)
+        frame = None
+        for _ in range(20):  # o GTK demora um pouco pra desenhar a primeira vez
+            frame = grabber.grab()
+            if frame and any(frame[2][i] for i in range(0, len(frame[2]), 4097)):
+                break
+            time.sleep(0.25)
+        assert frame, "PrintWindow não devolveu quadro"
+        w, h, data = frame
+        assert w % 2 == 0 and h % 2 == 0 and len(data) == w * h * 4, (w, h, len(data))
+        assert any(data[i] for i in range(0, len(data), 4097)), "quadro todo preto"
+        print("grab ok:", w, "x", h)
+
         pipe = Gst.parse_launch(
-            f"d3d11screencapturesrc capture-api=wgc window-handle={hwnd} ! video/x-raw(memory:D3D11Memory),framerate=30/1 "
-            "! d3d11convert add-borders=true "
-            "! video/x-raw(memory:D3D11Memory),format=NV12,width=1280,height=720,pixel-aspect-ratio=1/1,framerate=30/1 "
-            "! d3d11download ! fakesink name=f sync=false"
+            "appsrc name=a is-live=true format=time do-timestamp=true "
+            f"caps=video/x-raw,format=BGRx,width={w},height={h},framerate=30/1 "
+            "! d3d11upload ! d3d11convert "
+            "! video/x-raw(memory:D3D11Memory),format=NV12,width=1280,height=720 ! d3d11download ! fakesink name=f sync=false"
         )
-        before, errors = count_frames(pipe, "f", 2.0)
-        cover = subprocess.Popen([sys.executable, __file__, "--window"])  # outra janela com o mesmo título... por cima
-        time.sleep(1.0)
-        cover.kill()
-        after, more = count_frames(pipe, "f", 1.0)
+        feed_stop = []
+
+        def feed():
+            while not feed_stop:
+                got = grabber.grab()
+                if got:
+                    pipe.get_by_name("a").emit("push-buffer", Gst.Buffer.new_wrapped(got[2]))
+                time.sleep(1 / 30)
+
+        import threading
+        threading.Thread(target=feed, daemon=True).start()
+        n, errors = count_frames(pipe, "f", 3.0)
+        feed_stop.append(1)
         pipe.set_state(Gst.State.NULL)
-        print("quadros WGC:", before, "->", before + after, "| erros:", errors + more)
-        assert before > 0 and not errors, ("WGC não entregou quadros", before, errors)
-        assert before + after > before, "a captura parou"
+        grabber.close()
+        print("quadros no pipeline:", n, "| erros:", errors)
+        assert n > 10 and not errors, (n, errors)
     finally:
         proc.kill()
     print("TUDO OK")

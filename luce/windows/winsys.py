@@ -1,7 +1,9 @@
 """Windows: lista monitores e janelas (o equivalente do seletor do portal no Linux).
 
-Janela = d3d11screencapturesrc com capture-api=wgc + window-handle (Windows Graphics Capture).
-Monitor usa o HMONITOR em vez do índice: a ordem do GDK não é a do DXGI.
+Janela = WindowGrabber (PrintWindow com PW_RENDERFULLCONTENT): o DWM entrega o conteúdo da janela
+mesmo com outra por cima. O d3d11screencapturesrc do bundle MSYS2 só captura monitor (sem
+window-handle/WGC), por isso a janela não vai por ele. Monitor usa o HMONITOR em vez do índice:
+a ordem do GDK não é a do DXGI.
 """
 
 from __future__ import annotations
@@ -42,7 +44,7 @@ if sys.platform == "win32":
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
     for _fn, _args, _res in (
-        ("IsWindow", [_H], _B), ("IsWindowVisible", [_H], _B),
+        ("IsWindow", [_H], _B), ("IsWindowVisible", [_H], _B), ("IsIconic", [_H], _B),
         ("GetWindowTextLengthW", [_H], ctypes.c_int),
         ("GetWindowTextW", [_H, wintypes.LPWSTR, ctypes.c_int], ctypes.c_int),
         ("GetWindowLongW", [_H, ctypes.c_int], ctypes.c_long),
@@ -53,6 +55,16 @@ if sys.platform == "win32":
         ("SendMessageW", [_H, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM], wintypes.LPARAM),
     ):
         getattr(user32, _fn).argtypes, getattr(user32, _fn).restype = _args, _res
+    gdi32 = ctypes.WinDLL("gdi32")
+    user32.PrintWindow.argtypes, user32.PrintWindow.restype = [_H, ctypes.c_void_p, wintypes.UINT], _B
+    for _fn, _args, _res in (
+        ("CreateCompatibleDC", [ctypes.c_void_p], ctypes.c_void_p),
+        ("CreateDIBSection", [ctypes.c_void_p, ctypes.c_void_p, wintypes.UINT, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, wintypes.DWORD], ctypes.c_void_p),
+        ("SelectObject", [ctypes.c_void_p, ctypes.c_void_p], ctypes.c_void_p),
+        ("DeleteObject", [ctypes.c_void_p], _B),
+        ("DeleteDC", [ctypes.c_void_p], _B),
+    ):
+        getattr(gdi32, _fn).argtypes, getattr(gdi32, _fn).restype = _args, _res
     dwmapi.DwmGetWindowAttribute.argtypes = [_H, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
     # Sem isso o GetWindowRect devolve pixels "virtualizados" num monitor com escala, e o crop erra.
     # Falha sem problema se o GTK já definiu (é o mesmo modo).
@@ -100,6 +112,72 @@ if sys.platform == "win32":
             if not user32.GetWindowRect(hwnd, ctypes.byref(r)):
                 raise OSError(f"janela {hwnd} sem retângulo")
         return r.left, r.top, r.right, r.bottom
+
+    class _BitmapHeader(ctypes.Structure):
+        _fields_ = [
+            ("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG), ("biHeight", wintypes.LONG),
+            ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+            ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG), ("biYPelsPerMeter", wintypes.LONG),
+            ("biClrUsed", wintypes.DWORD), ("biClrImportant", wintypes.DWORD),
+        ]
+
+    class WindowGrabber:
+        """Copia o conteúdo de uma janela como BGRx (PrintWindow + PW_RENDERFULLCONTENT).
+
+        shortcut: é cópia por CPU (~10-25 ms em 1080p), então segura ~60 quadros/s no máximo, e o
+        cursor não aparece; jogo em tela cheia exclusiva pode vir preto. Upgrade: Windows.Graphics.Capture.
+        """
+
+        def __init__(self, hwnd: int) -> None:
+            self.hwnd = hwnd
+            self._size = (0, 0)
+            self._dc = self._bitmap = self._old = self._bits = None
+
+        def _free(self) -> None:
+            if self._dc:
+                gdi32.SelectObject(self._dc, self._old)
+                gdi32.DeleteObject(self._bitmap)
+                gdi32.DeleteDC(self._dc)
+            self._dc = self._bitmap = self._old = self._bits = None
+
+        def _alloc(self, w: int, h: int) -> None:
+            self._free()
+            header = _BitmapHeader(biSize=ctypes.sizeof(_BitmapHeader), biWidth=w, biHeight=-h, biPlanes=1, biBitCount=32)
+            bits = ctypes.c_void_p()
+            self._dc = gdi32.CreateCompatibleDC(None)
+            self._bitmap = gdi32.CreateDIBSection(self._dc, ctypes.byref(header), 0, ctypes.byref(bits), None, 0)
+            if not self._bitmap:
+                self._free()
+                raise OSError("CreateDIBSection falhou")
+            self._old, self._bits, self._size = gdi32.SelectObject(self._dc, self._bitmap), bits, (w, h)
+
+        def grab(self) -> tuple[int, int, bytes] | None:
+            """(largura, altura, pixels BGRx) com tamanho par, ou None (minimizada/fechada)."""
+            if not user32.IsWindow(self.hwnd) or user32.IsIconic(self.hwnd):
+                return None
+            full = wintypes.RECT()
+            if not user32.GetWindowRect(self.hwnd, ctypes.byref(full)):
+                return None
+            fw, fh = full.right - full.left, full.bottom - full.top
+            if fw < 2 or fh < 2:
+                return None
+            if (fw, fh) != self._size:
+                self._alloc(fw, fh)
+            if not user32.PrintWindow(self.hwnd, self._dc, 2):  # PW_RENDERFULLCONTENT
+                return None
+            data = ctypes.string_at(self._bits, fw * fh * 4)
+            # tira a borda invisível de sombra: só o retângulo visível da janela
+            left, top, right, bottom = window_rect(self.hwnd)
+            x0, y0 = max(0, left - full.left), max(0, top - full.top)
+            w, h = max(2, min(fw - x0, right - left) & ~1), max(2, min(fh - y0, bottom - top) & ~1)
+            if (x0, y0, w, h) == (0, 0, fw, fh):
+                return w, h, data
+            stride = fw * 4
+            rows = (data[(y0 + y) * stride + x0 * 4:(y0 + y) * stride + (x0 + w) * 4] for y in range(h))
+            return w, h, b"".join(rows)
+
+        def close(self) -> None:
+            self._free()
 
     def is_window(hwnd: int) -> bool:
         return bool(user32.IsWindow(hwnd))
