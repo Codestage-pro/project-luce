@@ -11,12 +11,10 @@ from __future__ import annotations
 
 import gc
 import os
-import subprocess
 import sys
 import threading
 import time
 import urllib.error
-from pathlib import Path
 
 import gi
 
@@ -36,9 +34,16 @@ from . import config, roster, stats, theme, updater
 from .capture_pipeline import CapturePipeline
 from .tray import Tray
 if WINDOWS:
-    from . import winsys
-    from .winsys import apply_icon, is_window, list_monitors, list_windows
+    from .winsys import (
+        apply_icon,
+        is_window,
+        list_audio_sources,
+        list_monitors,
+        list_mutable_apps,
+        list_windows,
+    )
 else:  # o portal usa dbus, que não existe no Windows
+    from .linux_audio import list_audio_sources, list_mutable_apps
     from .portal import PortalError, ScreenCast, screencast_available, x11_session
 from .viewer import ViewerWindow
 from .watch_pipeline import WatchPipeline
@@ -73,98 +78,13 @@ def _choice_row(grid: Gtk.Grid, row: int, label: str, options: list, selected, f
 
 
 def _list_audio_sources() -> list[tuple[str, str]]:
-    """Enumera microfones (pactl) + áudio de apps abertos agora (pw-dump).
-
-    Retorna lista de pares (device_value, display_label). device_value é o
-    nome pulsesrc pro microfone, ou "app:<serial>" pra pipewiresrc pegar o
-    playback de um app específico (confirmado com nível de áudio real, não
-    só contagem de buffer — ver capture_pipeline.py).
-    shortcut: a lista de apps só é lida quando a janela de Configurações
-    abre, não atualiza sozinha enquanto ela está aberta.
-    """
-    devices: list[tuple[str, str]] = [("", "Padrão do sistema")]
-    if WINDOWS:  # sem pactl/pw-dump: os microfones vêm do WASAPI, device.id é o que o wasapi2src aceita
-        monitor = Gst.DeviceMonitor.new()
-        monitor.add_filter("Audio/Source", None)
-        for dev in monitor.get_devices() or []:
-            props = dev.get_properties()
-            if props is None or not props.has_field("device.id"):
-                continue
-            if props.has_field("wasapi2.device.loopback") and props.get_value("wasapi2.device.loopback"):
-                continue  # o áudio do sistema já é o "Padrão do sistema"
-            devices.append((props.get_value("device.id"), dev.get_display_name()))
-        return devices
-    try:
-        out = subprocess.run(
-            ["pactl", "list", "sources"],
-            env={**os.environ, "LC_ALL": "C"},  # em pt_BR o pactl imprime "Nome:"/"Descrição:" e nada casava
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=2,
-        ).stdout
-        curr_name: str | None = None
-        for line in out.splitlines():
-            line = line.strip()
-            if line.startswith("Name: "):
-                curr_name = line.split("Name: ", 1)[1]
-            elif line.startswith("Description: "):
-                desc = line.split("Description: ", 1)[1]
-                if curr_name and not curr_name.endswith(".monitor"):
-                    devices.append((curr_name, desc))
-                curr_name = None
-    except Exception:
-        pass
-    try:
-        import json
-
-        out = subprocess.run(["pw-dump"], capture_output=True, text=True, check=True, timeout=2).stdout
-        for node in json.loads(out):
-            props = (node.get("info") or {}).get("props") or {}
-            if props.get("media.class") != "Stream/Output/Audio":
-                continue
-            serial = props.get("object.serial")
-            app = props.get("application.name") or props.get("node.name") or "app"
-            media_name = props.get("media.name") or app
-            if serial is None:
-                continue
-            label = f"{app}: {media_name}" if media_name != app else app
-            devices.append((f"app:{serial}", label))
-    except Exception:
-        pass
-    return devices
+    """Enumera fontes de áudio disponíveis para captura na plataforma atual."""
+    return list_audio_sources()
 
 
 def _list_mutable_apps() -> list[tuple[str, str]]:
-    """[(valor_cfg, label_exibicao)]. Primeiro é sempre ('', 'Nenhum')."""
-    apps: list[tuple[str, str]] = [("", "Nenhum")]
-    seen: set[str] = set()
-    if WINDOWS:
-        try:
-            for hwnd, title in list_windows():
-                pname = winsys.process_name(winsys.window_pid(hwnd))
-                stem = Path(pname).stem if pname else title.split(" - ")[-1].strip()
-                if stem and stem.lower() not in seen:
-                    seen.add(stem.lower())
-                    apps.append((stem, f"{stem} ({title[:30]}…)" if len(title) > 30 else f"{stem} ({title})"))
-        except Exception as exc:  # engolido sem log, um NameError deixou essa lista vazia
-            print(f"lista de apps: {exc}", flush=True)
-    else:  # Linux: pega apps produzindo áudio via pw-dump
-        try:
-            import json
-
-            out = subprocess.run(["pw-dump"], capture_output=True, text=True, check=True, timeout=2).stdout
-            for node in json.loads(out):
-                props = (node.get("info") or {}).get("props") or {}
-                if props.get("media.class") != "Stream/Output/Audio":
-                    continue
-                app = props.get("application.name") or props.get("node.name")
-                if app and app.lower() not in seen:
-                    seen.add(app.lower())
-                    apps.append((app, app))
-        except Exception:
-            pass
-    return apps
+    """Lista de aplicações que podem ser silenciadas na transmissão."""
+    return list_mutable_apps()
 
 
 def _choice_value(pairs: list[tuple[Gtk.ToggleButton, object]], fallback):
@@ -762,7 +682,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     # --- assistir ---
 
-    def _toggle_watch(self, name: str, button: Gtk.Button) -> None:
+    def _toggle_watch(self, name: str, _button: Gtk.Button) -> None:
         if name in self._watches:
             self._stop_watch(name)
             return

@@ -151,3 +151,65 @@ class SystemAudioExcept:
 
     def stop(self) -> None:
         self._stop.set()
+
+
+def list_audio_sources() -> list[tuple[str, str]]:
+    """[(valor_cfg, label_exibicao)]. Primeiro é sempre ('', 'Padrão do sistema')."""
+    devices: list[tuple[str, str]] = [("", "Padrão do sistema")]
+    try:
+        out = subprocess.run(
+            ["pactl", "list", "sources"],
+            env={**os.environ, "LC_ALL": "C"},
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=2,
+        ).stdout
+        curr_name: str | None = None
+        for line in out.splitlines():
+            line = line.strip()
+            if line.startswith("Name: "):
+                curr_name = line.split("Name: ", 1)[1]
+            elif line.startswith("Description: "):
+                desc = line.split("Description: ", 1)[1]
+                if curr_name and not curr_name.endswith(".monitor"):
+                    devices.append((curr_name, desc))
+                curr_name = None
+    except Exception:
+        pass
+    try:
+        out = subprocess.run(["pw-dump"], capture_output=True, text=True, check=True, timeout=2).stdout
+        for node in json.loads(out):
+            props = (node.get("info") or {}).get("props") or {}
+            if props.get("media.class") != "Stream/Output/Audio":
+                continue
+            serial = props.get("object.serial")
+            app = props.get("application.name") or props.get("node.name") or "app"
+            media_name = props.get("media.name") or app
+            if serial is None or str(props.get("application.process.id")) == str(os.getpid()):
+                continue
+            label = f"{app}: {media_name}" if media_name != app else app
+            devices.append((f"app:{serial}", label))
+    except Exception:
+        pass
+    return devices
+
+
+def list_mutable_apps() -> list[tuple[str, str]]:
+    """[(valor_cfg, label_exibicao)]. Primeiro é sempre ('', 'Nenhum')."""
+    apps: list[tuple[str, str]] = [("", "Nenhum")]
+    seen: set[str] = set()
+    try:
+        out = subprocess.run(["pw-dump"], capture_output=True, text=True, check=True, timeout=2).stdout
+        for node in json.loads(out):
+            props = (node.get("info") or {}).get("props") or {}
+            if props.get("media.class") != "Stream/Output/Audio":
+                continue
+            app = props.get("application.name") or props.get("node.name")
+            if app and app.lower() not in seen:
+                seen.add(app.lower())
+                apps.append((app, app))
+    except Exception:
+        pass
+    return apps
+

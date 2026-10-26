@@ -444,17 +444,20 @@ class CapturePipeline:
             _try_set(prev_queue, "max-size-buffers", 2)
             _try_set(prev_queue, "leaky", "downstream")
             if preview_sink is not None:
-                conv = Gst.ElementFactory.make("videoconvert", "preview-convert")
-                rgba = Gst.ElementFactory.make("capsfilter", "preview-rgba")
-                rgba.set_property("caps", Gst.Caps.from_string("video/x-raw,format=RGBA"))
-                prev_tail = [conv, rgba, self._preview_bridge(preview_sink)]
-                if self._d3d11:
-                    # a GTK lê memória comum: baixa da VRAM só o ramo da preview, a 15 fps
-                    rate15 = Gst.ElementFactory.make("videorate", "preview-rate")
-                    _try_set(rate15, "drop-only", True)
-                    cap15 = Gst.ElementFactory.make("capsfilter", "preview-rate-caps")
-                    cap15.set_property("caps", Gst.Caps.from_string("video/x-raw(memory:D3D11Memory),framerate=15/1"))
-                    prev_tail = [rate15, cap15, Gst.ElementFactory.make("d3d11download", "preview-download"), *prev_tail]
+                if WINDOWS:
+                    conv = Gst.ElementFactory.make("videoconvert", "preview-convert")
+                    rgba = Gst.ElementFactory.make("capsfilter", "preview-rgba")
+                    rgba.set_property("caps", Gst.Caps.from_string("video/x-raw,format=RGBA"))
+                    prev_tail = [conv, rgba, self._preview_bridge(preview_sink)]
+                    if self._d3d11:
+                        # a GTK lê memória comum: baixa da VRAM só o ramo da preview, a 15 fps
+                        rate15 = Gst.ElementFactory.make("videorate", "preview-rate")
+                        _try_set(rate15, "drop-only", True)
+                        cap15 = Gst.ElementFactory.make("capsfilter", "preview-rate-caps")
+                        cap15.set_property("caps", Gst.Caps.from_string("video/x-raw(memory:D3D11Memory),framerate=15/1"))
+                        prev_tail = [rate15, cap15, Gst.ElementFactory.make("d3d11download", "preview-download"), *prev_tail]
+                else:
+                    prev_tail = [self._preview_bridge(preview_sink)]
             elif sysmem:
                 prev_tail = [
                     Gst.ElementFactory.make("videoconvert", "preview-convert"),
@@ -762,16 +765,19 @@ class CapturePipeline:
             return
         _try_set(preview_sink, "sync", False)
         pipeline = Gst.Pipeline.new("luce-preview")
-        conv = Gst.ElementFactory.make("videoconvert", "preview-pipe-conv")
-        rgba = Gst.ElementFactory.make("capsfilter", "preview-pipe-rgba")
-        rgba.set_property("caps", Gst.Caps.from_string("video/x-raw,format=RGBA"))
         pipeline.add(appsrc)
-        pipeline.add(conv)
-        pipeline.add(rgba)
         pipeline.add(preview_sink)
-        appsrc.link(conv)
-        conv.link(rgba)
-        rgba.link(preview_sink)
+        if WINDOWS:
+            conv = Gst.ElementFactory.make("videoconvert", "preview-pipe-conv")
+            rgba = Gst.ElementFactory.make("capsfilter", "preview-pipe-rgba")
+            rgba.set_property("caps", Gst.Caps.from_string("video/x-raw,format=RGBA"))
+            pipeline.add(conv)
+            pipeline.add(rgba)
+            appsrc.link(conv)
+            conv.link(rgba)
+            rgba.link(preview_sink)
+        else:
+            appsrc.link(preview_sink)
         pipeline.set_state(Gst.State.PLAYING)
         self._preview_pipeline = pipeline
 

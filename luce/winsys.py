@@ -213,11 +213,71 @@ if sys.platform == "win32":
             except OSError:
                 pass
         return None
+
+    def list_audio_sources() -> list[tuple[str, str]]:
+        """[(valor_cfg, label_exibicao)]. Primeiro é sempre ('', 'Padrão do sistema')."""
+        devices: list[tuple[str, str]] = [("", "Padrão do sistema")]
+        try:
+            import gi
+            gi.require_version("Gst", "1.0")
+            from gi.repository import Gst
+
+            monitor = Gst.DeviceMonitor.new()
+            monitor.add_filter("Audio/Source", None)
+            monitor.start()
+            for dev in monitor.get_devices():
+                name = dev.get_display_name()
+                props = dev.get_properties()
+                dev_id = ""
+                if props:
+                    for k in ("device.strid", "wasapi2.device", "device.id", "device.api.id"):
+                        val = props.get_value(k)
+                        if val:
+                            dev_id = str(val)
+                            break
+                if not dev_id:
+                    elem = dev.create_element(None)
+                    if elem and hasattr(elem.props, "device"):
+                        dev_id = elem.get_property("device") or ""
+                devices.append((dev_id or name, name))
+            monitor.stop()
+        except Exception as exc:
+            print(f"[winsys] erro ao listar fontes de áudio: {exc}", file=sys.stderr)
+        return devices
+
+    def list_mutable_apps() -> list[tuple[str, str]]:
+        """[(valor_cfg, label_exibicao)]. Primeiro é sempre ('', 'Nenhum')."""
+        apps: list[tuple[str, str]] = [("", "Nenhum")]
+        seen: set[str] = set()
+        try:
+            for hwnd, title in list_windows():
+                pid = window_pid(hwnd)
+                pname = process_name(pid)
+                stem = Path(pname).stem if pname else title.split(" - ")[-1].strip()
+                if stem and stem.lower() not in seen:
+                    seen.add(stem.lower())
+                    label = f"{stem} ({title[:30]}…)" if len(title) > 30 else f"{stem} ({title})"
+                    apps.append((stem, label))
+        except Exception as exc:
+            print(f"[winsys] erro ao listar apps por janela: {exc}", file=sys.stderr)
+
+        common_apps = [
+            "Discord", "Spotify", "chrome", "firefox", "msedge", "brave", "Telegram",
+            "Steam", "steamwebhelper", "OBS", "vlc",
+        ]
+        for app_name in common_apps:
+            if app_name.lower() not in seen:
+                pid = find_process_pid(app_name)
+                if pid:
+                    seen.add(app_name.lower())
+                    apps.append((app_name, app_name))
+
+        return apps
 else:
-    def process_name(pid: int) -> str:
+    def process_name(_pid: int) -> str:
         return ""
 
-    def find_process_pid(name: str) -> int | None:
+    def find_process_pid(_name: str) -> int | None:
         return None
 
     def apply_icon() -> None:
@@ -229,9 +289,15 @@ else:
     def list_windows() -> list[tuple[int, str]]:
         return []
 
-    def window_pid(hwnd: int) -> int:
+    def window_pid(_hwnd: int) -> int:
         return 0
 
-    def is_window(hwnd: int) -> bool:
+    def is_window(_hwnd: int) -> bool:
         return False
+
+    def list_audio_sources() -> list[tuple[str, str]]:
+        return [("", "Padrão do sistema")]
+
+    def list_mutable_apps() -> list[tuple[str, str]]:
+        return [("", "Nenhum")]
 
