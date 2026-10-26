@@ -1,6 +1,6 @@
 name: Windows headers probe
 
-# Só verifica se o mingw-w64 do MSYS2 traz os cabeçalhos do Windows.Graphics.Capture. Não gera release.
+# Só verifica se o g++ do MSYS2 compila WGC. Não gera release.
 on:
   workflow_dispatch:
   push:
@@ -19,8 +19,29 @@ jobs:
           msystem: UCRT64
           install: mingw-w64-ucrt-x86_64-gcc
       - run: |
-          pacman -Q mingw-w64-ucrt-x86_64-headers-git mingw-w64-ucrt-x86_64-headers 2>&1 || true
-          ls /ucrt64/include | grep -iE "graphics|roapi|winstring|d3d11|dxgi|inspectable|asyncinfo|windows\.foundation" | head -60
-          ls /ucrt64/lib | grep -iE "runtimeobject|windowsapp|libd3d11|libdxgi|combase"
-          grep -n "CreateDirect3D11DeviceFromDXGIDevice\|IDirect3DDxgiInterfaceAccess" /ucrt64/include/*.h | head
-          grep -n "IGraphicsCaptureItemInterop" /ucrt64/include/*.h | head -5
+          cat > test_wgc.cpp << 'CPP'
+          #define CINTERFACE
+          #include <windows.h>
+          #include <winstring.h>
+          #include <roapi.h>
+          #include <d3d11.h>
+          #include <dxgi1_2.h>
+          #include <windows.graphics.capture.h>
+          #include <windows.graphics.capture.interop.h>
+          #include <windows.graphics.directx.direct3d11.h>
+          #include <windows.graphics.directx.direct3d11.interop.h>
+          #include <wrl/client.h>
+
+          using namespace Microsoft::WRL;
+          using namespace ABI::Windows::Graphics::Capture;
+          using namespace ABI::Windows::Graphics::DirectX;
+          using namespace ABI::Windows::Graphics::DirectX::Direct3D11;
+
+          extern "C" __declspec(dllexport) int test_compile() {
+              ComPtr<IGraphicsCaptureItemInterop> interop;
+              ComPtr<IDirect3D11CaptureFramePoolStatics2> pool_statics;
+              return 0;
+          }
+          CPP
+          g++ -shared -O2 test_wgc.cpp -o test_wgc.dll -ld3d11 -ldxgi -lole32
+          ls -l test_wgc.dll
