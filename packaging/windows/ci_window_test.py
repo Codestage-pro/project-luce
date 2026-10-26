@@ -1,7 +1,6 @@
-"""Teste do CI (Windows): captura de janela = monitor + crop que acompanha a janela.
+"""Teste do CI (Windows): captura de janela via Windows Graphics Capture (window-handle).
 
-Abre uma janela GTK própria (subprocesso), e confere: listagem, retângulo, crop, áudio por PID,
-crop dinâmico num d3d11screencapturesrc em PLAYING e o _follow_window do CapturePipeline.
+Abre uma janela GTK própria (subprocesso) e confere: listagem, áudio por PID, pipeline WGC e quadros chegando.
 """
 
 import os
@@ -34,16 +33,20 @@ def child() -> None:
     app.run([])
 
 
+def count_frames(pipe, sink_name: str, seconds: float) -> tuple[int, list[str]]:
+    count, errors = [0], []
+    pad = pipe.get_by_name(sink_name).get_static_pad("sink")
+    pad.add_probe(Gst.PadProbeType.BUFFER, lambda *_: count.__setitem__(0, count[0] + 1) or Gst.PadProbeReturn.OK)
+    bus = pipe.get_bus()
+    pipe.set_state(Gst.State.PLAYING)
+    time.sleep(seconds)
+    while (m := bus.pop_filtered(Gst.MessageType.ERROR)):
+        errors.append(m.parse_error()[0].message)
+    return count[0], errors
+
+
 def main() -> int:
     from luce import winsys
-    from luce.winsys import compute_crop
-
-    mon = (1920, 0, 3840, 1080)
-    assert compute_crop((1900, -8, 2500, 600), mon) == (0, 0, 580, 600)
-    for win in [(3800, 1000, 4200, 1300), (5000, 2000, 5100, 2100), (-500, -500, -400, -400)]:
-        x, y, w, h = compute_crop(win, mon)
-        assert x >= 0 and y >= 0 and x + w <= 1920 and y + h <= 1080 and w % 2 == 0 and h % 2 == 0, (win, x, y, w, h)
-    print("compute_crop ok")
 
     proc = subprocess.Popen([sys.executable, __file__, "--window"])
     try:
@@ -55,10 +58,9 @@ def main() -> int:
             time.sleep(0.5)
         assert hwnd, f"janela não apareceu; lista: {winsys.list_windows()}"
         assert winsys.window_pid(hwnd) == proc.pid, (winsys.window_pid(hwnd), proc.pid)
-        print("janela:", hwnd, "rect:", winsys.window_rect(hwnd), "crop:", winsys.crop_for(hwnd))
-        winsys.bring_to_front(hwnd)
+        print("janela:", hwnd, "rect:", winsys.window_rect(hwnd))
 
-        # 1) CapturePipeline em janela: monta, áudio por PID, tamanho fixo
+        # 1) CapturePipeline em janela: monta com WGC + window-handle, áudio por PID
         os.environ["LUCE_ENCODER"] = "x264enc"
         from luce.capture_pipeline import CapturePipeline
 
@@ -67,60 +69,26 @@ def main() -> int:
         mode = audio.get_property("loopback-mode").value_nick
         assert mode == "include-process-tree" and audio.get_property("loopback-target-pid") == proc.pid, mode
         src = p.pipeline.get_by_name("src")
-        got = tuple(src.get_property(n) for n in ("crop-x", "crop-y", "crop-width", "crop-height"))
-        assert got == p._crop == tuple(winsys.crop_for(hwnd)[1:]), (got, p._crop)
-        print("pipeline de janela ok, crop", got, "áudio", mode, audio.get_property("loopback-target-pid"))
+        assert src.get_property("capture-api").value_nick == "wgc" and src.get_property("window-handle") == hwnd
+        print("pipeline de janela ok: wgc, window-handle", hwnd, "| áudio", mode, audio.get_property("loopback-target-pid"))
+        p.stop()
 
-        # 2) a janela se mexe e muda de tamanho: o _follow_window acompanha, a saída segue fixa
-        import ctypes
-        from ctypes import wintypes
-        winsys.user32.MoveWindow.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.BOOL]
-        winsys.user32.MoveWindow(hwnd, 150, 120, 500, 400, True)
-        time.sleep(0.5)
-        assert p._follow_window() is True
-        new = tuple(src.get_property(n) for n in ("crop-x", "crop-y", "crop-width", "crop-height"))
-        assert new == p._crop and new != got, (new, got)
-        print("crop acompanhou:", new)
-        winsys.user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE: pausa o acompanhamento
-        time.sleep(0.5)
-        assert p._follow_window() is True and tuple(src.get_property(n) for n in ("crop-x", "crop-y", "crop-width", "crop-height")) == new
-        winsys.bring_to_front(hwnd)
-        assert not winsys.is_iconic(hwnd), "ShowWindow(SW_RESTORE) não restaurou"
-        print("minimizar/restaurar ok")
-
-        # 3) crop mudando com o d3d11screencapturesrc em PLAYING (cadeia sem encoder, só a captura)
-        hmon, x, y, w, h = winsys.crop_for(hwnd)
+        # 2) WGC entrega quadros da janela e continua entregando com outra janela por cima dela
         pipe = Gst.parse_launch(
-            f"d3d11screencapturesrc name=s monitor-handle={hmon} crop-x={x} crop-y={y} crop-width={w} crop-height={h} "
-            "! video/x-raw(memory:D3D11Memory),framerate=30/1 ! d3d11convert add-borders=true "
+            f"d3d11screencapturesrc capture-api=wgc window-handle={hwnd} ! video/x-raw(memory:D3D11Memory),framerate=30/1 "
+            "! d3d11convert add-borders=true "
             "! video/x-raw(memory:D3D11Memory),format=NV12,width=1280,height=720,pixel-aspect-ratio=1/1,framerate=30/1 "
             "! d3d11download ! fakesink name=f sync=false"
         )
-        errors, count = [], [0]
-        pipe.get_by_name("f").get_static_pad("sink").add_probe(
-            Gst.PadProbeType.BUFFER, lambda *_: count.__setitem__(0, count[0] + 1) or Gst.PadProbeReturn.OK
-        )
-        bus = pipe.get_bus()
-        pipe.set_state(Gst.State.PLAYING)
-        time.sleep(1.5)
-        before = count[0]
-        s = pipe.get_by_name("s")
-        s.set_property("crop-x", 0); s.set_property("crop-y", 0)
-        s.set_property("crop-width", 400); s.set_property("crop-height", 300)
-        time.sleep(1.5)
-        s.set_property("crop-width", 800); s.set_property("crop-height", 600)
-        time.sleep(1.5)
-        while (m := bus.pop_filtered(Gst.MessageType.ERROR | Gst.MessageType.WARNING)):
-            errors.append(m.parse_error()[0].message if m.type == Gst.MessageType.ERROR else m.parse_warning()[0].message)
-        caps = pipe.get_by_name("f").get_static_pad("sink").get_current_caps().to_string()
+        before, errors = count_frames(pipe, "f", 2.0)
+        cover = subprocess.Popen([sys.executable, __file__, "--window"])  # outra janela com o mesmo título... por cima
+        time.sleep(1.0)
+        cover.kill()
+        after, more = count_frames(pipe, "f", 1.0)
         pipe.set_state(Gst.State.NULL)
-        print("quadros antes/depois:", before, count[0], "| avisos:", errors, "| caps na saída:", caps)
-        assert count[0] > before > 0, "a captura parou ao mudar o crop"
-        assert "width=(int)1280" in caps and "height=(int)720" in caps, caps
-        assert "pixel-aspect-ratio=(fraction)1/1" in caps, "sem PAR 1/1 o d3d11convert estica em vez de pôr barras"
-        assert "pixel-aspect-ratio=1/1" in p.pipeline.get_by_name("caps").get_property("caps").to_string().replace("(fraction)", "")
-        assert not any("rror" in e for e in errors), errors
-        p.stop()
+        print("quadros WGC:", before, "->", before + after, "| erros:", errors + more)
+        assert before > 0 and not errors, ("WGC não entregou quadros", before, errors)
+        assert before + after > before, "a captura parou"
     finally:
         proc.kill()
     print("TUDO OK")

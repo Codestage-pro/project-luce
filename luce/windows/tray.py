@@ -20,6 +20,30 @@ if sys.platform == "win32":
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     shell32 = ctypes.WinDLL("shell32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # Sem argtypes/restype o ctypes trata HWND/HMENU/HICON como int de 32 bits e trunca o
+    # handle em Python 64 bits: CreatePopupMenu "funcionava" mas o AppendMenuW falhava (menu vazio).
+    _V, _U, _I, _W, _L = ctypes.c_void_p, wintypes.UINT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM
+    for _lib, _fn, _args, _res in (
+        (user32, "CreatePopupMenu", [], _V),
+        (user32, "AppendMenuW", [_V, _U, ctypes.c_size_t, wintypes.LPCWSTR], wintypes.BOOL),
+        (user32, "TrackPopupMenu", [_V, _U, _I, _I, _I, _V, _V], wintypes.BOOL),
+        (user32, "DestroyMenu", [_V], wintypes.BOOL),
+        (user32, "GetCursorPos", [ctypes.c_void_p], wintypes.BOOL),
+        (user32, "SetForegroundWindow", [_V], wintypes.BOOL),
+        (user32, "PostMessageW", [_V, _U, _W, _L], wintypes.BOOL),
+        (user32, "DefWindowProcW", [_V, _U, _W, _L], _L),
+        (user32, "RegisterClassExW", [ctypes.c_void_p], wintypes.ATOM),
+        (user32, "CreateWindowExW", [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, _I, _I, _I, _I, _V, _V, _V, _V], _V),
+        (user32, "DestroyWindow", [_V], wintypes.BOOL),
+        (user32, "UnregisterClassW", [wintypes.LPCWSTR, _V], wintypes.BOOL),
+        (user32, "LoadImageW", [_V, wintypes.LPCWSTR, _U, _I, _I, _U], _V),
+        (user32, "LoadIconW", [_V, _V], _V),
+        (user32, "DestroyIcon", [_V], wintypes.BOOL),
+        (shell32, "Shell_NotifyIconW", [wintypes.DWORD, ctypes.c_void_p], wintypes.BOOL),
+        (shell32, "ExtractIconW", [_V, wintypes.LPCWSTR, _U], _V),
+        (kernel32, "GetModuleHandleW", [wintypes.LPCWSTR], _V),
+    ):
+        getattr(_lib, _fn).argtypes, getattr(_lib, _fn).restype = _args, _res
 else:
     user32 = None  # type: ignore
     shell32 = None  # type: ignore
@@ -53,7 +77,7 @@ TPM_RIGHTBUTTON = 0x0002
 ID_OPEN = 1001
 ID_QUIT = 1002
 
-WNDPROCTYPE = ctypes.WINFUNCTYPE(ctypes.c_long, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+WNDPROCTYPE = ctypes.WINFUNCTYPE(wintypes.LPARAM, ctypes.c_void_p, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
 
 
 class WNDCLASSEXW(ctypes.Structure):
@@ -201,7 +225,7 @@ class WindowsTray:
     def _wnd_proc(self, hwnd: wintypes.HWND, msg: int, wparam: int, lparam: int) -> int:
         if msg == WM_TRAY:
             if lparam in (WM_LBUTTONUP, WM_LBUTTONDBLCLK):
-                GLib.idle_add(self._on_open)
+                GLib.idle_add(lambda: self._on_open() and False)  # uma vez só, qualquer que seja o retorno
                 return 0
             if lparam == WM_RBUTTONUP:
                 self._show_menu()
@@ -209,10 +233,10 @@ class WindowsTray:
         elif msg == WM_COMMAND:
             cmd = wparam & 0xFFFF
             if cmd == ID_OPEN:
-                GLib.idle_add(self._on_open)
+                GLib.idle_add(lambda: self._on_open() and False)  # uma vez só, qualquer que seja o retorno
                 return 0
             elif cmd == ID_QUIT:
-                GLib.idle_add(self._on_quit)
+                GLib.idle_add(lambda: self._on_quit() and False)  # uma vez só, qualquer que seja o retorno
                 return 0
 
         return user32.DefWindowProcW(hwnd, msg, wparam, lparam)

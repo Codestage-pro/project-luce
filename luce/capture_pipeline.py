@@ -48,7 +48,7 @@ def _try_set(element: Gst.Element, name: str, value) -> None:
         log.debug("%s=%r ignorado: %s", name, value, exc)
 
 
-FOLLOW_MS = 150  # de quanto em quanto tempo o crop acompanha a janela transmitida
+FOLLOW_MS = 500  # de quanto em quanto tempo checa se a janela transmitida ainda existe
 # Ordem de preferência. No Windows o elemento só registra se o driver da GPU existir
 # (o nvcodec sem nvcuda.dll tem 0 elementos), então a escolha é feita em runtime.
 def _set_loopback(src: Gst.Element, mode: str, pid: int) -> None:
@@ -125,7 +125,7 @@ class CapturePipeline:
         portal_fd: int | None = None,
         portal_node: int | None = None,
         monitor_handle: int | None = None,  # Windows: HMONITOR; None = monitor principal
-        window_handle: int | None = None,  # Windows: HWND; vira monitor + crop que acompanha a janela
+        window_handle: int | None = None,  # Windows: HWND; captura só a janela (Windows Graphics Capture)
         preview: bool = True,
         preview_sink=None,  # função que cria o gtk4paintablesink (ver _preview_bridge)
         audio_enabled: bool = True,
@@ -150,14 +150,10 @@ class CapturePipeline:
         self._d3d11 = WINDOWS and not pattern
         self._window = window_handle if self._d3d11 else None
         self._follow_id: int | None = None
-        crop = (0, 0, 0, 0)
-        if self._window:
-            winsys.bring_to_front(self._window)  # nada por cima dela quando a captura começar
-            monitor_handle, *crop = winsys.crop_for(self._window)
-            if not (width and height):  # "Fonte": tamanho fixo = o da janela agora; depois a GPU escala
-                width, height = crop[2], crop[3]
+        if self._window and not (width and height):  # "Fonte": tamanho fixo = o da janela agora; depois a GPU escala
+            left, top, right, bottom = winsys.window_rect(self._window)
+            width, height = max(64, (right - left) & ~1), max(64, (bottom - top) & ~1)
         self._monitor = monitor_handle
-        self._crop = tuple(crop)
         self._frames = 0
         self._reported = -1
         self._last_pts = 0
@@ -196,16 +192,17 @@ class CapturePipeline:
             _try_set(src, "show-pointer", True)
             _try_set(src, "do-timestamp", True)
         elif WINDOWS:
-            # Sem window-handle no d3d11screencapturesrc (1.28.8): janela = monitor + crop-*.
             src = Gst.ElementFactory.make("d3d11screencapturesrc", "src")
             if src is None:
                 raise RuntimeError("falta o d3d11screencapturesrc (gst-plugins-bad)")
-            if monitor_handle:
+            if self._window:
+                # Windows Graphics Capture: pega só o conteúdo da janela, mesmo com algo na frente
+                # ou fora da tela (o DXGI/monitor só vê o que está visível). Minimizada = último quadro.
+                src.set_property("capture-api", "wgc")
+                src.set_property("window-handle", int(self._window))
+            elif monitor_handle:
                 src.set_property("monitor-handle", monitor_handle)
             _try_set(src, "show-cursor", True)
-            if self._window:
-                for prop, value in zip(("crop-x", "crop-y", "crop-width", "crop-height"), self._crop):
-                    src.set_property(prop, value)
         else:
             src = Gst.ElementFactory.make("pipewiresrc", "src")
             src.set_property("fd", int(portal_fd))
@@ -342,9 +339,9 @@ class CapturePipeline:
             _try_set(enc, "bitrate", bitrate_kbps)
             # IDR a cada 1 s: quem entra ou perde pacote espera no máx. 1 s por imagem limpa.
             _try_set(enc, "gop-size", fps)
-            # VBV de ~1 quadro: sem isso o IDR sai com ~55x o tamanho médio (880 KB a 8 Mbps/60 fps,
-            # medido com snow) em rajada de pacotes colados que estoura o buffer do caminho.
-            _try_set(enc, "vbv-buffer-size", max(bitrate_kbps // fps, 1))
+            # VBV de ~100 ms: com 1 quadro o NVENC estourava o alvo (snow 1080p60: 12,4 Mbps pra 8 pedidos);
+            # com 100 ms fica a ~2% do alvo e o IDR continua pequeno (medido com gst-launch).
+            _try_set(enc, "vbv-buffer-size", max(bitrate_kbps // 10, 1))
             _try_set(enc, "zerolatency", True)
             _try_set(enc, "rc-mode", "cbr")
             _try_set(enc, "preset", "p4")
@@ -501,7 +498,7 @@ class CapturePipeline:
         if pattern:
             audio_src = Gst.ElementFactory.make("audiotestsrc", "audio-src")
             audio_src.set_property("is-live", True)
-        elif audio_device and audio_device.startswith("app:"):
+        elif not WINDOWS and audio_device and audio_device.startswith("app:"):
             # Áudio de um app específico (Spotify, navegador, etc) em vez de
             # microfone: pipewiresrc com target-object=<serial> liga direto
             # nesse stream de playback (confirmado com nível real de áudio,
@@ -518,13 +515,19 @@ class CapturePipeline:
             audio_src = Gst.ElementFactory.make("wasapi2src", "audio-src")
             if audio_src is None:
                 raise RuntimeError("falta o wasapi2src (gst-plugins-bad)")
-            if audio_device:  # microfone escolhido nas Configurações
+            # "app:<nome>" = só o áudio daquele app (e dos filhos dele, ex: navegador)
+            app_pid = winsys.find_process_pid(audio_device[4:]) if audio_device.startswith("app:") else None
+            if audio_device.startswith("app:") and not app_pid:
+                print(f"aviso: {audio_device[4:]} não está aberto, transmitindo o áudio do sistema", flush=True)
+            if audio_device and not audio_device.startswith("app:"):  # microfone escolhido nas Configurações
                 _try_set(audio_src, "device", audio_device)
             else:
                 # Áudio do sistema: se houver app a silenciar (ex: Discord), exclui a árvore de processos dele.
                 target_pid = winsys.find_process_pid(mute_app) if mute_app else None
                 if self._window:  # só o áudio do app da janela (e dos filhos dele)
                     _set_loopback(audio_src, "include-process-tree", winsys.window_pid(self._window))
+                elif app_pid:
+                    _set_loopback(audio_src, "include-process-tree", app_pid)
                 elif target_pid:
                     _set_loopback(audio_src, "exclude-process-tree", target_pid)
                     print(f"silenciando {mute_app} (PID {target_pid}) na transmissão", flush=True)
@@ -622,42 +625,13 @@ class CapturePipeline:
         return False
 
     def _follow_window(self) -> bool:
-        """Move o crop junto com a janela. O tamanho de saída é fixo (caps após o d3d11convert):
-        se a janela muda de tamanho a GPU reescala, o encoder e o WebRTC não renegociam.
-
-        shortcut: o monitor-handle só muda em NULL/READY, então janela que troca de monitor
-        reinicia a captura (via on_pipeline_error); as 4 crop-* são aplicadas uma a uma e um
-        quadro pode pegar o retângulo pela metade.
-        """
-        hwnd = self._window
-        if not winsys.is_window(hwnd):
-            self._follow_id = None
-            if self._on_pipeline_error is not None:
-                self._on_pipeline_error("a janela transmitida foi fechada")
-            return False
-        if winsys.is_iconic(hwnd):  # minimizada: mantém o último crop até restaurar
+        """Avisa quando a janela transmitida é fechada (a captura WGC só congelaria no último quadro)."""
+        if winsys.is_window(self._window):
             return True
-        try:
-            hmon, *crop = winsys.crop_for(hwnd)
-        except OSError:
-            return True
-        if hmon != self._monitor:
-            self._follow_id = None
-            if self._on_pipeline_error is not None:
-                self._on_pipeline_error("a janela mudou de monitor")
-            return False
-        if tuple(crop) != self._crop:
-            src = self.pipeline.get_by_name("src")
-            old = self._crop
-            for pos, size in ((0, 2), (1, 3)):  # eixos x/largura e y/altura
-                # encolhendo: tamanho antes da posição; crescendo: posição antes. O retângulo
-                # parcial nunca passa do monitor.
-                order = (size, pos) if crop[size] < old[size] else (pos, size)
-                for i in order:
-                    if crop[i] != old[i]:
-                        src.set_property(("crop-x", "crop-y", "crop-width", "crop-height")[i], crop[i])
-            self._crop = tuple(crop)
-        return True
+        self._follow_id = None
+        if self._on_pipeline_error is not None:
+            self._on_pipeline_error("a janela transmitida foi fechada")
+        return False
 
     def _check_handshake(self) -> bool:
         # Corrida dentro do whipsink: às vezes o webrtcbin nunca dispara a oferta e fica em
@@ -794,7 +768,7 @@ class CapturePipeline:
         enc = self.pipeline.get_by_name("enc")
         _try_set(enc, "bitrate", kbps)
         if self.encoder_kind in NVENC_KINDS:
-            _try_set(enc, "vbv-buffer-size", max(kbps // self._fps, 1))
+            _try_set(enc, "vbv-buffer-size", max(kbps // 10, 1))
 
     def set_audio_bitrate(self, kbps: int) -> None:
         _try_set(self.pipeline.get_by_name("audio-enc"), "bitrate", kbps * 1000)

@@ -229,7 +229,7 @@ class LinuxTray:
         invocation: Gio.DBusMethodInvocation,
     ) -> None:
         if method in ("Activate", "SecondaryActivate"):
-            GLib.idle_add(self._on_open)
+            GLib.idle_add(lambda: self._on_open() and False)  # uma vez só, qualquer que seja o retorno
         invocation.return_value(None)
 
     def _on_sni_get_property(
@@ -291,15 +291,18 @@ class LinuxTray:
             item_id = params[0]
             name = params[1]
             val = self._menu_items.get(item_id, {}).get(name)
-            invocation.return_value(GLib.Variant("(v)", (val,)) if val else None)
+            if val is None:
+                invocation.return_dbus_error("org.freedesktop.DBus.Error.InvalidArgs", f"sem a propriedade {name}")
+            else:
+                invocation.return_value(GLib.Variant("(v)", (val,)))
         elif method == "Event":
             item_id = params[0]
             event_id = params[1]
             if event_id == "clicked":
                 if item_id == 1:
-                    GLib.idle_add(self._on_open)
+                    GLib.idle_add(lambda: self._on_open() and False)  # uma vez só, qualquer que seja o retorno
                 elif item_id == 3:
-                    GLib.idle_add(self._on_quit)
+                    GLib.idle_add(lambda: self._on_quit() and False)  # uma vez só, qualquer que seja o retorno
             invocation.return_value(None)
         elif method == "AboutToShow":
             invocation.return_value(GLib.Variant("(b)", (False,)))

@@ -1,8 +1,7 @@
 """Windows: lista monitores e janelas (o equivalente do seletor do portal no Linux).
 
-O d3d11screencapturesrc do GStreamer 1.28 só captura monitor inteiro (não tem
-window-handle). Janela = monitor onde ela está + crop-* no retângulo dela
-(ver crop_for). Usa o HMONITOR em vez do índice: a ordem do GDK não é a do DXGI.
+Janela = d3d11screencapturesrc com capture-api=wgc + window-handle (Windows Graphics Capture).
+Monitor usa o HMONITOR em vez do índice: a ordem do GDK não é a do DXGI.
 """
 
 from __future__ import annotations
@@ -10,20 +9,16 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
-import time
 from ctypes import wintypes
 from pathlib import Path
 
 Rect = tuple[int, int, int, int]  # left, top, right, bottom
 
 _PRIMARY = 1  # MONITORINFOF_PRIMARY
-_NEAREST = 2  # MONITOR_DEFAULTTONEAREST
-_SW_RESTORE = 9
 _DWMWA_EXTENDED_FRAME_BOUNDS = 9
 _DWMWA_CLOAKED = 14
 _GWL_EXSTYLE = -20
 _WS_EX_TOOLWINDOW = 0x80
-_MIN_CROP = 64
 
 
 class _MonitorInfo(ctypes.Structure):
@@ -33,21 +28,6 @@ class _MonitorInfo(ctypes.Structure):
         ("rcWork", wintypes.RECT),
         ("dwFlags", wintypes.DWORD),
     ]
-
-
-def compute_crop(win: Rect, mon: Rect) -> tuple[int, int, int, int]:
-    """Retângulo da janela em coordenadas do monitor: (x, y, w, h), sempre dentro dele.
-
-    Nunca negativo (as propriedades crop-* são guint), largura/altura pares (NV12) e pelo
-    menos 64×64. Janela parcialmente fora da tela é cortada na borda do monitor.
-    """
-    mon_w, mon_h = mon[2] - mon[0], mon[3] - mon[1]
-    left, top = max(0, win[0] - mon[0]), max(0, win[1] - mon[1])
-    right, bottom = min(mon_w, win[2] - mon[0]), min(mon_h, win[3] - mon[1])
-    w = max(_MIN_CROP, (right - left) & ~1)
-    h = max(_MIN_CROP, (bottom - top) & ~1)
-    w, h = min(w, mon_w & ~1), min(h, mon_h & ~1)  # monitor menor que o mínimo
-    return max(0, min(left, mon_w - w)), max(0, min(top, mon_h - h)), w, h
 
 
 if sys.platform == "win32":
@@ -62,14 +42,12 @@ if sys.platform == "win32":
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
     for _fn, _args, _res in (
-        ("IsWindow", [_H], _B), ("IsWindowVisible", [_H], _B), ("IsIconic", [_H], _B),
-        ("ShowWindow", [_H, ctypes.c_int], _B), ("SetForegroundWindow", [_H], _B),
+        ("IsWindow", [_H], _B), ("IsWindowVisible", [_H], _B),
         ("GetWindowTextLengthW", [_H], ctypes.c_int),
         ("GetWindowTextW", [_H, wintypes.LPWSTR, ctypes.c_int], ctypes.c_int),
         ("GetWindowLongW", [_H, ctypes.c_int], ctypes.c_long),
         ("GetWindowRect", [_H, ctypes.POINTER(wintypes.RECT)], _B),
         ("GetWindowThreadProcessId", [_H, ctypes.POINTER(wintypes.DWORD)], wintypes.DWORD),
-        ("MonitorFromWindow", [_H, wintypes.DWORD], _H),
         ("GetMonitorInfoW", [_H, ctypes.POINTER(_MonitorInfo)], _B),
         ("LoadImageW", [_H, wintypes.LPCWSTR, wintypes.UINT, ctypes.c_int, ctypes.c_int, wintypes.UINT], _H),
         ("SendMessageW", [_H, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM], wintypes.LPARAM),
@@ -125,26 +103,6 @@ if sys.platform == "win32":
 
     def is_window(hwnd: int) -> bool:
         return bool(user32.IsWindow(hwnd))
-
-    def is_iconic(hwnd: int) -> bool:
-        return bool(user32.IsIconic(hwnd))
-
-    def crop_for(hwnd: int) -> tuple[int, int, int, int, int]:
-        """(HMONITOR, crop_x, crop_y, crop_w, crop_h) da janela."""
-        hmon = user32.MonitorFromWindow(hwnd, _NEAREST)
-        mon, _primary = _monitor_info(hmon)
-        return (int(hmon), *compute_crop(window_rect(hwnd), mon))
-
-    def bring_to_front(hwnd: int) -> None:
-        """Restaura se minimizada e traz pra frente, pra nada ficar por cima dela na captura."""
-        if user32.IsIconic(hwnd):
-            user32.ShowWindow(hwnd, _SW_RESTORE)
-            for _ in range(10):  # a animação de restaurar demora um pouco pra o retângulo ficar certo
-                if not user32.IsIconic(hwnd):
-                    break
-                time.sleep(0.05)
-            time.sleep(0.2)
-        user32.SetForegroundWindow(hwnd)  # pode ser recusado pelo Windows; nesse caso só segue
 
     def apply_icon() -> None:
         """Põe o logo na barra de título/Alt-Tab das janelas do LUCE: o GTK4 no Windows não faz isso."""
@@ -245,6 +203,8 @@ if sys.platform == "win32":
             monitor.stop()
         except Exception as exc:
             print(f"[winsys] erro ao listar fontes de áudio: {exc}", file=sys.stderr)
+        # shortcut: só apps com janela aberta (é o que dá pra achar o PID sem enumerar sessões WASAPI)
+        devices += [(f"app:{stem}", f"App: {label}") for stem, label in list_mutable_apps()[1:]]
         return devices
 
     def list_mutable_apps() -> list[tuple[str, str]]:
@@ -296,6 +256,9 @@ else:
 
     def is_window(_hwnd: int) -> bool:
         return False
+
+    def window_rect(_hwnd: int) -> Rect:
+        return (0, 0, 0, 0)
 
     def list_audio_sources() -> list[tuple[str, str]]:
         return [("", "Padrão do sistema")]

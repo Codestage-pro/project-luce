@@ -3,11 +3,7 @@
 from .windows.winsys import *  # noqa: F401, F403
 from .windows.winsys import (
     apply_icon,
-    bring_to_front,
-    compute_crop,
-    crop_for,
     find_process_pid,
-    is_iconic,
     is_window,
     list_audio_sources,
     list_monitors,
@@ -20,11 +16,7 @@ from .windows.winsys import (
 
 __all__ = [
     "apply_icon",
-    "bring_to_front",
-    "compute_crop",
-    "crop_for",
     "find_process_pid",
-    "is_iconic",
     "is_window",
     "list_audio_sources",
     "list_monitors",

@@ -53,8 +53,8 @@ from .watch_pipeline import WatchPipeline
 # (0, 0) é "Fonte" (igual ao Discord): transmite no tamanho nativo de quem
 # foi capturado, sem forçar nenhuma resolução — ver capture_pipeline.py.
 RESOLUTIONS = [(0, 0), (1280, 720), (1920, 1080), (2560, 1440)]
-FPS_OPTIONS = [30, 60]
-VIDEO_BITRATES_KBPS = [2500, 4000, 8000]
+FPS_OPTIONS = [30, 60, 120, 240]
+VIDEO_BITRATES_KBPS = [2500, 4000, 8000, 16000, 32000]
 AUDIO_BITRATES_KBPS = [64, 128, 256]
 
 
@@ -129,7 +129,8 @@ class SettingsWindow(Gtk.Window):
         )
         self._fps = _choice_row(grid, next_row + 1, "FPS", FPS_OPTIONS, cfg["fps"])
         self._bitrate = _choice_row(
-            grid, next_row + 2, "Qualidade de vídeo", VIDEO_BITRATES_KBPS, cfg["bitrate"], fmt=lambda k: f"{k} kbps"
+            grid, next_row + 2, "Qualidade de vídeo", VIDEO_BITRATES_KBPS, cfg["bitrate"],
+            fmt=lambda k: f"{k / 1000:g}".replace(".", ",") + " Mbps",
         )
         self._audio_bitrate = _choice_row(
             grid, next_row + 3, "Qualidade de áudio", AUDIO_BITRATES_KBPS, cfg["audio_bitrate"], fmt=lambda k: f"{k} kbps"
@@ -247,8 +248,10 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self.connect("close-request", self._on_close_request)
         self._tray = Tray(
-            on_open=lambda: GLib.idle_add(self.present),
-            on_quit=lambda: GLib.idle_add(self.quit_app),
+            # Sem lambda que devolva algo: o tray agenda isso com idle_add, e retorno truthy
+            # faz o GLib repetir o callback pra sempre (travava a sessão inteira).
+            on_open=self.present,
+            on_quit=self.quit_app,
         )
 
         if WINDOWS or updater.is_flatpak():
