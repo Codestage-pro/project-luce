@@ -262,7 +262,7 @@ if sys.platform == "win32":
                 raise OSError("CreateDIBSection falhou")
             self._old, self._bits, self._size = gdi32.SelectObject(self._dc, self._bitmap), bits, (w, h)
 
-        def grab(self) -> tuple[int, int, bytes] | None:
+        def grab(self, _timeout_ms: int = 50) -> tuple[int, int, bytes] | None:
             """(largura, altura, pixels BGRx) com tamanho par, ou None (minimizada/fechada)."""
             if not user32.IsWindow(self.hwnd) or user32.IsIconic(self.hwnd):
                 self.reason = "janela fechada ou minimizada"
@@ -337,10 +337,10 @@ if sys.platform == "win32":
             self._backend = _GdiWindowGrabber(hwnd)
             self.is_wgc = False
 
-        def grab(self) -> tuple[int, int, bytes] | None:
+        def grab(self, timeout_ms: int = 50) -> tuple[int, int, bytes] | None:
             if not self._backend:
                 return None
-            frame = self._backend.grab()
+            frame = self._backend.grab(timeout_ms)
             self.reason = self._backend.reason
             self.black = getattr(self._backend, "black", False)
             return frame
@@ -539,7 +539,7 @@ else:
             self.reason = "não suportado nesta plataforma"
             self.black = False
 
-        def grab(self) -> tuple[int, int, bytes] | None:
+        def grab(self, _timeout_ms: int = 50) -> tuple[int, int, bytes] | None:
             return None
 
         def close(self) -> None:
