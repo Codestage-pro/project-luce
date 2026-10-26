@@ -49,7 +49,7 @@ def cmd_share(args: argparse.Namespace) -> int:
     fd = node = None
     portal = None
     if not args.pattern and sys.platform != "win32":  # no Windows a CLI captura o monitor principal
-        from .portal import PortalError, ScreenCast
+        from .linux.portal import PortalError, ScreenCast
 
         print("escolha o monitor na janela do sistema…", flush=True)
         portal = ScreenCast()

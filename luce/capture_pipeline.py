@@ -20,29 +20,15 @@ gi.require_version("GstVideo", "1.0")
 gi.require_version("GstGL", "1.0")
 from gi.repository import GLib, Gst, GstGL, GstVideo
 
-from . import linux_audio, roster, rtc, winsys
+WINDOWS = sys.platform == "win32"
+
+from . import roster, rtc
+if WINDOWS:
+    from .windows import winsys
+else:
+    from .linux import linux_audio
 
 log = logging.getLogger("luce.capture")
-
-# O servidor tira do roster quem passa de 30s sem avisar (queda sem DELETE).
-HEARTBEAT_SECONDS = 10
-# O WHIP normal conecta em ~1 s; passou disso sem sair do "new", a negociação não começou.
-HANDSHAKE_SECONDS = 6
-FLOW_SECONDS = 3
-
-Gst.init(None)
-
-
-def _try_set(element: Gst.Element, name: str, value) -> None:
-    if element.find_property(name) is None:
-        return
-    try:
-        element.set_property(name, value)
-    except Exception as exc:
-        log.debug("%s=%r ignorado: %s", name, value, exc)
-
-
-WINDOWS = sys.platform == "win32"
 FOLLOW_MS = 150  # de quanto em quanto tempo o crop acompanha a janela transmitida
 # Ordem de preferência. No Windows o elemento só registra se o driver da GPU existir
 # (o nvcodec sem nvcuda.dll tem 0 elementos), então a escolha é feita em runtime.

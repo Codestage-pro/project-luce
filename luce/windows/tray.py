@@ -14,11 +14,16 @@ from typing import Callable
 
 from gi.repository import GLib
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
-user32 = ctypes.WinDLL("user32", use_last_error=True)
-shell32 = ctypes.WinDLL("shell32", use_last_error=True)
-kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+if sys.platform == "win32":
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+else:
+    user32 = None  # type: ignore
+    shell32 = None  # type: ignore
+    kernel32 = None  # type: ignore
 
 WM_USER = 0x0400
 WM_TRAY = WM_USER + 20

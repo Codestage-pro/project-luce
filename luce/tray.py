@@ -1,8 +1,8 @@
 """Bandeja do sistema (System Tray) para o Project LUCE.
 
 Despacha para a implementação nativa de cada plataforma:
-- Linux: StatusNotifierItem + DBusMenu (tray_linux.py)
-- Windows: Shell_NotifyIconW (tray_windows.py)
+- Linux: StatusNotifierItem + DBusMenu (linux/tray.py)
+- Windows: Shell_NotifyIconW (windows/tray.py)
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ from typing import Callable
 WINDOWS = sys.platform == "win32"
 
 if WINDOWS:
-    from .tray_windows import WindowsTray as Tray
+    from .windows.tray import WindowsTray as Tray
 else:
-    from .tray_linux import LinuxTray as Tray
+    from .linux.tray import LinuxTray as Tray
 
 __all__ = ["Tray"]

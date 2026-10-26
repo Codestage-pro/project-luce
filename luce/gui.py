@@ -34,7 +34,7 @@ from . import config, roster, stats, theme, updater
 from .capture_pipeline import CapturePipeline
 from .tray import Tray
 if WINDOWS:
-    from .winsys import (
+    from .windows.winsys import (
         apply_icon,
         is_window,
         list_audio_sources,
@@ -43,8 +43,8 @@ if WINDOWS:
         list_windows,
     )
 else:  # o portal usa dbus, que não existe no Windows
-    from .linux_audio import list_audio_sources, list_mutable_apps
-    from .portal import PortalError, ScreenCast, screencast_available, x11_session
+    from .linux.linux_audio import list_audio_sources, list_mutable_apps
+    from .linux.portal import PortalError, ScreenCast, screencast_available, x11_session
 from .viewer import ViewerWindow
 from .watch_pipeline import WatchPipeline
 
