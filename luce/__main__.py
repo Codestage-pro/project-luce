@@ -102,34 +102,49 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
 
 def cmd_doctor(_args: argparse.Namespace) -> int:
-    """Codifica um padrão de teste 5s e mostra as amostras do nvidia-smi."""
+    """Codifica um padrão de teste 5s com o encoder que o app escolheria; com NVIDIA mostra o nvidia-smi."""
     import subprocess
 
+    from .capture_pipeline import _make_encoder
+
     Gst.init(None)
-    missing = [name for name in ("nvh264enc", "nvh264dec", "whipsink", "whepsrc") if Gst.ElementFactory.find(name) is None]
+    missing = [name for name in ("whipsink", "whepsrc") if Gst.ElementFactory.find(name) is None]
     if missing:
         print(f"faltam elementos GStreamer: {', '.join(missing)}", file=sys.stderr)
         return 1
     try:
-        sampler = subprocess.Popen(
-            ["nvidia-smi", "--query-gpu=utilization.encoder,utilization.gpu,name", "--format=csv,noheader", "-l", "1"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-        )
-    except FileNotFoundError:
-        sampler = None  # no Flatpak a extensão NVIDIA traz as libs, não o nvidia-smi
-    pipeline = Gst.parse_launch(
-        "videotestsrc is-live=true pattern=ball ! "
-        "video/x-raw,width=1280,height=720,framerate=30/1 ! "
-        "nvh264enc bitrate=4000 gop-size=60 zerolatency=true ! "
-        "h264parse ! fakesink sync=true"
-    )
+        enc, kind = _make_encoder()
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    name = enc.get_factory().get_name()
+    pipeline = Gst.Pipeline.new("doctor")
+    caps = Gst.ElementFactory.make("capsfilter")
+    caps.set_property("caps", Gst.Caps.from_string("video/x-raw,width=1280,height=720,framerate=30/1"))
+    chain = [Gst.ElementFactory.make("videotestsrc"), caps, Gst.ElementFactory.make("videoconvert"), enc,
+             Gst.ElementFactory.make("h264parse"), Gst.ElementFactory.make("fakesink")]
+    chain[0].set_property("is-live", True)
+    for el in chain:
+        pipeline.add(el)
+    if not all(Gst.Element.link(a, b) for a, b in zip(chain, chain[1:])):
+        print(f"{name} não aceita o padrão de teste (caps incompatíveis)", file=sys.stderr)
+        return 1
+    sampler = None
+    if kind in ("nvenc", "nvd3d11"):
+        try:
+            sampler = subprocess.Popen(
+                ["nvidia-smi", "--query-gpu=utilization.encoder,utilization.gpu,name", "--format=csv,noheader", "-l", "1"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+        except FileNotFoundError:
+            pass  # no Flatpak a extensão NVIDIA traz as libs, não o nvidia-smi
     pipeline.set_state(Gst.State.PLAYING)
     time.sleep(5)
     pipeline.set_state(Gst.State.NULL)
     if sampler is None:
-        print("codificou 5s com nvh264enc (sem nvidia-smi pra medir a GPU)", flush=True)
+        print(f"codificou 5s com {name}", flush=True)
         return 0
     sampler.terminate()
     output, _ = sampler.communicate(timeout=3)

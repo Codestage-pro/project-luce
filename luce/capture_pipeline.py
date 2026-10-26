@@ -87,6 +87,11 @@ D3D11_KINDS = ("nvd3d11", "amf", "qsv", "mf")
 NVENC_KINDS = ("nvenc", "nvd3d11")  # os dois têm VBV por quadro
 
 
+# Encoders que falharam nesta sessão (driver recusa, caps não negocia): o restart automático da GUI
+# recria o pipeline e _make_encoder segue pro próximo da tabela em vez de repetir o mesmo erro.
+_BAD_ENCODERS: set[str] = set()
+
+
 def _make_encoder() -> tuple[Gst.Element, str]:
     """GPU primeiro (NVENC, depois VA-API de AMD/Intel), CPU só se não houver GPU que codifique.
 
@@ -102,6 +107,8 @@ def _make_encoder() -> tuple[Gst.Element, str]:
     table = WINDOWS_ENCODERS if WINDOWS else LINUX_ENCODERS
     forced = os.environ.get("LUCE_ENCODER")  # ex.: LUCE_ENCODER=x264enc se o encoder da GPU travar
     for factory, kind, label in [row for row in table if row[0] == forced] or table:
+        if factory in _BAD_ENCODERS and kind != "x264":
+            continue
         enc = Gst.ElementFactory.make(factory, "enc")
         if enc is not None:
             print(f"codificando com {label}", flush=True)
@@ -282,6 +289,7 @@ class CapturePipeline:
         caps = Gst.ElementFactory.make("capsfilter", "caps")
         enc, enc_kind = _make_encoder()
         self.encoder_kind = enc_kind
+        self._enc_factory = enc.get_factory().get_name()
 
         # x264 lê memória comum: o mesmo caminho do ximagesrc, só que com o pipewiresrc na frente.
         sysmem = raw_source or (enc_kind == "x264" and not self._d3d11)
@@ -761,6 +769,8 @@ class CapturePipeline:
         # Outra corrida do webrtcbin: conecta (ICE "completed") e mesmo assim para de aceitar
         # quadros após os 4 primeiros, 0 pacotes saindo. Vídeo a 30+ fps passa de 10 em 3 s.
         self._flow_id = None
+        if not self.encoded_frames:  # o encoder nunca soltou um quadro, sem erro no bus (driver travado)
+            self._demote_encoder("sem quadros codificados")
         if self._sent - sent_before < 10 and self._on_pipeline_error is not None:
             log.warning("whip: só %d quadros enviados em %ss, reiniciando", self._sent - sent_before, FLOW_SECONDS)
             self._on_pipeline_error("o envio travou")
@@ -983,8 +993,18 @@ class CapturePipeline:
         err, debug = message.parse_error()
         print(f"pipeline parou: {err.message}", flush=True)
         log.error("pipeline: %s (%s)", err.message, debug)
+        # Erro antes do 1º quadro codificado e fora do envio: o culpado é o encoder (ou a negociação
+        # de caps com ele). Marca pra o restart usar o próximo, em vez de repetir o mesmo erro 3 vezes.
+        if not self.encoded_frames and not message.src.get_name().startswith("whip"):
+            self._demote_encoder(err.message)
         if self._on_pipeline_error is not None:
             self._on_pipeline_error(err.message)
+
+    def _demote_encoder(self, reason: str) -> None:
+        if self.encoder_kind != "x264" and self._enc_factory not in _BAD_ENCODERS:
+            _BAD_ENCODERS.add(self._enc_factory)
+            log.warning("encoder %s falhou (%s): o próximo da lista assume", self._enc_factory, reason)
+            print(f"encoder {self._enc_factory} falhou ({reason}); tentando outro", flush=True)
 
     def _on_warning(self, _bus, message) -> None:
         warn, _debug = message.parse_warning()
