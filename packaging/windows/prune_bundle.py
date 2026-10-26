@@ -152,6 +152,8 @@ def main(root: Path) -> None:
     for folder in sorted(prefix.rglob("*"), key=lambda p: len(p.parts), reverse=True):
         if folder.is_dir() and not any(folder.iterdir()):
             folder.rmdir()
+    for big in sorted((f for f in root.rglob("*") if f.is_file()), key=lambda f: f.stat().st_size, reverse=True)[:25]:
+        print(f"  {big.stat().st_size / 1048576:6.1f} MB  {big.relative_to(root)}")
     print(f"bundle: {before:.0f} MB -> {size_mb(root):.0f} MB, DLLs em bin: {len(list(bin_dir.glob('*.dll')))}")
 
 
