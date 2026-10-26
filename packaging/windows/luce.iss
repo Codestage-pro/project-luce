@@ -1,4 +1,4 @@
-; Instalador do Project LUCE (Windows). Compilar com: ISCC /DAppVersion=1.0.20 luce.iss
+; Instalador do Project LUCE (Windows). Compilar com: ISCC /DAppVersion=1.0.21 luce.iss
 ; Entrada: ..\..\dist\LUCE (montada por .github/workflows/windows-build.yml).
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -42,6 +42,12 @@ Name: "{autodesktop}\Project LUCE"; Filename: "{app}\ucrt64\bin\luce.exe"; Param
 
 [Tasks]
 Name: "desktopicon"; Description: "Criar um atalho na área de trabalho"; Flags: unchecked
+
+[InstallDelete]
+; O Inno só sobrescreve: arquivo que saiu do bundle numa versão nova ficaria para sempre (a 1.0.19 deixava ~900 MB).
+; O runtime e o código são recriados inteiros a cada instalação; os dados da pessoa ficam em %LOCALAPPDATA%\LUCE.
+Type: filesandordirs; Name: "{app}\ucrt64"
+Type: filesandordirs; Name: "{app}\luce"
 
 [UninstallDelete]
 ; registro do GStreamer e logs

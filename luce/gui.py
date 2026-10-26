@@ -848,13 +848,16 @@ class MainWindow(Gtk.ApplicationWindow):
         return True
 
     def quit_app(self) -> None:
-        self._on_stop_clicked()
-        for w in list(self._watches.values()):
-            w.stop()
-        if self._viewer:
-            self._viewer.close()
-        if self._tray:
-            self._tray.close()
+        # Cada passo isolado: o hold() do app mantém o processo vivo sem janela, então um erro aqui
+        # não pode impedir o quit() (antes um passo inexistente deixava o "Sair" sem efeito).
+        steps = [self._stop_sharing, *(w.stop for w in list(self._watches.values()))]
+        steps += [self._viewer.close] if self._viewer else []
+        steps += [self._tray.close] if self._tray else []
+        for step in steps:
+            try:
+                step()
+            except Exception as exc:
+                print(f"[luce] erro ao encerrar: {exc!r}", file=sys.stderr)
         self.get_application().quit()
 
     def _tell_watching(self, name: str, on: bool) -> None:

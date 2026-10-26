@@ -160,7 +160,13 @@ class LinuxTray:
         }
 
         try:
-            self._bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+            # Conexão própria (e não a compartilhada do GTK): a barra só tira o ícone quando o nome some
+            # do barramento, e isso só acontece se a gente fechar a conexão (opção "manter na bandeja" desligada).
+            self._bus = Gio.DBusConnection.new_for_address_sync(
+                Gio.dbus_address_get_for_bus_sync(Gio.BusType.SESSION, None),
+                Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
+                None, None,
+            )
             self._register_objects()
             # Monitora presença do Watcher para registrar/re-registrar se a barra reiniciar
             self._watcher_id = Gio.bus_watch_name_on_connection(
@@ -339,6 +345,10 @@ class LinuxTray:
             if self._menu_reg_id:
                 self._bus.unregister_object(self._menu_reg_id)
                 self._menu_reg_id = 0
+            try:
+                self._bus.close_sync(None)
+            except GLib.Error:
+                pass
             self._bus = None
 
     def close(self) -> None:
