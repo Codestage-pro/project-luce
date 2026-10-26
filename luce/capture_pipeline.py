@@ -526,6 +526,7 @@ class CapturePipeline:
             if audio_src is None:
                 raise RuntimeError("falta o wasapi2src (gst-plugins-bad)")
             # "app:<nome>" = só o áudio daquele app (e dos filhos dele, ex: navegador)
+            audio_device = audio_device or ""
             app_pid = winsys.find_process_pid(audio_device[4:]) if audio_device.startswith("app:") else None
             if audio_device.startswith("app:") and not app_pid:
                 print(f"aviso: {audio_device[4:]} não está aberto, transmitindo o áudio do sistema", flush=True)
