@@ -51,6 +51,7 @@ if sys.platform == "win32":
         ("GetWindowRect", [_H, ctypes.POINTER(wintypes.RECT)], _B),
         ("GetWindowThreadProcessId", [_H, ctypes.POINTER(wintypes.DWORD)], wintypes.DWORD),
         ("GetMonitorInfoW", [_H, ctypes.POINTER(_MonitorInfo)], _B),
+        ("MonitorFromWindow", [_H, wintypes.DWORD], _H),
         ("LoadImageW", [_H, wintypes.LPCWSTR, wintypes.UINT, ctypes.c_int, ctypes.c_int, wintypes.UINT], _H),
         ("SendMessageW", [_H, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM], wintypes.LPARAM),
     ):
@@ -111,6 +112,11 @@ if sys.platform == "win32":
             for i, (handle, size, primary) in enumerate(found, 1)
         ]
 
+    def monitor_of_window(hwnd: int) -> tuple[int, Rect]:
+        """(HMONITOR, retângulo) do monitor onde a janela está (o que tiver mais dela)."""
+        hmon = user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
+        return int(hmon), _monitor_info(hmon)[0]
+
     def window_pid(hwnd: int) -> int:
         pid = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
@@ -143,6 +149,8 @@ if sys.platform == "win32":
             self._size = (0, 0)
             self._dc = self._bitmap = self._old = self._bits = None
             self._hotspots: dict[int, tuple[int, int]] = {}
+            self.reason = ""  # por que o último grab() devolveu None (vai para o luce.log)
+            self.black = False  # o último quadro veio todo preto (PrintWindow "funcionou" mas o app não desenha assim)
 
         def _free(self) -> None:
             if self._dc:
@@ -165,19 +173,24 @@ if sys.platform == "win32":
         def grab(self) -> tuple[int, int, bytes] | None:
             """(largura, altura, pixels BGRx) com tamanho par, ou None (minimizada/fechada)."""
             if not user32.IsWindow(self.hwnd) or user32.IsIconic(self.hwnd):
+                self.reason = "janela fechada ou minimizada"
                 return None
             full = wintypes.RECT()
             if not user32.GetWindowRect(self.hwnd, ctypes.byref(full)):
+                self.reason = f"GetWindowRect falhou (erro {ctypes.get_last_error()})"
                 return None
             fw, fh = full.right - full.left, full.bottom - full.top
             if fw < 2 or fh < 2:
+                self.reason = f"janela com tamanho {fw}x{fh}"
                 return None
             if (fw, fh) != self._size:
                 self._alloc(fw, fh)
             if not user32.PrintWindow(self.hwnd, self._dc, 2):  # PW_RENDERFULLCONTENT
+                self.reason = f"PrintWindow recusou a janela (erro {ctypes.get_last_error()})"
                 return None
             self._draw_cursor(full.left, full.top)
             data = ctypes.string_at(self._bits, fw * fh * 4)
+            self.black = not any(data[i] for i in range(0, len(data), 4097))
             # tira a borda invisível de sombra: só o retângulo visível da janela
             left, top, right, bottom = window_rect(self.hwnd)
             x0, y0 = max(0, left - full.left), max(0, top - full.top)
@@ -366,6 +379,9 @@ else:
 
     def window_rect(_hwnd: int) -> Rect:
         return (0, 0, 0, 0)
+
+    def monitor_of_window(_hwnd: int) -> tuple[int, Rect]:
+        return (0, (0, 0, 0, 0))
 
     def list_audio_sources() -> list[tuple[str, str]]:
         return [("", "Padrão do sistema")]

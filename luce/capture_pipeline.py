@@ -109,6 +109,39 @@ def _make_encoder() -> tuple[Gst.Element, str]:
     raise RuntimeError(f"nenhum encoder H.264 instalado ({', '.join(row[0] for row in table)})")
 
 
+def _printwindow_works(hwnd: int) -> bool:
+    """O PrintWindow devolve imagem (não preta) dessa janela? Se não, a captura cai no recorte do monitor."""
+    grabber = winsys.WindowGrabber(hwnd)
+    try:
+        for _ in range(5):  # o app pode demorar a desenhar o primeiro quadro
+            if grabber.grab() is not None and not grabber.black:
+                return True
+            time.sleep(0.1)
+        print(f"PrintWindow não serve para esta janela ({grabber.reason or 'quadro preto'}): capturando o trecho do monitor sob ela", flush=True)
+    except OSError as exc:
+        print(f"PrintWindow falhou ({exc}): capturando o trecho do monitor sob a janela", flush=True)
+    finally:
+        grabber.close()
+    return False
+
+
+def _window_crop(hwnd: int) -> tuple[int, int, int, int, int] | None:
+    """(HMONITOR, x, y, largura, altura) da parte visível da janela no monitor onde ela está; None se não der."""
+    try:
+        hmon, (ml, mt, mr, mb) = winsys.monitor_of_window(hwnd)
+        left, top, right, bottom = winsys.window_rect(hwnd)
+    except OSError:
+        return None
+    x, y = max(left, ml) - ml, max(top, mt) - mt
+    w, h = (min(right, mr) - ml - x) & ~1, (min(bottom, mb) - mt - y) & ~1
+    return (hmon, x, y, w, h) if w >= 64 and h >= 64 else None
+
+
+def _set_crop(src: Gst.Element, crop: tuple[int, int, int, int, int]) -> None:
+    for prop, value in zip(("crop-x", "crop-y", "crop-width", "crop-height"), crop[1:]):
+        src.set_property(prop, value)
+
+
 class CapturePipeline:
     """Captura (portal ou padrão de teste) e publica H.264 num endpoint WHIP."""
 
@@ -150,6 +183,12 @@ class CapturePipeline:
         self._d3d11 = WINDOWS and not pattern
         self._window = window_handle if self._d3d11 else None
         self._follow_id: int | None = None
+        # Janela que o PrintWindow não consegue copiar (app que desenha na GPU, jogo, janela elevada):
+        # captura o trecho do monitor sob ela, como o d3d11screencapturesrc faz com a tela inteira.
+        self._crop: tuple[int, int, int, int, int] | None = None  # (HMONITOR, x, y, largura, altura)
+        if self._window and (os.environ.get("LUCE_WINDOW_MODE") == "crop" or not _printwindow_works(self._window)):
+            self._crop = _window_crop(self._window)
+        self._grab = bool(self._window) and self._crop is None  # quadros vêm do WindowGrabber, não do d3d11screencapturesrc
         if self._window and not (width and height):  # "Fonte": tamanho fixo = o da janela agora; depois a GPU escala
             left, top, right, bottom = winsys.window_rect(self._window)
             width, height = max(64, (right - left) & ~1), max(64, (bottom - top) & ~1)
@@ -195,7 +234,7 @@ class CapturePipeline:
             src = Gst.ElementFactory.make("d3d11screencapturesrc", "src")
             if src is None:
                 raise RuntimeError("falta o d3d11screencapturesrc (gst-plugins-bad)")
-            if self._window:
+            if self._grab:
                 src = Gst.ElementFactory.make("appsrc", "src")  # alimentado por _grab_loop (ver winsys.WindowGrabber)
                 _try_set(src, "is-live", True)
                 _try_set(src, "do-timestamp", True)
@@ -204,9 +243,12 @@ class CapturePipeline:
                 # leaky: se o encoder atrasar, perde quadro velho em vez de acumular
                 _try_set(src, "leaky-type", 2)
                 _try_set(src, "max-buffers", 2)
+            elif self._crop:
+                src.set_property("monitor-handle", self._crop[0])
+                _set_crop(src, self._crop)
             elif monitor_handle:
                 src.set_property("monitor-handle", monitor_handle)
-            if not self._window:
+            if not self._grab:
                 _try_set(src, "show-cursor", True)
         else:
             src = Gst.ElementFactory.make("pipewiresrc", "src")
@@ -279,7 +321,7 @@ class CapturePipeline:
             )
             size = f"width={width},height={height}," if width and height else ""
             front = [src, src_caps, conv, rate]
-            if self._window:  # quadros chegam em memória comum: sobe pra VRAM antes do d3d11convert
+            if self._grab:  # quadros chegam em memória comum: sobe pra VRAM antes do d3d11convert
                 upload = Gst.ElementFactory.make("d3d11upload", "d3d11up")
                 if upload is None:
                     raise RuntimeError("falta o d3d11upload (gst-plugins-bad)")
@@ -633,6 +675,7 @@ class CapturePipeline:
         self._handshake_id = GLib.timeout_add_seconds(HANDSHAKE_SECONDS, self._check_handshake)
         if self._window:
             self._follow_id = GLib.timeout_add(FOLLOW_MS, self._follow_window)
+        if self._grab:
             threading.Thread(target=self._grab_loop, daemon=True).start()
         return False
 
@@ -641,7 +684,7 @@ class CapturePipeline:
         grabber = winsys.WindowGrabber(self._window)
         src = self.pipeline.get_by_name("src")
         interval = 1 / min(self._fps, 60)
-        last, shape, next_at = None, None, time.monotonic()
+        last, shape, next_at, told = None, None, time.monotonic(), ""
         try:
             while not self._stop_heartbeat.is_set():
                 try:
@@ -649,6 +692,9 @@ class CapturePipeline:
                 except OSError as exc:
                     log.warning("captura da janela falhou: %s", exc)
                     frame = None
+                if frame is None and grabber.reason != told:  # sem isso o luce.log não diz por que a janela não tem imagem
+                    told = grabber.reason
+                    print(f"captura da janela sem quadro: {told}", flush=True)
                 if frame is not None:
                     last = frame
                 if last is not None:
@@ -667,8 +713,14 @@ class CapturePipeline:
             grabber.close()
 
     def _follow_window(self) -> bool:
-        """Avisa quando a janela transmitida é fechada (a captura WGC só congelaria no último quadro)."""
+        """Avisa quando a janela transmitida é fechada (a captura só congelaria no último quadro); no recorte, acompanha a janela."""
         if winsys.is_window(self._window):
+            if self._crop:
+                crop = _window_crop(self._window)
+                src = self.pipeline.get_by_name("src")
+                if crop and crop != self._crop and crop[0] == self._crop[0] and src is not None:  # outro monitor: o src não troca em voo
+                    self._crop = crop
+                    _set_crop(src, crop)
             return True
         self._follow_id = None
         if self._on_pipeline_error is not None:

@@ -73,6 +73,16 @@ def main() -> int:
         print("pipeline de janela ok: appsrc | áudio", mode, audio.get_property("loopback-target-pid"))
         p.stop()
 
+        # janela que o PrintWindow não copia: recorte do monitor pelo d3d11screencapturesrc
+        os.environ["LUCE_WINDOW_MODE"] = "crop"
+        p = CapturePipeline("http://127.0.0.1:1/x/whip", width=1280, height=720, fps=30, preview=False, window_handle=hwnd)
+        src = p.pipeline.get_by_name("src")
+        assert src.get_factory().get_name() == "d3d11screencapturesrc", src.get_factory().get_name()
+        print("recorte ok:", p._crop, [src.get_property(k) for k in ("crop-x", "crop-y", "crop-width", "crop-height")])
+        assert p._crop and src.get_property("crop-width") == p._crop[3], p._crop
+        p.stop()
+        del os.environ["LUCE_WINDOW_MODE"]
+
         # 2) WindowGrabber devolve o conteúdo da janela (não preto) e os quadros atravessam upload -> convert -> download
         grabber = winsys.WindowGrabber(hwnd)
         frame = None
