@@ -27,7 +27,9 @@ nvh264enc nvh264dec nvd3d11h264enc qsvh264enc mfh264enc amfh264enc
 wasapi2src wasapi2sink autoaudiosink autovideosink gtk4paintablesink
 """.split()
 # Plugins sem elemento próprio que o parsebin/typefind precisam.
-EXTRA_PLUGINS = {"typefindfunctions", "playback", "coreelements", "autodetect", "videoparsersbad", "audioparsers"}
+EXTRA_PLUGINS = {"typefindfunctions", "playback", "coreelements", "autodetect", "videoparsersbad", "audioparsers",
+                 # plugins de GPU: no runner (sem placa) o gst-inspect não os enxerga, mas nos PCs das pessoas funcionam
+                 "nvcodec", "qsv", "amfcodec", "mediafoundation", "d3d11"}
 
 # Typelibs de que o app e o GTK dependem (o resto é de bibliotecas que o LUCE não usa).
 TYPELIBS = {
@@ -80,6 +82,8 @@ def imports(dll: Path, cache: dict[Path, list[str]]) -> list[str]:
 
 def main(root: Path) -> None:
     prefix = root / "ucrt64"
+    for path in root.rglob("*"):  # o tar do MSYS2 extrai arquivos somente leitura e o Windows não deixa apagar
+        path.chmod(0o777)
     before = size_mb(root)
 
     keep = plugin_files()
