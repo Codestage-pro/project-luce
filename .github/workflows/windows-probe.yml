@@ -52,7 +52,10 @@ jobs:
 
       - name: Propriedades do d3d11screencapturesrc
         run: |
-          gst-inspect-1.0 d3d11screencapturesrc | grep -iE "monitor|window|handle|show-cursor|framerate" || true
+          gst-inspect-1.0 d3d11screencapturesrc | grep -iE "monitor|window|handle|show-cursor|framerate|crop|capture-api" || true
+          echo "--- elementos de captura ---"
+          gst-inspect-1.0 | grep -iE "capture|d3d12|wgc|gdi|screen|dx9|winscreen" || true
+          pacman -Ql mingw-w64-ucrt-x86_64-gst-plugins-bad | grep -iE "d3d|wgc|capture" | head -20 || true
 
       - name: Python importa Gst e Gtk
         run: |
