@@ -36,6 +36,7 @@ TYPELIBS = {
     "Gst", "GstBase", "GstApp", "GstVideo", "GstAudio", "GstPbutils", "GstSdp", "GstWebRTC", "GstRtp",
     "GstNet", "GstTag", "GstGL", "GstAllocators",
 }
+TOOLS = Path(sys.prefix) / "bin"  # python do MSYS2 UCRT64: gst-inspect e objdump moram ao lado
 PIXBUF_LOADERS = ("png", "jpeg", "gif", "ico", "bmp", "svg")  # svg: ícones simbólicos do tema
 KEEP_EXES = {"python.exe", "pythonw.exe", "luce.exe", "gspawn-win64-helper.exe", "gspawn-win64-helper-console.exe"}
 DROP_DIRS = [
@@ -61,7 +62,7 @@ def remove(path: Path) -> None:
 def plugin_files() -> set[str]:
     keep = {f"libgst{name}.dll" for name in EXTRA_PLUGINS}
     for element in ELEMENTS:
-        out = subprocess.run(["gst-inspect-1.0", element], capture_output=True, text=True).stdout
+        out = subprocess.run([str(TOOLS / "gst-inspect-1.0.exe"), element], capture_output=True, text=True).stdout
         found = re.search(r"^\s*Filename\s+(.+)$", out, re.M)
         if found:
             keep.add(re.split(r"[\\/]", found.group(1).strip())[-1])
@@ -72,7 +73,7 @@ def plugin_files() -> set[str]:
 
 def imports(dll: Path, cache: dict[Path, list[str]]) -> list[str]:
     if dll not in cache:
-        out = subprocess.run(["objdump", "-p", str(dll)], capture_output=True, text=True).stdout
+        out = subprocess.run([str(TOOLS / "objdump.exe"), "-p", str(dll)], capture_output=True, text=True).stdout
         cache[dll] = [m.lower() for m in re.findall(r"DLL Name:\s*(\S+)", out)]
     return cache[dll]
 
