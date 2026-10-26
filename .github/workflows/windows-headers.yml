@@ -25,3 +25,6 @@ jobs:
           g++ -O2 -shared luce/windows/wgc_capture.cpp -o luce_wgc.dll -lruntimeobject -ld3d11 -ldxgi -lole32
           ls -lh luce_wgc.dll
           python -c "import ctypes; lib = ctypes.CDLL('./luce_wgc.dll'); print('wgc supported:', lib.luce_wgc_is_supported())"
+      - name: Testa captura de quadro via WGC numa janela Win32 real
+        run: |
+          python test_wgc_run.py
