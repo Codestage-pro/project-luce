@@ -1,46 +1,27 @@
 name: Windows headers probe
 
-# Só verifica se o g++ do MSYS2 compila WGC. Não gera release.
+# Testa compilação do luce_wgc.dll e chamada Python. Não gera release.
 on:
   workflow_dispatch:
   push:
     branches: [windows-probe]
-    paths: [.github/workflows/windows-headers.yml]
+    paths: [.github/workflows/windows-headers.yml, luce/windows/wgc_capture.cpp]
 
 jobs:
-  headers:
+  wgc-build-test:
     runs-on: windows-latest
     defaults:
       run:
         shell: msys2 {0}
     steps:
+      - uses: actions/checkout@v4
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
-          install: mingw-w64-ucrt-x86_64-gcc
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-python
       - run: |
-          cat > test_wgc.cpp << 'CPP'
-          #include <windows.h>
-          #include <winstring.h>
-          #include <roapi.h>
-          #include <d3d11.h>
-          #include <dxgi1_2.h>
-          #include <windows.graphics.capture.h>
-          #include <windows.graphics.capture.interop.h>
-          #include <windows.graphics.directx.direct3d11.h>
-          #include <windows.graphics.directx.direct3d11.interop.h>
-          #include <wrl.h>
-
-          using namespace Microsoft::WRL;
-          using namespace ABI::Windows::Graphics::Capture;
-          using namespace ABI::Windows::Graphics::DirectX;
-          using namespace ABI::Windows::Graphics::DirectX::Direct3D11;
-
-          extern "C" __declspec(dllexport) int test_compile() {
-              ComPtr<IGraphicsCaptureItemInterop> interop;
-              ComPtr<IDirect3D11CaptureFramePoolStatics2> pool_statics;
-              return 0;
-          }
-          CPP
-          g++ -shared -O2 test_wgc.cpp -o test_wgc.dll -ld3d11 -ldxgi -lole32
-          ls -l test_wgc.dll
+          g++ -O2 -shared luce/windows/wgc_capture.cpp -o luce_wgc.dll -ld3d11 -ldxgi -lole32
+          ls -lh luce_wgc.dll
+          python -c "import ctypes; lib = ctypes.CDLL('./luce_wgc.dll'); print('wgc supported:', lib.luce_wgc_is_supported())"
