@@ -14,7 +14,9 @@ import os
 import sys
 import threading
 import time
+import traceback
 import urllib.error
+from pathlib import Path
 
 import gi
 
@@ -170,9 +172,16 @@ class SettingsWindow(Gtk.Window):
         self._tray_check = Gtk.CheckButton(label="Manter na bandeja ao fechar", active=cfg["keep_in_tray"])
         grid.attach(self._tray_check, 0, next_row + 7, 2, 1)
 
+        save_row = next_row + 8
+        if os.name == "nt":  # AppData\Local é oculta: sem este atalho ninguém acha o luce.log pra mandar
+            logs = Gtk.Button(label="Abrir pasta de logs")
+            logs.connect("clicked", lambda _b: os.startfile(Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "LUCE"))
+            grid.attach(logs, 0, save_row, 2, 1)
+            save_row += 1
+
         save = Gtk.Button(label="Salvar", css_classes=["go"])
         save.connect("clicked", self._on_save)
-        grid.attach(save, 0, next_row + 8, 2, 1)
+        grid.attach(save, 0, save_row, 2, 1)
 
     def _on_save(self, _button: Gtk.Button) -> None:
         cfg = config.load()
@@ -395,6 +404,7 @@ class MainWindow(Gtk.ApplicationWindow):
             # (sem NVIDIA e sem driver VA-API): sem isto a exceção só ia pro
             # stderr do handler do GTK e a janela ficava parada em "escolha o
             # monitor…", sem dizer o que faltava.
+            traceback.print_exc()  # no Windows o stderr é o luce.log; só o status na janela não deixava rastro
             self._capture = None
             if self._portal is not None:
                 self._portal.close()
