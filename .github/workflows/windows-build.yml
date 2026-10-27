@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
   push:
     branches: [windows-probe]
-    tags: ["v*"]
+    tags: ["windows-v*", "v*"]
     paths:
       - luce/**
       - packaging/**

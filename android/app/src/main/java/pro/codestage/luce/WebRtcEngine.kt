@@ -54,12 +54,16 @@ class LuceScreenCapturer(
     private var surfaceTextureHelper: SurfaceTextureHelper? = null
     private var capturerObserver: CapturerObserver? = null
     private var virtualDisplay: VirtualDisplay? = null
+    private val yuvConverter = org.webrtc.YuvConverter()
 
-    @Volatile private var lastI420Buffer: VideoFrame.I420Buffer? = null
-    @Volatile private var lastRotation: Int = 0
+    private var lastTexId: Int = 0
+    private var lastTransform: android.graphics.Matrix = android.graphics.Matrix()
+    private var lastWidth: Int = 0
+    private var lastHeight: Int = 0
+    private var lastRotation: Int = 0
     @Volatile private var lastFrameTimeNs: Long = 0L
     @Volatile private var lastPtsNs: Long = 0L
-    private val frameLock = Any()
+    @Volatile private var isCapturing: Boolean = false
 
     private val keepaliveScope = CoroutineScope(Dispatchers.Default + Job())
     private var keepaliveJob: Job? = null
@@ -83,6 +87,7 @@ class LuceScreenCapturer(
         val helper = surfaceTextureHelper ?: return
         val observer = capturerObserver ?: return
 
+        isCapturing = true
         mediaProjection.registerCallback(projectionCallback, helper.handler)
         helper.setTextureSize(width, height)
 
@@ -90,7 +95,7 @@ class LuceScreenCapturer(
             "LuceScreenCapture",
             width,
             height,
-            400,
+            320,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             Surface(helper.surfaceTexture),
             null,
@@ -100,51 +105,53 @@ class LuceScreenCapturer(
         observer.onCapturerStarted(true)
 
         helper.startListening { frame ->
+            if (!isCapturing) return@startListening
             val nowNs = System.nanoTime()
             val safePtsNs = if (nowNs <= lastPtsNs) lastPtsNs + 1_000_000L else nowNs
             lastPtsNs = safePtsNs
             lastFrameTimeNs = nowNs
 
-            // OBRIGATÓRIO: retain() antes de envolver em outro VideoFrame, pois outFrame.release()
-            // vai decrementar o refCount do buffer E o SurfaceTextureHelper também vai decrementar!
+            val texBuf = frame.buffer as? VideoFrame.TextureBuffer
+            if (texBuf != null) {
+                lastTexId = texBuf.textureId
+                lastTransform = android.graphics.Matrix(texBuf.transformMatrix)
+                lastWidth = texBuf.width
+                lastHeight = texBuf.height
+                lastRotation = frame.rotation
+            }
+
             frame.buffer.retain()
             val outFrame = VideoFrame(frame.buffer, frame.rotation, safePtsNs)
             observer.onFrameCaptured(outFrame)
             outFrame.release()
-
-            // Atualiza cópia I420 independente (a cada ~250ms) para o keepalive não prender a textura GL
-            if (lastI420Buffer == null || nowNs - lastFrameTimeNs == 0L) {
-                val i420 = runCatching { frame.buffer.toI420() }.getOrNull()
-                if (i420 != null) {
-                    synchronized(frameLock) {
-                        val old = lastI420Buffer
-                        lastI420Buffer = i420
-                        lastRotation = frame.rotation
-                        old?.release()
-                    }
-                }
-            }
         }
 
-        // Keepalive limpo (sem reflexão): se a tela do celular ficar parada por >100ms,
-        // reenvia o último buffer I420 com timestamp novo para o encoder H.264 nunca parar.
+        // Frame Pacer 100% GPU: se a tela ficar parada por > 66ms (~15fps piso mínimo),
+        // re-emite a mesma textura OES na thread GL sem copiar para CPU e sem travar isTextureInUse!
         keepaliveJob?.cancel()
         keepaliveJob = keepaliveScope.launch {
-            while (isActive) {
-                delay(100)
-                if (System.nanoTime() - lastFrameTimeNs >= 100_000_000L) {
-                    val buf: VideoFrame.I420Buffer?
-                    val rot: Int
-                    synchronized(frameLock) {
-                        buf = lastI420Buffer
-                        buf?.retain()
-                        rot = lastRotation
-                    }
-                    if (buf != null) {
+            while (isActive && isCapturing) {
+                delay(66)
+                if (lastFrameTimeNs > 0L && System.nanoTime() - lastFrameTimeNs >= 66_000_000L) {
+                    helper.handler.post {
+                        if (!isCapturing || lastTexId == 0 || lastWidth <= 0 || lastHeight <= 0) return@post
+                        if (System.nanoTime() - lastFrameTimeNs < 60_000_000L) return@post
                         val nowNs = System.nanoTime()
                         val safePtsNs = if (nowNs <= lastPtsNs) lastPtsNs + 1_000_000L else nowNs
                         lastPtsNs = safePtsNs
-                        val repeatFrame = VideoFrame(buf, rot, safePtsNs)
+                        lastFrameTimeNs = nowNs
+
+                        val dupBuffer = org.webrtc.TextureBufferImpl(
+                            lastWidth,
+                            lastHeight,
+                            VideoFrame.TextureBuffer.Type.OES,
+                            lastTexId,
+                            android.graphics.Matrix(lastTransform),
+                            helper.handler,
+                            yuvConverter,
+                            Runnable {}
+                        )
+                        val repeatFrame = VideoFrame(dupBuffer, lastRotation, safePtsNs)
                         try {
                             observer.onFrameCaptured(repeatFrame)
                         } catch (_: Exception) {}
@@ -156,6 +163,7 @@ class LuceScreenCapturer(
     }
 
     override fun stopCapture() {
+        isCapturing = false
         keepaliveJob?.cancel()
         keepaliveJob = null
         val helper = surfaceTextureHelper
@@ -163,6 +171,8 @@ class LuceScreenCapturer(
             val done = java.util.concurrent.CountDownLatch(1)
             helper.handler.post {
                 try { helper.stopListening() } catch (_: Exception) {}
+                try { yuvConverter.release() } catch (_: Exception) {}
+                lastTexId = 0
                 done.countDown()
             }
             runCatching { done.await(1000, java.util.concurrent.TimeUnit.MILLISECONDS) }
@@ -171,15 +181,11 @@ class LuceScreenCapturer(
         try { virtualDisplay?.release() } catch (_: Exception) {}
         virtualDisplay = null
         try { mediaProjection.unregisterCallback(projectionCallback) } catch (_: Exception) {}
-        synchronized(frameLock) {
-            lastI420Buffer?.release()
-            lastI420Buffer = null
-        }
     }
 
     override fun changeCaptureFormat(width: Int, height: Int, framerate: Int) {
         surfaceTextureHelper?.setTextureSize(width, height)
-        virtualDisplay?.resize(width, height, 400)
+        virtualDisplay?.resize(width, height, 320)
     }
 
     override fun dispose() {
@@ -206,8 +212,17 @@ object WebRtcEngine {
             PeerConnectionFactory.initialize(initOptions)
 
             val audioDeviceModule = JavaAudioDeviceModule.builder(context.applicationContext)
+                .setAudioSource(android.media.MediaRecorder.AudioSource.DEFAULT)
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                        .build()
+                )
                 .setUseHardwareAcousticEchoCanceler(false)
                 .setUseHardwareNoiseSuppressor(false)
+                .setUseStereoInput(true)
+                .setUseStereoOutput(true)
                 .setAudioRecordStateCallback(object : JavaAudioDeviceModule.AudioRecordStateCallback {
                     override fun onWebRtcAudioRecordStart() {
                         attachSystemAudioCapture()
@@ -278,10 +293,13 @@ object WebRtcEngine {
                 .build()
 
             if (sysRecord.state == AudioRecord.STATE_INITIALIZED) {
-                try { oldRecord.stop() } catch (_: Exception) {}
-                try { oldRecord.release() } catch (_: Exception) {}
                 sysRecord.startRecording()
                 audioRecordField.set(audioInput, sysRecord)
+                CoroutineScope(Dispatchers.IO).launch {
+                    delay(60)
+                    try { oldRecord.stop() } catch (_: Exception) {}
+                    try { oldRecord.release() } catch (_: Exception) {}
+                }
             } else {
                 sysRecord.release()
             }
@@ -618,7 +636,13 @@ class PublishSession(
                 val vTrack = factory.createVideoTrack("ARDAMSv0", vSource)
                 videoTrack = vTrack
 
-                val aSource = factory.createAudioSource(MediaConstraints())
+                val audioConstraints = MediaConstraints().apply {
+                    mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "false"))
+                    mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "false"))
+                    mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "false"))
+                    mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "false"))
+                }
+                val aSource = factory.createAudioSource(audioConstraints)
                 audioSource = aSource
                 val aTrack = factory.createAudioTrack("ARDAMSa0", aSource)
                 audioTrack = aTrack

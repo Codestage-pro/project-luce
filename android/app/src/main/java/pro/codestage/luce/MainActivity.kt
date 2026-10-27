@@ -204,12 +204,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateAudioRouting() {
-        if (watchedSessions.isNotEmpty()) {
-            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-            audioManager.isSpeakerphoneOn = true
-        } else {
-            audioManager.mode = AudioManager.MODE_NORMAL
-        }
+        audioManager.mode = AudioManager.MODE_NORMAL
     }
 
     private fun startStreamStatusWatcher() {

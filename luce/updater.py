@@ -17,7 +17,7 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-API = "https://api.github.com/repos/Codestage-pro/project-luce/releases/latest"
+API = "https://api.github.com/repos/Codestage-pro/project-luce/releases?per_page=10"
 ROOT = Path(__file__).resolve().parents[1]  # no bundle: a pasta com version.txt e luce.ico
 
 
@@ -51,25 +51,50 @@ def find_update() -> tuple[str, str, str | None] | None:
     if mine is None:
         return None
     req = urllib.request.Request(API, headers={"Accept": "application/vnd.github+json", "User-Agent": "project-luce"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        release = json.load(resp)
-    tag = release["tag_name"].lstrip("v")
-    if _numbers(tag) <= _numbers(mine):
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            releases = json.load(resp)
+    except Exception:
         return None
-    if is_flatpak():
-        return tag, "", None
-    for asset in release.get("assets", []):
-        if asset.get("name") == "Luce-Setup.exe":
-            url = asset.get("browser_download_url", "")
-            if not url.startswith("https://"):
+
+    if not isinstance(releases, list):
+        return None
+
+    flatpak = is_flatpak()
+
+    for release in releases:
+        if release.get("draft"):
+            continue
+        tag_raw = release.get("tag_name", "")
+        # Ignora releases exclusivas de Android ou outras plataformas
+        if tag_raw.startswith("android-") or "android" in tag_raw.lower():
+            continue
+
+        if flatpak:
+            # Para Flatpak: primeira release oficial v* ou linux-v*
+            if tag_raw.startswith("v") or tag_raw.startswith("linux-v"):
+                tag = tag_raw.removeprefix("linux-v").removeprefix("v")
+                if _numbers(tag) > _numbers(mine):
+                    return tag, "", None
+        else:
+            # Para Windows: primeira release não-prerelease com Luce-Setup.exe
+            if release.get("prerelease"):
                 continue
-            digest = asset.get("digest") or ""
-            sha256 = digest.removeprefix("sha256:").strip() or None
-            if not sha256:
-                m = re.search(r"(?i)sha256[:\s=]+([a-f0-9]{64})", release.get("body", ""))
-                if m:
-                    sha256 = m.group(1).lower()
-            return tag, url, sha256
+            tag = tag_raw.removeprefix("windows-v").removeprefix("v")
+            if _numbers(tag) <= _numbers(mine):
+                continue
+            for asset in release.get("assets", []):
+                if asset.get("name") == "Luce-Setup.exe":
+                    url = asset.get("browser_download_url", "")
+                    if not url.startswith("https://"):
+                        continue
+                    digest = asset.get("digest") or ""
+                    sha256 = digest.removeprefix("sha256:").strip() or None
+                    if not sha256:
+                        m = re.search(r"(?i)sha256[:\s=]+([a-f0-9]{64})", release.get("body", ""))
+                        if m:
+                            sha256 = m.group(1).lower()
+                    return tag, url, sha256
     return None
 
 

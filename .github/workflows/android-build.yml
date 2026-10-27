@@ -10,7 +10,7 @@ on:
       - main
       - windows-probe
     tags:
-      - 'v*'
+      - 'android-v*'
 
 concurrency:
   group: android-${{ github.ref }}
@@ -42,10 +42,12 @@ jobs:
 
       - name: Definir versão do build
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          if [[ "${{ github.ref }}" == refs/tags/android-v* ]]; then
+            VER="${GITHUB_REF_NAME#android-v}"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             VER="${GITHUB_REF_NAME#v}"
           else
-            VER="1.0.29-probe.${GITHUB_RUN_NUMBER}"
+            VER="1.0.30-probe.${GITHUB_RUN_NUMBER}"
           fi
           echo "LUCE_VERSION=$VER" >> $GITHUB_ENV
           echo "Versão definida: $VER"
@@ -61,7 +63,7 @@ jobs:
               -validity 10000 \
               -storepass projectluce \
               -keypass projectluce \
-              -dname "CN=Project LUCE, OU=Codestage, O=Codestage, L=Curitiba, S=PR, C=BR"
+              -dname "CN=Murilo Abreu, OU=Mobile, O=Codestage, L=Belo Horizonte, S=MG, C=BR"
           else
             echo "release.keystore já existe no repositório."
           fi
@@ -72,7 +74,7 @@ jobs:
           LUCE_VERSION: ${{ env.LUCE_VERSION }}
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease --stacktrace
+          ./gradlew assembleRelease -PluceVersion="${{ env.LUCE_VERSION }}" -PluceCode="${{ github.run_number }}" --no-configuration-cache --stacktrace
 
       - name: Preparar arquivo de distribuição
         run: |
@@ -87,22 +89,27 @@ jobs:
           path: dist/Luce-Android.apk
           retention-days: 14
 
-      # Tag v*: Anexa na Release oficial do GitHub
-      - name: Anexa na Release oficial
-        if: startsWith(github.ref, 'refs/tags/v')
+      # Tag android-v*: Anexa na Release oficial do Android
+      - name: Anexa na Release oficial do Android
+        if: startsWith(github.ref, 'refs/tags/android-v')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: android-latest
+          name: Android (oficial)
+          body: |
+            Versão oficial do Project LUCE para Android.
+            Versão: ${{ env.LUCE_VERSION }}
           files: dist/Luce-Android.apk
           fail_on_unmatched_files: true
 
       # Branch push: Anexa na Prerelease de teste do Android
       - name: Move a tag android-test
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/android-v') }}
         run: |
           git tag -f android-test ${{ github.sha }}
           git push -f origin android-test
       - name: Atualiza a Prerelease android-test
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/android-v') }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: android-test

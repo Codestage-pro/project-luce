@@ -88,32 +88,19 @@ class LuceVideoEncoderFactory(
             return null
         }
 
-        val bitrateAdjuster: BitrateAdjuster = if (
-            codecName.startsWith("c2.mtk.", ignoreCase = true) ||
-            codecName.startsWith("omx.mtk.", ignoreCase = true) ||
-            codecName.startsWith("c2.exynos.", ignoreCase = true) ||
-            codecName.startsWith("omx.exynos.", ignoreCase = true)
-        ) {
-            FramerateBitrateAdjuster()
-        } else {
-            BaseBitrateAdjuster()
-        }
-
         val sharedContext: EglBase14.Context? = if (eglContext is EglBase14.Context) eglContext else null
 
-        val hwEncoder = HardwareVideoEncoder(
+        return HardwareVideoEncoder(
             MediaCodecWrapperFactoryImpl(),
             codecName,
             VideoCodecMimeType.H264,
             surfaceColorFormat,
             yuvColorFormat,
             emptyMap(), // evita CodecException em MediaCodec.configure() por perfil forçado
-            2,      // keyFrameIntervalSec = 2s
-            2000,   // forceKeyFrameIntervalMs = 2000ms
-            bitrateAdjuster,
+            1,      // keyFrameIntervalSec = 1s
+            0,      // forceKeyFrameIntervalMs = 0 (evita engasgos por PARAMETER_KEY_REQUEST_SYNC_FRAME a cada 2s)
+            BaseBitrateAdjuster(),
             sharedContext
         )
-        val swEncoder = SoftwareVideoEncoderFactory().createEncoder(inputCodecInfo)
-        return if (swEncoder != null) VideoEncoderFallback(swEncoder, hwEncoder) else hwEncoder
     }
 }

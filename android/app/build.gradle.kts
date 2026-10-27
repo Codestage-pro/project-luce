@@ -8,8 +8,12 @@ android {
     namespace = "pro.codestage.luce"
     compileSdk = 35
 
-    val envVer = System.getenv("LUCE_VERSION") ?: "1.0.29"
-    val envCode = 2900 + (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1)
+    val envVer = (project.findProperty("luceVersion") as? String)?.takeIf { it.isNotBlank() }
+        ?: System.getenv("LUCE_VERSION")?.takeIf { it.isNotBlank() }
+        ?: "1.0.30"
+    val envCode = ((project.findProperty("luceCode") as? String)?.toIntOrNull()
+        ?: System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
+        ?: 1) + 3000
 
     defaultConfig {
         applicationId = "pro.codestage.luce"

@@ -5,7 +5,7 @@ name: Flatpak
 # Discover / `flatpak update`. Segredos: GPG_PRIVATE_KEY (gpg --armor --export-secret-keys).
 on:
   push:
-    tags: ['v*']
+    tags: ['linux-v*', 'v*']
   workflow_dispatch:
 
 permissions:
