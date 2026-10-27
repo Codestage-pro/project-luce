@@ -133,6 +133,11 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Digite um nome válido antes de transmitir", Toast.LENGTH_SHORT).show()
             return
         }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            Toast.makeText(this, "Permissão de áudio necessária para transmitir", Toast.LENGTH_LONG).show()
+            permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+            return
+        }
         LuceConfig.saveUserName(this, clean)
         userName = clean
 

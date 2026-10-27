@@ -196,14 +196,9 @@ fun SettingsSheet(
             Spacer(modifier = Modifier.height(8.dp))
             Column(modifier = Modifier.fillMaxWidth()) {
                 AudioOptionRow(
-                    label = "Áudio do sistema (jogos/apps)",
+                    label = "Áudio interno do sistema (jogos e apps)",
                     selected = selectedAudio == UserSettings.AUDIO_SOURCE_SYSTEM,
                     onClick = { selectedAudio = UserSettings.AUDIO_SOURCE_SYSTEM }
-                )
-                AudioOptionRow(
-                    label = "Microfone",
-                    selected = selectedAudio == UserSettings.AUDIO_SOURCE_MIC,
-                    onClick = { selectedAudio = UserSettings.AUDIO_SOURCE_MIC }
                 )
                 AudioOptionRow(
                     label = "Mudo (sem áudio)",

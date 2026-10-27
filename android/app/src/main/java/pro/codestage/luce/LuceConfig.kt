@@ -17,7 +17,6 @@ data class UserSettings(
 ) {
     companion object {
         const val AUDIO_SOURCE_SYSTEM = "SYSTEM"
-        const val AUDIO_SOURCE_MIC = "MIC"
         const val AUDIO_SOURCE_MUTED = "MUTED"
     }
 
@@ -59,6 +58,8 @@ object LuceConfig {
 
     fun load(context: Context): UserSettings {
         val prefs = getPrefs(context)
+        val rawAudio = prefs.getString(KEY_AUDIO_SOURCE, UserSettings.AUDIO_SOURCE_SYSTEM)
+        val audio = if (rawAudio == UserSettings.AUDIO_SOURCE_MUTED) UserSettings.AUDIO_SOURCE_MUTED else UserSettings.AUDIO_SOURCE_SYSTEM
         return UserSettings(
             serverUrl = prefs.getString(KEY_SERVER_URL, "https://luce.codestage.pro")?.trim() ?: "https://luce.codestage.pro",
             authPassword = prefs.getString(KEY_AUTH_PASSWORD, "")?.trim() ?: "",
@@ -67,7 +68,7 @@ object LuceConfig {
             resolutionHeight = prefs.getInt(KEY_RES_HEIGHT, 720),
             fps = prefs.getInt(KEY_FPS, 30),
             bitrateKbps = prefs.getInt(KEY_BITRATE_KBPS, 4000),
-            audioSource = prefs.getString(KEY_AUDIO_SOURCE, UserSettings.AUDIO_SOURCE_SYSTEM) ?: UserSettings.AUDIO_SOURCE_SYSTEM
+            audioSource = audio
         )
     }
 

@@ -215,11 +215,12 @@ object LuceApi {
                 val parts = trimmed.split(" ")
                 val header = parts.take(3).joinToString(" ") // m=video <port> <proto>
                 val keptPayloads = mutableListOf<String>()
-                if (chosenRtxPt != null) {
-                    keptPayloads.add(chosenRtxPt)
-                }
-                if (chosenH264Pt != null) {
-                    keptPayloads.add(chosenH264Pt)
+                if (isPublish) {
+                    if (chosenH264Pt != null) keptPayloads.add(chosenH264Pt)
+                    if (chosenRtxPt != null) keptPayloads.add(chosenRtxPt)
+                } else {
+                    if (chosenRtxPt != null) keptPayloads.add(chosenRtxPt)
+                    if (chosenH264Pt != null) keptPayloads.add(chosenH264Pt)
                 }
                 if (keptPayloads.isEmpty()) {
                     // fallback caso não tenha encontrado H264
@@ -239,6 +240,14 @@ object LuceApi {
                     val pt = ptMatch.groupValues[1]
                     if (pt in dropPts) {
                         continue // descarta atributos de codecs não selecionados
+                    }
+                    if (chosenH264Pt != null && pt == chosenH264Pt && trimmed.startsWith("a=fmtp:$chosenH264Pt")) {
+                        var fmtpLine = trimmed
+                        if (!fmtpLine.contains("packetization-mode=1")) {
+                            fmtpLine += ";packetization-mode=1"
+                        }
+                        result.add(fmtpLine)
+                        continue
                     }
                 }
             }

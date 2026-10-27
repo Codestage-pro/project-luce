@@ -14,3 +14,9 @@ graphify-out/
 # credenciais do Cloudflare Realtime SFU e senha do grupo (ver server/.env.example)
 server/.env
 .vscode/
+
+# Gradle / Android local build cache
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties

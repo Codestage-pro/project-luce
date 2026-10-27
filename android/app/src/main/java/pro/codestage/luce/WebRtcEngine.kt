@@ -1,16 +1,19 @@
 package pro.codestage.luce
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.hardware.display.DisplayManager
+import android.hardware.display.VirtualDisplay
 import android.media.AudioAttributes
 import android.media.AudioFormat
-import android.media.AudioManager
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
-import android.media.MediaRecorder
 import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Process
+import android.view.Surface
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -23,9 +26,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
+import org.webrtc.CapturerObserver
 import org.webrtc.DataChannel
 import org.webrtc.DefaultVideoDecoderFactory
-import org.webrtc.DefaultVideoEncoderFactory
 import org.webrtc.EglBase
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
@@ -34,17 +37,118 @@ import org.webrtc.MediaStreamTrack
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.RtpReceiver
-import org.webrtc.RtpTransceiver
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceTextureHelper
 import org.webrtc.VideoCapturer
+import org.webrtc.VideoFrame
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
 import org.webrtc.audio.JavaAudioDeviceModule
 
+class LuceScreenCapturer(
+    private val mediaProjection: MediaProjection,
+    private val onProjectionStopped: () -> Unit
+) : VideoCapturer {
+
+    private var surfaceTextureHelper: SurfaceTextureHelper? = null
+    private var capturerObserver: CapturerObserver? = null
+    private var virtualDisplay: VirtualDisplay? = null
+
+    @Volatile private var lastFrame: VideoFrame? = null
+    @Volatile private var lastFrameTimeNs: Long = 0L
+
+    private val keepaliveScope = CoroutineScope(Dispatchers.Default + Job())
+    private var keepaliveJob: Job? = null
+
+    private val projectionCallback = object : MediaProjection.Callback() {
+        override fun onStop() {
+            onProjectionStopped()
+        }
+    }
+
+    override fun initialize(
+        surfaceTextureHelper: SurfaceTextureHelper,
+        applicationContext: Context,
+        capturerObserver: CapturerObserver
+    ) {
+        this.surfaceTextureHelper = surfaceTextureHelper
+        this.capturerObserver = capturerObserver
+    }
+
+    override fun startCapture(width: Int, height: Int, framerate: Int) {
+        val helper = surfaceTextureHelper ?: return
+        val observer = capturerObserver ?: return
+
+        // Registre mediaProjection.registerCallback ANTES de criar o VirtualDisplay (obrigatório no Android 14 / SDK 35!)
+        mediaProjection.registerCallback(projectionCallback, helper.handler)
+
+        helper.setTextureSize(width, height)
+
+        virtualDisplay = mediaProjection.createVirtualDisplay(
+            "LuceScreenCapture",
+            width,
+            height,
+            400,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            Surface(helper.surfaceTexture),
+            null,
+            helper.handler
+        )
+
+        helper.startListening { frame ->
+            val prev = lastFrame
+            frame.retain()
+            lastFrame = frame
+            lastFrameTimeNs = System.nanoTime()
+            prev?.release()
+            observer.onFrameCaptured(frame)
+        }
+
+        keepaliveJob?.cancel()
+        keepaliveJob = keepaliveScope.launch {
+            while (isActive) {
+                delay(80)
+                val current = lastFrame ?: continue
+                if (System.nanoTime() - lastFrameTimeNs >= 80_000_000L) {
+                    val repeated = VideoFrame(current.buffer, current.rotation, System.nanoTime())
+                    helper.handler.post {
+                        observer.onFrameCaptured(repeated)
+                    }
+                }
+            }
+        }
+    }
+
+    override fun stopCapture() {
+        keepaliveJob?.cancel()
+        keepaliveJob = null
+        surfaceTextureHelper?.stopListening()
+        virtualDisplay?.release()
+        virtualDisplay = null
+        try {
+            mediaProjection.unregisterCallback(projectionCallback)
+        } catch (_: Exception) {}
+        lastFrame?.release()
+        lastFrame = null
+    }
+
+    override fun changeCaptureFormat(width: Int, height: Int, framerate: Int) {
+        surfaceTextureHelper?.setTextureSize(width, height)
+        virtualDisplay?.resize(width, height, 400)
+    }
+
+    override fun dispose() {
+        stopCapture()
+    }
+
+    override fun isScreencast(): Boolean = true
+}
+
 object WebRtcEngine {
     val eglBase: EglBase by lazy { EglBase.create() }
+
+    var activeMediaProjection: MediaProjection? = null
 
     private var factory: PeerConnectionFactory? = null
     private var adm: JavaAudioDeviceModule? = null
@@ -58,40 +162,103 @@ object WebRtcEngine {
             PeerConnectionFactory.initialize(initOptions)
 
             val audioDeviceModule = JavaAudioDeviceModule.builder(context.applicationContext)
-                .setUseHardwareAcousticEchoCanceler(true)
-                .setUseHardwareNoiseSuppressor(true)
-                .setAudioSource(MediaRecorder.AudioSource.MIC)
+                .setUseHardwareAcousticEchoCanceler(false)
+                .setUseHardwareNoiseSuppressor(false)
+                .setAudioRecordStateCallback(object : JavaAudioDeviceModule.AudioRecordStateCallback {
+                    override fun onWebRtcAudioRecordStart() {
+                        attachSystemAudioCapture()
+                    }
+                    override fun onWebRtcAudioRecordStop() {}
+                })
                 .createAudioDeviceModule()
             adm = audioDeviceModule
 
-            val encoderFactory = DefaultVideoEncoderFactory(
-                eglBase.eglBaseContext,
-                /* enableIntelVp8 = */ true,
-                /* enableH264HighProfile = */ true
-            )
-            val decoderFactory = DefaultVideoDecoderFactory(eglBase.eglBaseContext)
-
             factory = PeerConnectionFactory.builder()
+                .setOptions(PeerConnectionFactory.Options())
                 .setAudioDeviceModule(audioDeviceModule)
-                .setVideoEncoderFactory(encoderFactory)
-                .setVideoDecoderFactory(decoderFactory)
+                .setVideoEncoderFactory(org.webrtc.LuceVideoEncoderFactory(eglBase.eglBaseContext))
+                .setVideoDecoderFactory(DefaultVideoDecoderFactory(eglBase.eglBaseContext))
                 .createPeerConnectionFactory()
         }
         return factory!!
     }
 
-    fun createIceServers(): List<PeerConnection.IceServer> {
-        return listOf(
-            PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
-        )
+    fun setMicrophoneMute(muted: Boolean) {
+        adm?.setMicrophoneMute(muted)
+    }
+
+    fun attachSystemAudioCapture() {
+        val projection = activeMediaProjection ?: return
+        val currentAdm = adm ?: return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        try {
+            val audioInputField = currentAdm.javaClass.declaredFields.firstOrNull {
+                it.type.name.endsWith("WebRtcAudioRecord")
+            } ?: return
+            audioInputField.isAccessible = true
+            val audioInput = audioInputField.get(currentAdm) ?: return
+
+            val audioRecordField = audioInput.javaClass.declaredFields.firstOrNull {
+                it.type == AudioRecord::class.java
+            } ?: return
+            audioRecordField.isAccessible = true
+            val oldRecord = audioRecordField.get(audioInput) as? AudioRecord ?: return
+
+            val sampleRate = oldRecord.sampleRate
+            val channelConfig = oldRecord.channelConfiguration
+            val channelCount = oldRecord.channelCount
+
+            val playbackConfig = AudioPlaybackCaptureConfiguration.Builder(projection)
+                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                .excludeUid(Process.myUid())
+                .build()
+
+            val audioFormat = AudioFormat.Builder()
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setSampleRate(sampleRate)
+                .setChannelMask(channelConfig)
+                .build()
+
+            val minBuf = AudioRecord.getMinBufferSize(
+                sampleRate,
+                channelConfig,
+                AudioFormat.ENCODING_PCM_16BIT
+            ).coerceAtLeast(oldRecord.bufferSizeInFrames * channelCount * 2)
+
+            val sysRecord = AudioRecord.Builder()
+                .setAudioPlaybackCaptureConfig(playbackConfig)
+                .setAudioFormat(audioFormat)
+                .setBufferSizeInBytes(minBuf)
+                .build()
+
+            if (sysRecord.state == AudioRecord.STATE_INITIALIZED) {
+                sysRecord.startRecording()
+                audioRecordField.set(audioInput, sysRecord)
+                CoroutineScope(Dispatchers.IO).launch {
+                    delay(80)
+                    try { oldRecord.stop() } catch (_: Exception) {}
+                    try { oldRecord.release() } catch (_: Exception) {}
+                }
+            } else {
+                sysRecord.release()
+            }
+        } catch (_: Exception) {}
     }
 
     fun createRtcConfig(): PeerConnection.RTCConfiguration {
-        val config = PeerConnection.RTCConfiguration(createIceServers())
-        config.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
-        config.continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_ONCE
-        return config
+        val iceServers = listOf(
+            PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
+            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
+        )
+        return PeerConnection.RTCConfiguration(iceServers).apply {
+            sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+            bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
+            rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
+            tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.ENABLED
+        }
     }
 }
 
@@ -147,10 +314,8 @@ class WatchSession(
                     override fun onRemoveStream(stream: MediaStream?) {}
                     override fun onDataChannel(channel: DataChannel?) {}
                     override fun onRenegotiationNeeded() {}
-                    override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {}
-
-                    override fun onTrack(transceiver: RtpTransceiver?) {
-                        val track = transceiver?.receiver?.track()
+                    override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
+                        val track = receiver?.track() ?: return
                         if (track is VideoTrack) {
                             videoTrack.value = track
                         } else if (track is AudioTrack) {
@@ -164,17 +329,11 @@ class WatchSession(
                     ?: throw RuntimeException("Falha ao criar PeerConnection")
                 peerConnection = pc
 
-                // Adiciona transceivers RECV_ONLY
-                pc.addTransceiver(
-                    MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO,
-                    RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY)
-                )
-                pc.addTransceiver(
-                    MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO,
-                    RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY)
-                )
+                // Adiciona transceivers para receber áudio e vídeo
+                pc.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO)
+                pc.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO)
 
-                // Cria Oferta
+                // Cria Oferta WHEP
                 val offerDeferred = CompletableDeferred<SessionDescription>()
                 pc.createOffer(object : SdpObserver {
                     override fun onCreateSuccess(desc: SessionDescription) { offerDeferred.complete(desc) }
@@ -193,7 +352,7 @@ class WatchSession(
                 }, offer)
                 setLocalDeferred.await()
 
-                // Aguarda ICE gathering completo (com timeout de 2500ms)
+                // Aguarda gathering completo (ou timeout 2500ms)
                 withTimeoutOrNull(2500) {
                     iceGatheringDone.await()
                 }
@@ -242,21 +401,18 @@ class WatchSession(
             while (isActive) {
                 delay(1000)
                 val pc = peerConnection ?: break
+
                 pc.getStats { report ->
                     var currentBytes: Long = 0
                     var currentPackets: Long = 0
-                    var packetsLost: Long = 0
-                    var jitterSecs: Double = 0.0
 
-                    for (stats in report.statsMap.values) {
-                        if (stats.type == "inbound-rtp") {
-                            val members = stats.members
+                    for (stat in report.statsMap.values) {
+                        if (stat.type == "inbound-rtp") {
+                            val members = stat.members
                             val mediaType = members["mediaType"] as? String ?: members["kind"] as? String
                             if (mediaType == "video") {
                                 currentBytes += (members["bytesReceived"] as? Number)?.toLong() ?: 0L
                                 currentPackets += (members["packetsReceived"] as? Number)?.toLong() ?: 0L
-                                packetsLost += (members["packetsLost"] as? Number)?.toLong() ?: 0L
-                                jitterSecs = (members["jitter"] as? Number)?.toDouble() ?: 0.0
                             }
                         }
                     }
@@ -264,22 +420,20 @@ class WatchSession(
                     val now = System.currentTimeMillis()
                     val deltaSec = (now - lastTimeMs).coerceAtLeast(1) / 1000.0
                     val deltaBytes = (currentBytes - lastBytes).coerceAtLeast(0)
-                    val deltaPkts = (currentPackets - lastPacketsReceived).coerceAtLeast(0)
 
                     val mbps = (deltaBytes * 8.0) / (deltaSec * 1_000_000.0)
-                    val jitterMs = (jitterSecs * 1000.0).toInt()
+                    statsText.value = "↓ ${"%.1f".format(mbps)} Mbps · $currentPackets pkts"
 
-                    statsText.value = "↓ ${"%.1f".format(mbps)} Mbps · $currentPackets pkts · $packetsLost loss · ${jitterMs}ms"
-
-                    // Detecção de congelamento (3 segundos sem receber nenhum pacote novo)
-                    if (currentPackets > 0 && deltaPkts == 0L) {
+                    // Detecção de congelamento (stalling) se os pacotes pararem por mais de 3 segundos
+                    if (currentPackets > 0 && currentPackets == lastPacketsReceived) {
                         stallSecondsCount++
                         if (stallSecondsCount >= 3) {
                             isStalled.value = true
-                            stallSecondsCount = 0
-                            scope.launch { reconnect() }
+                            if (stallSecondsCount >= 5) {
+                                scope.launch { reconnect() }
+                            }
                         }
-                    } else if (deltaPkts > 0L) {
+                    } else {
                         stallSecondsCount = 0
                         isStalled.value = false
                     }
@@ -295,7 +449,7 @@ class WatchSession(
     private fun startWatchHeartbeatLoop() {
         scope.launch {
             while (isActive) {
-                delay(10_000)
+                delay(10000)
                 try {
                     LuceApi.sendWatching(baseUrl, streamName, myViewerName, authToken, on = true)
                 } catch (_: Exception) {}
@@ -356,11 +510,12 @@ class PublishSession(
     private val scope = CoroutineScope(Dispatchers.Default + Job())
     private var peerConnection: PeerConnection? = null
     private var whipLocation: String? = null
+
     private var videoCapturer: VideoCapturer? = null
     private var surfaceTextureHelper: SurfaceTextureHelper? = null
     private var videoSource: VideoSource? = null
-    private var audioSource: AudioSource? = null
     private var videoTrack: VideoTrack? = null
+    private var audioSource: AudioSource? = null
     private var audioTrack: AudioTrack? = null
 
     val isLive = MutableStateFlow(false)
@@ -368,39 +523,68 @@ class PublishSession(
     val statsText = MutableStateFlow("")
 
     fun start(mediaProjectionIntent: Intent) {
-        scope.launch(Dispatchers.Default) {
+        scope.launch {
             try {
+                statusText.value = "preparando captura…"
                 val factory = WebRtcEngine.getFactory(context)
-                val rtcConfig = WebRtcEngine.createRtcConfig()
 
-                surfaceTextureHelper = SurfaceTextureHelper.create("ScreenCaptureThread", WebRtcEngine.eglBase.eglBaseContext)
-                val capturer = org.webrtc.ScreenCapturerAndroid(mediaProjectionIntent, object : MediaProjection.Callback() {
-                    override fun onStop() {
-                        stop()
-                    }
-                })
+                val mpManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                val projection = mpManager.getMediaProjection(Activity.RESULT_OK, mediaProjectionIntent)
+                    ?: throw RuntimeException("Falha ao obter MediaProjection")
+
+                WebRtcEngine.activeMediaProjection = projection
+                WebRtcEngine.setMicrophoneMute(settings.audioSource == UserSettings.AUDIO_SOURCE_MUTED)
+
+                // Detecta orientação atual da tela e ajusta para retrato ou paisagem
+                val metrics = context.resources.displayMetrics
+                val isPortrait = metrics.heightPixels > metrics.widthPixels
+
+                var targetWidth = settings.resolutionWidth
+                var targetHeight = settings.resolutionHeight
+
+                if (isPortrait) {
+                    val minDim = minOf(targetWidth, targetHeight)
+                    val maxDim = maxOf(targetWidth, targetHeight)
+                    targetWidth = minDim
+                    targetHeight = maxDim
+                } else {
+                    val minDim = minOf(targetWidth, targetHeight)
+                    val maxDim = maxOf(targetWidth, targetHeight)
+                    targetWidth = maxDim
+                    targetHeight = minDim
+                }
+
+                // Garante que as dimensões sejam múltiplos de 16 para o encoder de vídeo
+                targetWidth = (targetWidth / 16) * 16
+                targetHeight = (targetHeight / 16) * 16
+
+                val capturer = LuceScreenCapturer(projection) {
+                    stop()
+                }
                 videoCapturer = capturer
 
-                val vSource = factory.createVideoSource(/* isScreencast = */ true)
-                videoSource = vSource
-                capturer.initialize(surfaceTextureHelper, context.applicationContext, vSource.capturerObserver)
+                val surfaceHelper = SurfaceTextureHelper.create("LuceScreenCaptureThread", WebRtcEngine.eglBase.eglBaseContext)
+                surfaceTextureHelper = surfaceHelper
 
-                val width = if (settings.resolutionWidth > 0) settings.resolutionWidth else 1280
-                val height = if (settings.resolutionHeight > 0) settings.resolutionHeight else 720
-                val fps = if (settings.fps > 0) settings.fps else 30
-                capturer.startCapture(width, height, fps)
+                val vSource = factory.createVideoSource(capturer.isScreencast())
+                videoSource = vSource
+                capturer.initialize(surfaceHelper, context.applicationContext, vSource.capturerObserver)
+                capturer.startCapture(targetWidth, targetHeight, settings.fps)
 
                 val vTrack = factory.createVideoTrack("ARDAMSv0", vSource)
-                vTrack.setEnabled(true)
                 videoTrack = vTrack
 
                 val aSource = factory.createAudioSource(MediaConstraints())
                 audioSource = aSource
                 val aTrack = factory.createAudioTrack("ARDAMSa0", aSource)
-                aTrack.setEnabled(settings.audioSource != UserSettings.AUDIO_SOURCE_MUTED)
                 audioTrack = aTrack
+                aTrack.setEnabled(settings.audioSource != UserSettings.AUDIO_SOURCE_MUTED)
 
+                statusText.value = "conectando ao servidor…"
+
+                val rtcConfig = WebRtcEngine.createRtcConfig()
                 val iceGatheringDone = CompletableDeferred<Unit>()
+
                 val pcObserver = object : PeerConnection.Observer {
                     override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
                     override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {}
@@ -417,7 +601,6 @@ class PublishSession(
                     override fun onDataChannel(channel: DataChannel?) {}
                     override fun onRenegotiationNeeded() {}
                     override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {}
-                    override fun onTrack(transceiver: RtpTransceiver?) {}
                 }
 
                 val pc = factory.createPeerConnection(rtcConfig, pcObserver)
@@ -426,6 +609,22 @@ class PublishSession(
 
                 val vSender = pc.addTrack(vTrack, listOf("ARDAMS"))
                 pc.addTrack(aTrack, listOf("ARDAMS"))
+
+                // Força preferências de codec H264 no transceiver de vídeo
+                try {
+                    val videoTransceiver = pc.transceivers.firstOrNull {
+                        it.mediaType == MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO
+                    }
+                    if (videoTransceiver != null) {
+                        val caps = factory.getRtpSenderCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO)
+                        val h264Codecs = caps.codecs.filter {
+                            it.name.equals("H264", ignoreCase = true) || it.mimeType.contains("h264", ignoreCase = true)
+                        }
+                        if (h264Codecs.isNotEmpty()) {
+                            videoTransceiver.setCodecPreferences(h264Codecs)
+                        }
+                    }
+                } catch (_: Exception) {}
 
                 // Configura bitrate no RtpSender
                 try {
@@ -456,16 +655,16 @@ class PublishSession(
                 }, offer)
                 setLocalDeferred.await()
 
-                // Aguarda ICE completo
+                // Aguarda gathering completo (ou timeout 2500ms)
                 withTimeoutOrNull(2500) {
                     iceGatheringDone.await()
                 }
 
                 val localSdp = pc.localDescription?.description
-                    ?: throw RuntimeException("SDP local de publicação vazia")
+                    ?: throw RuntimeException("SDP local vazia")
                 val sanitizedSdp = LuceApi.sanitizeSdpOffer(localSdp, isPublish = true)
 
-                // Envia WHIP POST
+                // Envia para o WHIP
                 val whipResponse = LuceApi.sendWhipOffer(baseUrl, streamName, sanitizedSdp, authToken)
                 whipLocation = whipResponse.location
 
@@ -481,29 +680,19 @@ class PublishSession(
                 setRemoteDeferred.await()
 
                 isLive.value = true
-                statusText.value = "transmitindo como $streamName (${width}x${height}@${fps}fps)"
+                statusText.value = "transmitindo ao vivo"
 
+                startStatsLoop()
                 startWhipHeartbeatLoop()
-                startPublishStatsLoop()
             } catch (e: Exception) {
                 isLive.value = false
-                statusText.value = "erro na transmissão: ${e.message}"
+                statusText.value = "falha ao iniciar: ${e.message}"
+                stop()
             }
         }
     }
 
-    private fun startWhipHeartbeatLoop() {
-        scope.launch {
-            while (isActive) {
-                delay(10_000)
-                try {
-                    LuceApi.sendWhipHeartbeat(baseUrl, streamName, authToken)
-                } catch (_: Exception) {}
-            }
-        }
-    }
-
-    private fun startPublishStatsLoop() {
+    private fun startStatsLoop() {
         scope.launch {
             var lastBytes: Long = 0
             var lastTimeMs: Long = System.currentTimeMillis()
@@ -511,13 +700,14 @@ class PublishSession(
             while (isActive) {
                 delay(1000)
                 val pc = peerConnection ?: break
+
                 pc.getStats { report ->
                     var currentBytes: Long = 0
                     var currentPackets: Long = 0
 
-                    for (stats in report.statsMap.values) {
-                        if (stats.type == "outbound-rtp") {
-                            val members = stats.members
+                    for (stat in report.statsMap.values) {
+                        if (stat.type == "outbound-rtp") {
+                            val members = stat.members
                             val mediaType = members["mediaType"] as? String ?: members["kind"] as? String
                             if (mediaType == "video") {
                                 currentBytes += (members["bytesSent"] as? Number)?.toLong() ?: 0L
@@ -540,6 +730,18 @@ class PublishSession(
         }
     }
 
+    private fun startWhipHeartbeatLoop() {
+        scope.launch {
+            while (isActive) {
+                delay(10000)
+                val loc = whipLocation ?: continue
+                try {
+                    LuceApi.sendWhipHeartbeat(baseUrl, loc, authToken)
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
     fun stop() {
         scope.launch(Dispatchers.IO) {
             isLive.value = false
@@ -549,12 +751,22 @@ class PublishSession(
             }
             try { videoCapturer?.stopCapture() } catch (_: Exception) {}
             videoCapturer?.dispose()
+            videoCapturer = null
             surfaceTextureHelper?.dispose()
+            surfaceTextureHelper = null
+            try {
+                WebRtcEngine.activeMediaProjection?.stop()
+            } catch (_: Exception) {}
+            WebRtcEngine.activeMediaProjection = null
             withContext(Dispatchers.Main) {
                 videoTrack?.dispose()
+                videoTrack = null
                 audioTrack?.dispose()
+                audioTrack = null
                 videoSource?.dispose()
+                videoSource = null
                 audioSource?.dispose()
+                audioSource = null
                 peerConnection?.dispose()
                 peerConnection = null
             }

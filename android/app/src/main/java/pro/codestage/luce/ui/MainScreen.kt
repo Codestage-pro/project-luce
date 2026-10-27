@@ -1,6 +1,7 @@
 package pro.codestage.luce.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -102,11 +103,10 @@ fun MainScreen(
             TopAppBar(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_luce_logo),
-                            contentDescription = null,
-                            tint = Color.Unspecified,
-                            modifier = Modifier.size(28.dp)
+                        Image(
+                            painter = painterResource(id = R.drawable.luce_logo),
+                            contentDescription = "Project LUCE",
+                            modifier = Modifier.size(34.dp)
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
