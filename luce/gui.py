@@ -497,7 +497,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._status.set_label(f"transmitindo como {name} ({enc_label})")
 
     def _on_share_error(self, message: str) -> None:
-        if self._portal is None and not self._x11 and self._window_handle is None:
+        if self._portal is None and not self._x11 and self._monitor_handle is None and self._window_handle is None:
             self._status.set_label(f"transmissão caiu: {message}")
             self._stop_sharing()
             return

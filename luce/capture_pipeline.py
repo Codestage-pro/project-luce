@@ -95,28 +95,77 @@ NVENC_KINDS = ("nvenc", "nvd3d11")  # os dois têm VBV por quadro
 # Encoders que falharam nesta sessão (driver recusa, caps não negocia): o restart automático da GUI
 # recria o pipeline e _make_encoder segue pro próximo da tabela em vez de repetir o mesmo erro.
 _BAD_ENCODERS: set[str] = set()
-_OK_ENCODERS: set[str] = set()  # já passaram no _encoder_works nesta sessão
+# factory -> (use_d3d11_memory, use_basic_props) validado em _encoder_works
+_ENCODER_MODES: dict[str, tuple[bool, bool]] = {}
+# Nível de fallback do áudio no Windows: 0 = process-loopback, 1 = loopback padrão, 2 = silêncio
+_WIN_AUDIO_FALLBACK: int = 0
 
 
-def _encoder_works(factory: str) -> bool:
-    """Codifica uns quadros de teste de verdade: o elemento existir não prova que o driver da GPU o abre.
+def _configure_encoder(enc: Gst.Element, enc_kind: str, bitrate_kbps: int, fps: int, basic: bool = False) -> None:
+    """Configura propriedades do encoder. Se basic=True, aplica apenas bitrate (para drivers AMD/MF restritivos)."""
+    _try_set(enc, "bitrate", bitrate_kbps)
+    if basic and enc_kind in ("amf", "qsv", "mf", "nvd3d11"):
+        return
+    if enc_kind in NVENC_KINDS:
+        _try_set(enc, "gop-size", fps)
+        _try_set(enc, "vbv-buffer-size", max(bitrate_kbps // 10, 1))
+        _try_set(enc, "zerolatency", True)
+        _try_set(enc, "rc-mode", "cbr")
+        _try_set(enc, "preset", "p4")
+        _try_set(enc, "tune", "ultra-low-latency")
+        _try_set(enc, "bframes", 0)
+        _try_set(enc, "cabac", False)
+    elif enc_kind == "amf":
+        # Na RX 580 (Polaris VCE 3.4), tocar em b-frames ou usage pode falhar com AMF_NOT_SUPPORTED.
+        _try_set(enc, "rate-control", "cbr")
+        _try_set(enc, "gop-size", fps)
+    elif enc_kind in ("qsv", "mf"):
+        _try_set(enc, "rate-control" if enc_kind != "mf" else "rc-mode", "cbr")
+        _try_set(enc, "gop-size", fps)
+        _try_set(enc, "b-frames" if enc_kind == "qsv" else "bframes", 0)
+        _try_set(enc, "low-latency", True)
+    elif enc_kind == "x264":
+        _try_set(enc, "tune", "zerolatency")
+        _try_set(enc, "speed-preset", "veryfast")
+        _try_set(enc, "key-int-max", fps)
+        _try_set(enc, "bframes", 0)
+        _try_set(enc, "byte-stream", True)
+        _try_set(enc, "vbv-buf-capacity", 1000)
+    else:
+        _try_set(enc, "rate-control", "cbr")
+        _try_set(enc, "key-int-max", fps)
+        _try_set(enc, "b-frames", 0)
+        _try_set(enc, "target-usage", 6)
 
-    Testa primeiro com D3D11Memory (usado pelo CapturePipeline para NVENC/AMF/QSV) e depois em
-    memória de sistema (usado pelo mfh264enc), validando também o profile baseline/main.
-    """
-    if factory in _OK_ENCODERS:
+
+def _encoder_works(factory: str, kind: str) -> bool:
+    """Codifica quadros reais testando D3D11Memory vs SystemMemory e propriedades completas vs básicas."""
+    if factory in _ENCODER_MODES:
         return True
-    pipelines = (
-        f"videotestsrc num-buffers=5 ! video/x-raw,format=BGRx,width=1280,height=720,framerate=30/1 ! "
-        f"d3d11upload ! d3d11convert ! video/x-raw(memory:D3D11Memory),format=NV12,width=1280,height=720,framerate=30/1 ! "
-        f"{factory} ! h264parse ! fakesink",
-        f"videotestsrc num-buffers=5 ! video/x-raw,format=NV12,width=1280,height=720,framerate=30/1 ! "
-        f"{factory} ! h264parse ! fakesink",
-    )
+    sink_pad = Gst.ElementFactory.make(factory, None).get_static_pad("sink")
+    tmpl = sink_pad.get_pad_template_caps().to_string() if sink_pad else ""
+    can_d3d11 = "memory:D3D11Memory" in tmpl
+    modes = [(True, False), (True, True), (False, False), (False, True)] if can_d3d11 else [(False, False), (False, True)]
     why = "sem resposta em 5 s"
-    for launch in pipelines:
+    for use_d3d11, basic in modes:
+        if use_d3d11:
+            launch = (
+                f"videotestsrc num-buffers=5 ! video/x-raw,format=BGRx,width=1280,height=720,framerate=30/1 ! "
+                f"d3d11upload ! d3d11convert ! video/x-raw(memory:D3D11Memory),format=NV12,width=1280,height=720,framerate=30/1 ! "
+                f"{factory} name=test-enc ! video/x-h264,stream-format=byte-stream,alignment=au ! h264parse ! fakesink"
+            )
+        else:
+            launch = (
+                f"videotestsrc num-buffers=5 ! video/x-raw,format=BGRx,width=1280,height=720,framerate=30/1 ! "
+                f"d3d11upload ! d3d11convert ! video/x-raw(memory:D3D11Memory),format=NV12,width=1280,height=720,framerate=30/1 ! "
+                f"d3d11download ! video/x-raw,format=NV12,width=1280,height=720,framerate=30/1 ! "
+                f"{factory} name=test-enc ! video/x-h264,stream-format=byte-stream,alignment=au ! h264parse ! fakesink"
+            )
         try:
             pipe = Gst.parse_launch(launch)
+            test_enc = pipe.get_by_name("test-enc")
+            if test_enc is not None:
+                _configure_encoder(test_enc, kind, 4000, 30, basic=basic)
         except GLib.Error as exc:
             why = exc.message
             continue
@@ -127,10 +176,12 @@ def _encoder_works(factory: str) -> bool:
         finally:
             pipe.set_state(Gst.State.NULL)
         if msg is not None and msg.type == Gst.MessageType.EOS:
-            _OK_ENCODERS.add(factory)
+            _ENCODER_MODES[factory] = (use_d3d11, basic)
+            print(f"encoder {factory} validado (d3d11={use_d3d11}, basic={basic})", flush=True)
             return True
         if msg is not None and msg.type == Gst.MessageType.ERROR:
-            why = msg.parse_error()[0].message
+            err, dbg = msg.parse_error()
+            why = f"{err.message} ({dbg.splitlines()[-1].strip() if dbg else ''})"
     print(f"encoder {factory} não funcionou neste PC ({why}); tentando o próximo", flush=True)
     log.warning("encoder %s descartado no teste: %s", factory, why)
     return False
@@ -153,7 +204,7 @@ def _make_encoder() -> tuple[Gst.Element, str]:
             continue
         if enc is None:
             continue
-        if WINDOWS and kind != "x264" and not forced and not _encoder_works(factory):
+        if WINDOWS and kind != "x264" and not forced and not _encoder_works(factory, kind):
             _BAD_ENCODERS.add(factory)
             continue
         print(f"codificando com {label}", flush=True)
@@ -438,53 +489,17 @@ class CapturePipeline:
                 front = [src, raw_tee, raw_queue, *post_chain, rate]
             caps.set_property("caps", Gst.Caps.from_string(front_caps))
 
-        if enc_kind in NVENC_KINDS:
-            _try_set(enc, "bitrate", bitrate_kbps)
-            # IDR a cada 1 s: quem entra ou perde pacote espera no máx. 1 s por imagem limpa.
-            _try_set(enc, "gop-size", fps)
-            # VBV de ~100 ms: com 1 quadro o NVENC estourava o alvo (snow 1080p60: 12,4 Mbps pra 8 pedidos);
-            # com 100 ms fica a ~2% do alvo e o IDR continua pequeno (medido com gst-launch).
-            _try_set(enc, "vbv-buffer-size", max(bitrate_kbps // 10, 1))
-            _try_set(enc, "zerolatency", True)
-            _try_set(enc, "rc-mode", "cbr")
-            _try_set(enc, "preset", "p4")
-            _try_set(enc, "tune", "ultra-low-latency")
-            _try_set(enc, "bframes", 0)
-            _try_set(enc, "cabac", False)
-        elif enc_kind == "amf":
-            _try_set(enc, "bitrate", bitrate_kbps)
-            _try_set(enc, "rate-control", "cbr")
-            _try_set(enc, "gop-size", fps)
-            _try_set(enc, "b-frames", 0)
-            _try_set(enc, "usage", "low-latency")  # Polaris (RX 580) suporta low-latency/transcoding, mas pode recusar ultra-low-latency
-        elif enc_kind in ("qsv", "mf"):
-            _try_set(enc, "bitrate", bitrate_kbps)
-            _try_set(enc, "rate-control" if enc_kind != "mf" else "rc-mode", "cbr")
-            _try_set(enc, "gop-size", fps)
-            _try_set(enc, "b-frames", 0)
-            _try_set(enc, "low-latency", True)
-        elif enc_kind == "x264":
-            _try_set(enc, "bitrate", bitrate_kbps)
-            _try_set(enc, "tune", "zerolatency")
-            _try_set(enc, "speed-preset", "veryfast")
-            _try_set(enc, "key-int-max", fps)
-            _try_set(enc, "bframes", 0)
-            _try_set(enc, "byte-stream", True)
-            _try_set(enc, "vbv-buf-capacity", 1000)  # ms; x264 não tem VBV por quadro como o NVENC
-        else:
-            _try_set(enc, "bitrate", bitrate_kbps)
-            _try_set(enc, "rate-control", "cbr")
-            _try_set(enc, "key-int-max", fps)
-            _try_set(enc, "b-frames", 0)
-            _try_set(enc, "target-usage", 6)
+        _use_d3d11_enc, _basic_enc = _ENCODER_MODES.get(self._enc_factory, (True, False))
+        _configure_encoder(enc, enc_kind, bitrate_kbps, fps, basic=_basic_enc)
         h264caps = Gst.ElementFactory.make("capsfilter", "h264caps")
-        # RX 580 (AMF Polaris) e MF não suportam constrained-baseline no hardware: colocar baseline/main primeiro
-        # impede que o gst_caps_fixate force constrained-baseline.
-        profile = "(string){ baseline, main, constrained-baseline, high }" if WINDOWS else "constrained-baseline"
-        h264caps.set_property(
-            "caps",
-            Gst.Caps.from_string(f"video/x-h264,profile={profile},stream-format=byte-stream,alignment=au"),
+        # No Windows deixa o encoder de hardware negociar o seu profile nativo (main/baseline/constrained-baseline)
+        # sem forçar um profile específico que o driver AMF/MF possa rejeitar no Init().
+        h264_str = (
+            "video/x-h264,stream-format=byte-stream,alignment=au"
+            if WINDOWS
+            else "video/x-h264,profile=constrained-baseline,stream-format=byte-stream,alignment=au"
         )
+        h264caps.set_property("caps", Gst.Caps.from_string(h264_str))
         parse = Gst.ElementFactory.make("h264parse", "parse")
         _try_set(parse, "config-interval", -1)
         parse.get_static_pad("src").add_probe(
@@ -589,7 +604,8 @@ class CapturePipeline:
 
         sink_pad = enc.get_static_pad("sink")
         tmpl = sink_pad.get_pad_template_caps().to_string() if sink_pad else ""
-        needs_download = self._d3d11 and (enc_kind == "x264" or "memory:D3D11Memory" not in tmpl)
+        use_d3d11_enc = _ENCODER_MODES.get(self._enc_factory, ("memory:D3D11Memory" in tmpl, False))[0]
+        needs_download = self._d3d11 and (enc_kind == "x264" or not use_d3d11_enc or "memory:D3D11Memory" not in tmpl)
         download = Gst.ElementFactory.make("d3d11download", "enc-download") if needs_download else None
         head = (encode_src, download, enc) if download is not None else (encode_src, enc)
         encode_chain = (*head, h264caps, parse, queue, pay, whip)
@@ -622,29 +638,36 @@ class CapturePipeline:
             _try_set(app_src, "client-name", "Project LUCE")
             audio_src = linux_audio.with_silence(app_src)  # app pausado não trava a transmissão
         elif WINDOWS:
-            audio_src = Gst.ElementFactory.make("wasapi2src", "audio-src")
-            if audio_src is None:
-                raise RuntimeError("falta o wasapi2src (gst-plugins-bad)")
-            # "app:<nome>" = só o áudio daquele app (e dos filhos dele, ex: navegador)
-            audio_device = audio_device or ""
-            app_pid = winsys.find_process_pid(audio_device[4:]) if audio_device.startswith("app:") else None
-            if audio_device.startswith("app:") and not app_pid:
-                print(f"aviso: {audio_device[4:]} não está aberto, transmitindo o áudio do sistema", flush=True)
-            if audio_device and not audio_device.startswith("app:"):  # microfone escolhido nas Configurações
-                _try_set(audio_src, "device", audio_device)
+            if _WIN_AUDIO_FALLBACK >= 2:
+                audio_src = Gst.ElementFactory.make("audiotestsrc", "audio-src")
+                audio_src.set_property("wave", 4)  # silence
+                audio_src.set_property("is-live", True)
             else:
-                # Áudio do sistema: se houver app a silenciar (ex: Discord), exclui a árvore de processos dele.
-                target_pid = winsys.find_process_pid(mute_app) if mute_app else None
-                if self._window:  # só o áudio do app da janela (e dos filhos dele)
-                    _set_loopback(audio_src, "include-process-tree", winsys.window_pid(self._window))
-                elif app_pid:
-                    _set_loopback(audio_src, "include-process-tree", app_pid)
-                elif target_pid:
-                    _set_loopback(audio_src, "exclude-process-tree", target_pid)
-                    print(f"silenciando {mute_app} (PID {target_pid}) na transmissão", flush=True)
+                wasapi = Gst.ElementFactory.make("wasapi2src", "audio-src")
+                if wasapi is None:
+                    raise RuntimeError("falta o wasapi2src (gst-plugins-bad)")
+                _try_set(wasapi, "provide-clock", False)
+                audio_device = audio_device or ""
+                app_pid = winsys.find_process_pid(audio_device[4:]) if audio_device.startswith("app:") else None
+                if audio_device.startswith("app:") and not app_pid:
+                    print(f"aviso: {audio_device[4:]} não está aberto, transmitindo o áudio do sistema", flush=True)
+                if audio_device and not audio_device.startswith("app:"):  # microfone escolhido nas Configurações
+                    _try_set(wasapi, "device", audio_device)
+                    _try_set(wasapi, "low-latency", True)
+                elif _WIN_AUDIO_FALLBACK == 1:
+                    _try_set(wasapi, "loopback", True)
                 else:
-                    _set_loopback(audio_src, "exclude-process-tree", os.getpid())
-            _try_set(audio_src, "low-latency", True)
+                    target_pid = winsys.find_process_pid(mute_app) if mute_app else None
+                    if self._window:
+                        _set_loopback(wasapi, "include-process-tree", winsys.window_pid(self._window))
+                    elif app_pid:
+                        _set_loopback(wasapi, "include-process-tree", app_pid)
+                    elif target_pid:
+                        _set_loopback(wasapi, "exclude-process-tree", target_pid)
+                        print(f"silenciando {mute_app} (PID {target_pid}) na transmissão", flush=True)
+                    else:
+                        _set_loopback(wasapi, "exclude-process-tree", os.getpid())
+                audio_src = wasapi
         elif mute_app and not audio_device:  # sem microfone escolhido: áudio do sistema menos o app silenciado
             self._system_audio = linux_audio.SystemAudioExcept(mute_app)
             audio_src = self._system_audio.build()
@@ -1042,15 +1065,24 @@ class CapturePipeline:
         return True
 
     def _on_error(self, _bus, message) -> None:
+        global _WIN_AUDIO_FALLBACK
         err, debug = message.parse_error()
-        print(f"pipeline parou: {err.message}", flush=True)
-        log.error("pipeline: %s (%s)", err.message, debug)
-        # Erro antes do 1º quadro codificado e fora do envio: o culpado é o encoder (ou a negociação
-        # de caps com ele). Marca pra o restart usar o próximo, em vez de repetir o mesmo erro 3 vezes.
-        if not self.encoded_frames and not message.src.get_name().startswith("whip"):
-            self._demote_encoder(err.message)
+        src_name = message.src.get_name() if message.src else "pipeline"
+        dbg_tail = ""
+        if debug:
+            lines = [l.strip() for l in debug.splitlines() if l.strip()]
+            if lines:
+                dbg_tail = lines[-1]
+        detail = f"{err.message} [{src_name}: {dbg_tail}]" if dbg_tail else f"{err.message} [{src_name}]"
+        print(f"pipeline parou: {detail}", flush=True)
+        log.error("pipeline [%s]: %s (%s)", src_name, err.message, debug)
+        if WINDOWS and src_name.startswith("audio"):
+            _WIN_AUDIO_FALLBACK = min(_WIN_AUDIO_FALLBACK + 1, 2)
+            print(f"áudio no Windows falhou ({detail}); recuando nível de áudio para {_WIN_AUDIO_FALLBACK}", flush=True)
+        elif not self.encoded_frames and not src_name.startswith(("whip", "src", "d3d11screencapturesrc")):
+            self._demote_encoder(detail)
         if self._on_pipeline_error is not None:
-            self._on_pipeline_error(err.message)
+            self._on_pipeline_error(detail)
 
     def _demote_encoder(self, reason: str) -> None:
         if self.encoder_kind != "x264" and self._enc_factory not in _BAD_ENCODERS:
