@@ -79,13 +79,22 @@ jobs:
           files: dist/Luce-Android.apk
           fail_on_unmatched_files: true
 
-      # Branch push: Anexa na Prerelease de teste
-      - name: Anexa na Prerelease de teste
+      # Branch push: Anexa na Prerelease de teste do Android
+      - name: Move a tag android-test
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          git tag -f android-test ${{ github.sha }}
+          git push -f origin android-test
+      - name: Atualiza a Prerelease android-test
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: windows-test
-          name: Versão de teste (Windows + Android)
+          tag_name: android-test
+          name: Android (teste)
+          body: |
+            Build de teste do app para Android, gerado a cada push em `main` ou `windows-probe`.
+            Baixe o arquivo `Luce-Android.apk` para instalar diretamente no celular.
+            Commit: ${{ github.sha }}
           prerelease: true
           make_latest: "false"
           files: dist/Luce-Android.apk
