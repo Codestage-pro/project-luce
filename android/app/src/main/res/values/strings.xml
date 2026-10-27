@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Project LUCE</string>
+    <string name="channel_streaming">Transmissão de Tela</string>
+    <string name="channel_streaming_desc">Notificação persistente durante a transmissão de tela do Project LUCE</string>
+    <string name="notification_streaming_title">Project LUCE</string>
+    <string name="notification_streaming_text">Transmitindo sua tela para o grupo</string>
+    <string name="action_stop">Parar</string>
+</resources>

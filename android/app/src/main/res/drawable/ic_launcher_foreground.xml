@@ -1,0 +1,38 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Fundo de contraste escuro -->
+    <path
+        android:fillColor="#0A0C1F"
+        android:pathData="M0,0h108v108h-108z" />
+    <!-- Moldura de Monitor / Tela -->
+    <path
+        android:pathData="M24,28 h60 a4,4 0 0,1 4,4 v38 a4,4 0 0,1 -4,4 h-60 a4,4 0 0,1 -4,-4 v-38 a4,4 0 0,1 4,-4 z"
+        android:strokeColor="#00E5FF"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <!-- Feixe de luz (LUCE) atravessando a tela em Magenta/Violeta -->
+    <path
+        android:pathData="M34,64 L54,36 L74,64 Z"
+        android:fillColor="#7C4DFF"
+        android:fillAlpha="0.35" />
+    <path
+        android:pathData="M54,34 L40,64 L68,64 Z"
+        android:strokeColor="#FF2D95"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <!-- Ponto central de transmissão (LED ao vivo) -->
+    <path
+        android:pathData="M54,52 m-3,0 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0"
+        android:fillColor="#00E5FF" />
+    <!-- Base do suporte do monitor -->
+    <path
+        android:pathData="M48,74 L60,74 M44,80 L64,80 M54,74 L54,80"
+        android:strokeColor="#8D93C7"
+        android:strokeWidth="3"
+        android:strokeLineCap="round" />
+</vector>

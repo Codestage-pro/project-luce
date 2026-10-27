@@ -4,8 +4,8 @@ auto.crt
 auto.key
 
 # artefatos do makepkg (PKGBUILD)
-pkg/
-src/
+/pkg/
+/src/
 *.pkg.tar.zst
 
 # saída local do Graphify CLI (cache/hashes, reconstrói com `graphify update .`)
