@@ -101,17 +101,19 @@ class LuceVideoEncoderFactory(
 
         val sharedContext: EglBase14.Context? = if (eglContext is EglBase14.Context) eglContext else null
 
-        return HardwareVideoEncoder(
+        val hwEncoder = HardwareVideoEncoder(
             MediaCodecWrapperFactoryImpl(),
             codecName,
             VideoCodecMimeType.H264,
             surfaceColorFormat,
             yuvColorFormat,
-            inputCodecInfo.params,
+            emptyMap(), // evita CodecException em MediaCodec.configure() por perfil forçado
             2,      // keyFrameIntervalSec = 2s
             2000,   // forceKeyFrameIntervalMs = 2000ms
             bitrateAdjuster,
             sharedContext
         )
+        val swEncoder = SoftwareVideoEncoderFactory().createEncoder(inputCodecInfo)
+        return if (swEncoder != null) VideoEncoderFallback(swEncoder, hwEncoder) else hwEncoder
     }
 }

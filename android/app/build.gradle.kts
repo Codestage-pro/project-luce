@@ -26,6 +26,9 @@ android {
 
     signingConfigs {
         create("release") {
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
             val ksFile = file("release.keystore")
             if (ksFile.exists()) {
                 storeFile = ksFile

@@ -55,8 +55,11 @@ class LuceScreenCapturer(
     private var capturerObserver: CapturerObserver? = null
     private var virtualDisplay: VirtualDisplay? = null
 
+    @Volatile private var lastI420Buffer: VideoFrame.I420Buffer? = null
+    @Volatile private var lastRotation: Int = 0
     @Volatile private var lastFrameTimeNs: Long = 0L
     @Volatile private var lastPtsNs: Long = 0L
+    private val frameLock = Any()
 
     private val keepaliveScope = CoroutineScope(Dispatchers.Default + Job())
     private var keepaliveJob: Job? = null
@@ -96,46 +99,56 @@ class LuceScreenCapturer(
 
         observer.onCapturerStarted(true)
 
-        // IMPORTANTE: NUNCA chame frame.retain() sem liberar imediatamente na mesma chamada!
-        // O SurfaceTextureHelper bloqueia novos frames enquanto isTextureInUse == true.
         helper.startListening { frame ->
             val nowNs = System.nanoTime()
             val safePtsNs = if (nowNs <= lastPtsNs) lastPtsNs + 1_000_000L else nowNs
             lastPtsNs = safePtsNs
             lastFrameTimeNs = nowNs
 
+            // OBRIGATÓRIO: retain() antes de envolver em outro VideoFrame, pois outFrame.release()
+            // vai decrementar o refCount do buffer E o SurfaceTextureHelper também vai decrementar!
+            frame.buffer.retain()
             val outFrame = VideoFrame(frame.buffer, frame.rotation, safePtsNs)
             observer.onFrameCaptured(outFrame)
             outFrame.release()
+
+            // Atualiza cópia I420 independente (a cada ~250ms) para o keepalive não prender a textura GL
+            if (lastI420Buffer == null || nowNs - lastFrameTimeNs == 0L) {
+                val i420 = runCatching { frame.buffer.toI420() }.getOrNull()
+                if (i420 != null) {
+                    synchronized(frameLock) {
+                        val old = lastI420Buffer
+                        lastI420Buffer = i420
+                        lastRotation = frame.rotation
+                        old?.release()
+                    }
+                }
+            }
         }
 
-        // Quando a tela está 100% estática por >150ms, pede ao SurfaceTextureHelper na thread GL
-        // para re-entregar a textura atual sem reter buffers manualmente.
-        val hasPendingField = runCatching {
-            SurfaceTextureHelper::class.java.getDeclaredField("hasPendingTexture").apply { isAccessible = true }
-        }.getOrNull()
-        val isInUseField = runCatching {
-            SurfaceTextureHelper::class.java.getDeclaredField("isTextureInUse").apply { isAccessible = true }
-        }.getOrNull()
-        val tryDeliverMethod = runCatching {
-            SurfaceTextureHelper::class.java.getDeclaredMethod("tryDeliverTextureFrame").apply { isAccessible = true }
-        }.getOrNull()
-
+        // Keepalive limpo (sem reflexão): se a tela do celular ficar parada por >100ms,
+        // reenvia o último buffer I420 com timestamp novo para o encoder H.264 nunca parar.
         keepaliveJob?.cancel()
         keepaliveJob = keepaliveScope.launch {
             while (isActive) {
-                delay(150)
-                if (lastFrameTimeNs > 0L && System.nanoTime() - lastFrameTimeNs >= 150_000_000L) {
-                    helper.handler.post {
+                delay(100)
+                if (System.nanoTime() - lastFrameTimeNs >= 100_000_000L) {
+                    val buf: VideoFrame.I420Buffer?
+                    val rot: Int
+                    synchronized(frameLock) {
+                        buf = lastI420Buffer
+                        buf?.retain()
+                        rot = lastRotation
+                    }
+                    if (buf != null) {
+                        val nowNs = System.nanoTime()
+                        val safePtsNs = if (nowNs <= lastPtsNs) lastPtsNs + 1_000_000L else nowNs
+                        lastPtsNs = safePtsNs
+                        val repeatFrame = VideoFrame(buf, rot, safePtsNs)
                         try {
-                            if (hasPendingField != null && isInUseField != null && tryDeliverMethod != null) {
-                                val inUse = isInUseField.getBoolean(helper)
-                                if (!inUse) {
-                                    hasPendingField.setBoolean(helper, true)
-                                    tryDeliverMethod.invoke(helper)
-                                }
-                            }
+                            observer.onFrameCaptured(repeatFrame)
                         } catch (_: Exception) {}
+                        repeatFrame.release()
                     }
                 }
             }
@@ -145,13 +158,23 @@ class LuceScreenCapturer(
     override fun stopCapture() {
         keepaliveJob?.cancel()
         keepaliveJob = null
-        surfaceTextureHelper?.stopListening()
+        val helper = surfaceTextureHelper
+        if (helper != null) {
+            val done = java.util.concurrent.CountDownLatch(1)
+            helper.handler.post {
+                try { helper.stopListening() } catch (_: Exception) {}
+                done.countDown()
+            }
+            runCatching { done.await(1000, java.util.concurrent.TimeUnit.MILLISECONDS) }
+        }
         try { capturerObserver?.onCapturerStopped() } catch (_: Exception) {}
-        virtualDisplay?.release()
+        try { virtualDisplay?.release() } catch (_: Exception) {}
         virtualDisplay = null
-        try {
-            mediaProjection.unregisterCallback(projectionCallback)
-        } catch (_: Exception) {}
+        try { mediaProjection.unregisterCallback(projectionCallback) } catch (_: Exception) {}
+        synchronized(frameLock) {
+            lastI420Buffer?.release()
+            lastI420Buffer = null
+        }
     }
 
     override fun changeCaptureFormat(width: Int, height: Int, framerate: Int) {
@@ -255,13 +278,10 @@ object WebRtcEngine {
                 .build()
 
             if (sysRecord.state == AudioRecord.STATE_INITIALIZED) {
+                try { oldRecord.stop() } catch (_: Exception) {}
+                try { oldRecord.release() } catch (_: Exception) {}
                 sysRecord.startRecording()
                 audioRecordField.set(audioInput, sysRecord)
-                CoroutineScope(Dispatchers.IO).launch {
-                    delay(80)
-                    try { oldRecord.stop() } catch (_: Exception) {}
-                    try { oldRecord.release() } catch (_: Exception) {}
-                }
             } else {
                 sysRecord.release()
             }
@@ -539,6 +559,8 @@ class PublishSession(
     private var audioSource: AudioSource? = null
     private var audioTrack: AudioTrack? = null
 
+    private val isStopped = java.util.concurrent.atomic.AtomicBoolean(false)
+
     val isLive = MutableStateFlow(false)
     val statusText = MutableStateFlow("iniciando transmissão…")
     val statsText = MutableStateFlow("")
@@ -766,6 +788,7 @@ class PublishSession(
     }
 
     fun stop() {
+        if (!isStopped.compareAndSet(false, true)) return
         scope.launch(Dispatchers.IO) {
             isLive.value = false
             statusText.value = "transmissão encerrada"
@@ -773,25 +796,25 @@ class PublishSession(
                 try { LuceApi.sendWhipDelete(baseUrl, loc, authToken) } catch (_: Exception) {}
             }
             try { videoCapturer?.stopCapture() } catch (_: Exception) {}
-            videoCapturer?.dispose()
-            videoCapturer = null
-            surfaceTextureHelper?.dispose()
-            surfaceTextureHelper = null
-            try {
-                WebRtcEngine.activeMediaProjection?.stop()
-            } catch (_: Exception) {}
-            WebRtcEngine.activeMediaProjection = null
+
             withContext(Dispatchers.Main) {
-                videoTrack?.dispose()
-                videoTrack = null
-                audioTrack?.dispose()
-                audioTrack = null
-                videoSource?.dispose()
-                videoSource = null
-                audioSource?.dispose()
-                audioSource = null
-                peerConnection?.dispose()
+                try { peerConnection?.dispose() } catch (_: Exception) {}
                 peerConnection = null
+
+                try { videoTrack?.dispose() } catch (_: Exception) {}
+                videoTrack = null
+                try { audioTrack?.dispose() } catch (_: Exception) {}
+                audioTrack = null
+                try { videoSource?.dispose() } catch (_: Exception) {}
+                videoSource = null
+                try { audioSource?.dispose() } catch (_: Exception) {}
+                audioSource = null
+                try { videoCapturer?.dispose() } catch (_: Exception) {}
+                videoCapturer = null
+                try { surfaceTextureHelper?.dispose() } catch (_: Exception) {}
+                surfaceTextureHelper = null
+                try { WebRtcEngine.activeMediaProjection?.stop() } catch (_: Exception) {}
+                WebRtcEngine.activeMediaProjection = null
             }
         }
     }

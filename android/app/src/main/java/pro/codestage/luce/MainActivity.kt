@@ -48,6 +48,7 @@ class MainActivity : ComponentActivity() {
     private var updateInfo by mutableStateOf<UpdateInfo?>(null)
     private var isDownloadingUpdate by mutableStateOf(false)
     private var updateDownloadProgress by mutableStateOf(-1f)
+    private var pendingStartStreamAfterPermission = false
 
     private val screenCaptureLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -62,7 +63,17 @@ class MainActivity : ComponentActivity() {
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        // Segue com o fluxo normalmente mesmo se alguma opcional for negada
+        if (pendingStartStreamAfterPermission) {
+            pendingStartStreamAfterPermission = false
+            if (permissions[Manifest.permission.RECORD_AUDIO] == true ||
+                ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+            ) {
+                val captureIntent = mediaProjectionManager.createScreenCaptureIntent()
+                screenCaptureLauncher.launch(captureIntent)
+            } else {
+                Toast.makeText(this, "Permissão de áudio necessária para transmitir", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -117,17 +128,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestInitialPermissions() {
-        val perms = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                perms.add(Manifest.permission.POST_NOTIFICATIONS)
+                permissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
             }
-        }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            perms.add(Manifest.permission.RECORD_AUDIO)
-        }
-        if (perms.isNotEmpty()) {
-            permissionLauncher.launch(perms.toTypedArray())
         }
     }
 
@@ -137,13 +141,14 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Digite um nome válido antes de transmitir", Toast.LENGTH_SHORT).show()
             return
         }
+        LuceConfig.saveUserName(this, clean)
+        userName = clean
+
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            Toast.makeText(this, "Permissão de áudio necessária para transmitir", Toast.LENGTH_LONG).show()
+            pendingStartStreamAfterPermission = true
             permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
             return
         }
-        LuceConfig.saveUserName(this, clean)
-        userName = clean
 
         val captureIntent = mediaProjectionManager.createScreenCaptureIntent()
         screenCaptureLauncher.launch(captureIntent)
