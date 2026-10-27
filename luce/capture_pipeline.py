@@ -44,6 +44,11 @@ def _try_set(element: Gst.Element, name: str, value) -> None:
         return
     try:
         element.set_property(name, value)
+    except TypeError:
+        try:
+            Gst.util_set_object_arg(element, name, str(value))
+        except Exception as exc:
+            log.debug("%s=%r ignorado: %s", name, value, exc)
     except Exception as exc:
         log.debug("%s=%r ignorado: %s", name, value, exc)
 
@@ -96,55 +101,56 @@ _OK_ENCODERS: set[str] = set()  # já passaram no _encoder_works nesta sessão
 def _encoder_works(factory: str) -> bool:
     """Codifica uns quadros de teste de verdade: o elemento existir não prova que o driver da GPU o abre.
 
-    É o que vale pra AMF/QSV/MF (Windows), onde a fábrica registra mas a inicialização do runtime da
-    GPU pode falhar só ao ligar o encoder. Só Windows: no Linux o NVENC já foi validado e uma sessão
-    CUDA extra de teste atrapalha o contexto GL compartilhado.
+    Testa primeiro com D3D11Memory (usado pelo CapturePipeline para NVENC/AMF/QSV) e depois em
+    memória de sistema (usado pelo mfh264enc), validando também o profile baseline/main.
     """
     if factory in _OK_ENCODERS:
         return True
-    try:
-        pipe = Gst.parse_launch(
-            f"videotestsrc num-buffers=20 ! video/x-raw,format=NV12,width=1280,height=720,framerate=30/1 ! "
-            f"{factory} ! fakesink"
-        )
-    except GLib.Error as exc:
-        log.warning("encoder %s: %s", factory, exc.message)
-        return False
-    msg = None
-    try:
-        if pipe.set_state(Gst.State.PLAYING) != Gst.StateChangeReturn.FAILURE:
-            msg = pipe.get_bus().timed_pop_filtered(5 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
-    finally:
-        pipe.set_state(Gst.State.NULL)
-    if msg is not None and msg.type == Gst.MessageType.EOS:
-        _OK_ENCODERS.add(factory)
-        return True
-    why = msg.parse_error()[0].message if msg is not None and msg.type == Gst.MessageType.ERROR else "sem resposta em 5 s"
+    pipelines = (
+        f"videotestsrc num-buffers=5 ! video/x-raw,format=BGRx,width=1280,height=720,framerate=30/1 ! "
+        f"d3d11upload ! d3d11convert ! video/x-raw(memory:D3D11Memory),format=NV12,width=1280,height=720,framerate=30/1 ! "
+        f"{factory} ! h264parse ! fakesink",
+        f"videotestsrc num-buffers=5 ! video/x-raw,format=NV12,width=1280,height=720,framerate=30/1 ! "
+        f"{factory} ! h264parse ! fakesink",
+    )
+    why = "sem resposta em 5 s"
+    for launch in pipelines:
+        try:
+            pipe = Gst.parse_launch(launch)
+        except GLib.Error as exc:
+            why = exc.message
+            continue
+        msg = None
+        try:
+            if pipe.set_state(Gst.State.PLAYING) != Gst.StateChangeReturn.FAILURE:
+                msg = pipe.get_bus().timed_pop_filtered(5 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+        finally:
+            pipe.set_state(Gst.State.NULL)
+        if msg is not None and msg.type == Gst.MessageType.EOS:
+            _OK_ENCODERS.add(factory)
+            return True
+        if msg is not None and msg.type == Gst.MessageType.ERROR:
+            why = msg.parse_error()[0].message
     print(f"encoder {factory} não funcionou neste PC ({why}); tentando o próximo", flush=True)
     log.warning("encoder %s descartado no teste: %s", factory, why)
     return False
 
 
 def _make_encoder() -> tuple[Gst.Element, str]:
-    """GPU primeiro (NVENC, depois VA-API de AMD/Intel), CPU só se não houver GPU que codifique.
-
-    vah264lpenc é o encoder "low power" do VA: em Intel recente (e algumas AMD) é o
-    único que existe, vah264enc nem aparece. x264enc gasta CPU, mas é o que garante
-    que o app transmite em qualquer máquina.
-
-    shortcut: os ramos VA-API nunca rodaram num encoder VA de verdade (esta máquina só
-    tem NVIDIA, e o gst-va recusa o driver VA da NVIDIA); só a construção do pipeline
-    foi validada. Se os nomes de propriedade abaixo estiverem errados, _try_set
-    ignora e cai nos defaults do driver. No Windows cada encoder de GPU passa antes por
-    _encoder_works, então AMF/QSV/MF que não abrem neste PC caem no próximo.
-    """
+    """GPU primeiro (NVENC, depois AMF/QSV/MF/VA-API), CPU só se não houver GPU que codifique."""
     table = WINDOWS_ENCODERS if WINDOWS else LINUX_ENCODERS
     forced = os.environ.get("LUCE_ENCODER")  # ex.: LUCE_ENCODER=x264enc se o encoder da GPU travar
     print("encoders presentes: " + (", ".join(r[0] for r in table if Gst.ElementFactory.find(r[0])) or "nenhum"), flush=True)
     for factory, kind, label in [row for row in table if row[0] == forced] or table:
         if factory in _BAD_ENCODERS and kind != "x264":
             continue
-        enc = Gst.ElementFactory.make(factory, "enc")
+        # No Windows o override do gst-python lança exceção em ElementFactory.make se o elemento não existir!
+        if Gst.ElementFactory.find(factory) is None:
+            continue
+        try:
+            enc = Gst.ElementFactory.make(factory, "enc")
+        except Exception:
+            continue
         if enc is None:
             continue
         if WINDOWS and kind != "x264" and not forced and not _encoder_works(factory):
@@ -445,15 +451,18 @@ class CapturePipeline:
             _try_set(enc, "tune", "ultra-low-latency")
             _try_set(enc, "bframes", 0)
             _try_set(enc, "cabac", False)
-        elif enc_kind in ("amf", "qsv", "mf"):
-            # shortcut: nomes de propriedade conferidos só no gst-inspect, nunca rodaram numa GPU
-            # de verdade; _try_set ignora o que não existir e o encoder cai no default.
+        elif enc_kind == "amf":
+            _try_set(enc, "bitrate", bitrate_kbps)
+            _try_set(enc, "rate-control", "cbr")
+            _try_set(enc, "gop-size", fps)
+            _try_set(enc, "b-frames", 0)
+            _try_set(enc, "usage", "low-latency")  # Polaris (RX 580) suporta low-latency/transcoding, mas pode recusar ultra-low-latency
+        elif enc_kind in ("qsv", "mf"):
             _try_set(enc, "bitrate", bitrate_kbps)
             _try_set(enc, "rate-control" if enc_kind != "mf" else "rc-mode", "cbr")
             _try_set(enc, "gop-size", fps)
-            _try_set(enc, "b-frames" if enc_kind == "qsv" else "bframes", 0)
+            _try_set(enc, "b-frames", 0)
             _try_set(enc, "low-latency", True)
-            _try_set(enc, "usage", "ultra-low-latency")  # amf
         elif enc_kind == "x264":
             _try_set(enc, "bitrate", bitrate_kbps)
             _try_set(enc, "tune", "zerolatency")
@@ -469,8 +478,9 @@ class CapturePipeline:
             _try_set(enc, "b-frames", 0)
             _try_set(enc, "target-usage", 6)
         h264caps = Gst.ElementFactory.make("capsfilter", "h264caps")
-        # Encoder de GPU no Windows (AMF/QSV/MF) nem sempre emite constrained-baseline: not-negotiated.
-        profile = "(string){ constrained-baseline, baseline, main, high }" if WINDOWS else "constrained-baseline"
+        # RX 580 (AMF Polaris) e MF não suportam constrained-baseline no hardware: colocar baseline/main primeiro
+        # impede que o gst_caps_fixate force constrained-baseline.
+        profile = "(string){ baseline, main, constrained-baseline, high }" if WINDOWS else "constrained-baseline"
         h264caps.set_property(
             "caps",
             Gst.Caps.from_string(f"video/x-h264,profile={profile},stream-format=byte-stream,alignment=au"),
@@ -577,7 +587,10 @@ class CapturePipeline:
                     raise RuntimeError(f"não liguei {left.get_name()} em {right.get_name()}")
             encode_src = enc_queue
 
-        download = Gst.ElementFactory.make("d3d11download", "enc-download") if self._d3d11 and enc_kind == "x264" else None
+        sink_pad = enc.get_static_pad("sink")
+        tmpl = sink_pad.get_pad_template_caps().to_string() if sink_pad else ""
+        needs_download = self._d3d11 and (enc_kind == "x264" or "memory:D3D11Memory" not in tmpl)
+        download = Gst.ElementFactory.make("d3d11download", "enc-download") if needs_download else None
         head = (encode_src, download, enc) if download is not None else (encode_src, enc)
         encode_chain = (*head, h264caps, parse, queue, pay, whip)
         for element in (*head[1:], h264caps, parse, queue, pay, whip):

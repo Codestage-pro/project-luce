@@ -60,7 +60,12 @@ def _make_decoder() -> Gst.Element | None:
     """
     # No Windows o d3d11h264dec (DXVA) serve qualquer GPU; só existe se o driver estiver lá.
     for factory, label in WINDOWS_DECODERS if sys.platform == "win32" else LINUX_DECODERS:
-        dec = Gst.ElementFactory.make(factory, "dec")
+        if Gst.ElementFactory.find(factory) is None:
+            continue
+        try:
+            dec = Gst.ElementFactory.make(factory, "dec")
+        except Exception:
+            continue
         if dec is not None:
             print(f"decodificando com {label}", flush=True)
             return dec

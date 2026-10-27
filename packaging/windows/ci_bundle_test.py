@@ -50,9 +50,9 @@ from gi.repository import GdkPixbuf  # noqa: E402
 GdkPixbuf.Pixbuf.new_from_file(str(root / "ucrt64/share/icons/hicolor/256x256/apps/pro.codestage.Luce.png"))  # loaders podados
 print("plugins:", len(Gst.Registry.get().get_plugin_list()))
 
-os.environ["LUCE_ENCODER"] = "x264enc"
 from luce.capture_pipeline import CapturePipeline  # noqa: E402
 
+# Testa a fila automática sem LUCE_ENCODER (garante que a ausência de nvd3d11h264enc não lança No such element)
 p = CapturePipeline("http://127.0.0.1:1/x/whip", width=1280, height=720, fps=30, preview=False)
 print("CapturePipeline monta com", p.encoder_kind)
 p.stop()
