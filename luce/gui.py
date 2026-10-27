@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import gc
 import os
+import re
 import sys
 import threading
 import time
 import traceback
+import unicodedata
 import urllib.error
 from pathlib import Path
 
@@ -91,6 +93,13 @@ def _list_mutable_apps() -> list[tuple[str, str]]:
 
 def _choice_value(pairs: list[tuple[Gtk.ToggleButton, object]], fallback):
     return next((option for btn, option in pairs if btn.get_active()), fallback)
+
+def _clean_name(raw: str) -> str:
+    """Normaliza o nome para [A-Za-z0-9._-] (exigido por server/sfu_proxy.py)."""
+    ascii_str = unicodedata.normalize("NFKD", raw.strip()).encode("ascii", "ignore").decode("ascii")
+    clean = re.sub(r"\s+", "_", ascii_str)
+    clean = re.sub(r"[^A-Za-z0-9._-]", "", clean).strip("._-")
+    return clean[:64]
 
 
 _ENCODER_LABELS = {
@@ -316,17 +325,32 @@ class MainWindow(Gtk.ApplicationWindow):
 
     # --- transmitir ---
 
+    def _sync_user_name(self, fallback_os: bool = False) -> str:
+        """Lê o nome da caixa de texto, normaliza para o servidor e salva no config.toml."""
+        raw = self._name_entry.get_text().strip()
+        if not raw and fallback_os:
+            raw = os.environ.get("USERNAME") or os.environ.get("USER") or "espectador"
+        clean = _clean_name(raw)
+        if not clean and fallback_os:
+            clean = "espectador"
+        if clean and clean != raw:
+            self._name_entry.set_text(clean)
+        if clean:
+            cfg = config.load()
+            if cfg.get("name") != clean:
+                cfg["name"] = clean
+                config.save(cfg)
+        return clean
+
     def _on_share_clicked(self, _button: Gtk.Button) -> None:
         if self._capture is not None:
             self._stop_sharing()
             return
-        name = self._name_entry.get_text().strip()
+        name = self._sync_user_name(fallback_os=False)
         if not name:
-            self._status.set_label("digite um nome antes de transmitir")
+            self._status.set_label("digite um nome válido antes de transmitir")
             return
         cfg = config.load()
-        cfg["name"] = name
-        config.save(cfg)
         # Senha errada/vazia só aparecia como "erro geral nos recursos" do whipsink;
         # o roster responde 401 na hora e dá pra dizer o motivo de verdade.
         try:
@@ -929,13 +953,15 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _tell_watching(self, name: str, on: bool) -> None:
         """Avisa o servidor (fora da thread da GUI) que estou assistindo `name`."""
+        viewer = self._sync_user_name(fallback_os=True)
         cfg = config.load()
+        token = config.auth_token()
 
         def run():
             try:
-                roster.watching(cfg["base_url"], name, cfg["name"], config.auth_token(), on)
-            except Exception:  # servidor sem a rota ou rede caída: só some da lista de espectadores
-                pass
+                roster.watching(cfg["base_url"], name, viewer, token, on)
+            except Exception as exc:
+                print(f"[roster] aviso ao registrar espectador ({viewer} -> {name}): {exc}", file=sys.stderr)
         threading.Thread(target=run, daemon=True).start()
 
     def _on_watch_error(self, name: str, message: str) -> None:

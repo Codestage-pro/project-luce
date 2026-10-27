@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import urllib.parse
 import urllib.request
 
 
@@ -47,5 +48,7 @@ def watching(base_url: str, stream: str, viewer: str, token: str | None, on: boo
     Servidor antigo (sem a rota) responde 404: quem chama ignora, assistir
     segue funcionando, só não aparece na lista de espectadores.
     """
-    url = f"{base_url}/{stream}/watch?viewer={viewer}"
+    s_safe = urllib.parse.quote(stream, safe="._-")
+    v_safe = urllib.parse.quote(viewer, safe="._-")
+    url = f"{base_url}/{s_safe}/watch?viewer={v_safe}"
     urllib.request.urlopen(_request(url, token, "PATCH" if on else "DELETE"), timeout=timeout).close()
