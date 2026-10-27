@@ -40,20 +40,36 @@ jobs:
           gradle-version: '8.10.2'
           cache-disabled: false
 
-      - name: Gerar Keystore de Assinatura
+      - name: Definir versão do build
         run: |
-          keytool -genkeypair -v \
-            -keystore android/app/release.keystore \
-            -alias luce \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -storepass projectluce \
-            -keypass projectluce \
-            -dname "CN=Project LUCE, OU=Codestage, O=Codestage, L=Curitiba, S=PR, C=BR"
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VER="${GITHUB_REF_NAME#v}"
+          else
+            VER="1.0.28-probe.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "LUCE_VERSION=$VER" >> $GITHUB_ENV
+          echo "Versão definida: $VER"
+
+      - name: Garantir Keystore de Assinatura
+        run: |
+          if [ ! -f android/app/release.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore android/app/release.keystore \
+              -alias luce \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass projectluce \
+              -keypass projectluce \
+              -dname "CN=Project LUCE, OU=Codestage, O=Codestage, L=Curitiba, S=PR, C=BR"
+          else
+            echo "release.keystore já existe no repositório."
+          fi
 
       - name: Compilar APK de Release
         working-directory: android
+        env:
+          LUCE_VERSION: ${{ env.LUCE_VERSION }}
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease --stacktrace
@@ -94,6 +110,7 @@ jobs:
           body: |
             Build de teste do app para Android, gerado a cada push em `main` ou `windows-probe`.
             Baixe o arquivo `Luce-Android.apk` para instalar diretamente no celular.
+            Versão: ${{ env.LUCE_VERSION }}
             Commit: ${{ github.sha }}
           prerelease: true
           make_latest: "false"

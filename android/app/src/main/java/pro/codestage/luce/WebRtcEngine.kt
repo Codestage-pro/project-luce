@@ -55,8 +55,8 @@ class LuceScreenCapturer(
     private var capturerObserver: CapturerObserver? = null
     private var virtualDisplay: VirtualDisplay? = null
 
-    @Volatile private var lastFrame: VideoFrame? = null
     @Volatile private var lastFrameTimeNs: Long = 0L
+    @Volatile private var lastPtsNs: Long = 0L
 
     private val keepaliveScope = CoroutineScope(Dispatchers.Default + Job())
     private var keepaliveJob: Job? = null
@@ -80,9 +80,7 @@ class LuceScreenCapturer(
         val helper = surfaceTextureHelper ?: return
         val observer = capturerObserver ?: return
 
-        // Registre mediaProjection.registerCallback ANTES de criar o VirtualDisplay (obrigatório no Android 14 / SDK 35!)
         mediaProjection.registerCallback(projectionCallback, helper.handler)
-
         helper.setTextureSize(width, height)
 
         virtualDisplay = mediaProjection.createVirtualDisplay(
@@ -96,24 +94,48 @@ class LuceScreenCapturer(
             helper.handler
         )
 
+        observer.onCapturerStarted(true)
+
+        // IMPORTANTE: NUNCA chame frame.retain() sem liberar imediatamente na mesma chamada!
+        // O SurfaceTextureHelper bloqueia novos frames enquanto isTextureInUse == true.
         helper.startListening { frame ->
-            val prev = lastFrame
-            frame.retain()
-            lastFrame = frame
-            lastFrameTimeNs = System.nanoTime()
-            prev?.release()
-            observer.onFrameCaptured(frame)
+            val nowNs = System.nanoTime()
+            val safePtsNs = if (nowNs <= lastPtsNs) lastPtsNs + 1_000_000L else nowNs
+            lastPtsNs = safePtsNs
+            lastFrameTimeNs = nowNs
+
+            val outFrame = VideoFrame(frame.buffer, frame.rotation, safePtsNs)
+            observer.onFrameCaptured(outFrame)
+            outFrame.release()
         }
+
+        // Quando a tela está 100% estática por >150ms, pede ao SurfaceTextureHelper na thread GL
+        // para re-entregar a textura atual sem reter buffers manualmente.
+        val hasPendingField = runCatching {
+            SurfaceTextureHelper::class.java.getDeclaredField("hasPendingTexture").apply { isAccessible = true }
+        }.getOrNull()
+        val isInUseField = runCatching {
+            SurfaceTextureHelper::class.java.getDeclaredField("isTextureInUse").apply { isAccessible = true }
+        }.getOrNull()
+        val tryDeliverMethod = runCatching {
+            SurfaceTextureHelper::class.java.getDeclaredMethod("tryDeliverTextureFrame").apply { isAccessible = true }
+        }.getOrNull()
 
         keepaliveJob?.cancel()
         keepaliveJob = keepaliveScope.launch {
             while (isActive) {
-                delay(80)
-                val current = lastFrame ?: continue
-                if (System.nanoTime() - lastFrameTimeNs >= 80_000_000L) {
-                    val repeated = VideoFrame(current.buffer, current.rotation, System.nanoTime())
+                delay(150)
+                if (lastFrameTimeNs > 0L && System.nanoTime() - lastFrameTimeNs >= 150_000_000L) {
                     helper.handler.post {
-                        observer.onFrameCaptured(repeated)
+                        try {
+                            if (hasPendingField != null && isInUseField != null && tryDeliverMethod != null) {
+                                val inUse = isInUseField.getBoolean(helper)
+                                if (!inUse) {
+                                    hasPendingField.setBoolean(helper, true)
+                                    tryDeliverMethod.invoke(helper)
+                                }
+                            }
+                        } catch (_: Exception) {}
                     }
                 }
             }
@@ -124,13 +146,12 @@ class LuceScreenCapturer(
         keepaliveJob?.cancel()
         keepaliveJob = null
         surfaceTextureHelper?.stopListening()
+        try { capturerObserver?.onCapturerStopped() } catch (_: Exception) {}
         virtualDisplay?.release()
         virtualDisplay = null
         try {
             mediaProjection.unregisterCallback(projectionCallback)
         } catch (_: Exception) {}
-        lastFrame?.release()
-        lastFrame = null
     }
 
     override fun changeCaptureFormat(width: Int, height: Int, framerate: Int) {
@@ -142,7 +163,7 @@ class LuceScreenCapturer(
         stopCapture()
     }
 
-    override fun isScreencast(): Boolean = true
+    override fun isScreencast(): Boolean = false
 }
 
 object WebRtcEngine {
@@ -254,7 +275,7 @@ object WebRtcEngine {
         )
         return PeerConnection.RTCConfiguration(iceServers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
-            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_ONCE
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
             tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.ENABLED
@@ -566,7 +587,8 @@ class PublishSession(
                 val surfaceHelper = SurfaceTextureHelper.create("LuceScreenCaptureThread", WebRtcEngine.eglBase.eglBaseContext)
                 surfaceTextureHelper = surfaceHelper
 
-                val vSource = factory.createVideoSource(capturer.isScreencast())
+                val vSource = factory.createVideoSource(false)
+                vSource.adaptOutputFormat(targetWidth, targetHeight, settings.fps)
                 videoSource = vSource
                 capturer.initialize(surfaceHelper, context.applicationContext, vSource.capturerObserver)
                 capturer.startCapture(targetWidth, targetHeight, settings.fps)
@@ -629,9 +651,11 @@ class PublishSession(
                 // Configura bitrate no RtpSender
                 try {
                     val params = vSender.parameters
+                    params.degradationPreference = org.webrtc.RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE
                     if (params.encodings.isNotEmpty()) {
                         params.encodings[0].maxBitrateBps = settings.bitrateKbps * 1000
-                        params.encodings[0].minBitrateBps = (settings.bitrateKbps * 1000) / 4
+                        params.encodings[0].minBitrateBps = (settings.bitrateKbps * 1000) / 2
+                        params.encodings[0].maxFramerate = settings.fps
                         vSender.parameters = params
                     }
                 } catch (_: Exception) {}
@@ -733,10 +757,9 @@ class PublishSession(
     private fun startWhipHeartbeatLoop() {
         scope.launch {
             while (isActive) {
-                delay(10000)
-                val loc = whipLocation ?: continue
+                delay(8000)
                 try {
-                    LuceApi.sendWhipHeartbeat(baseUrl, loc, authToken)
+                    LuceApi.sendWhipHeartbeat(baseUrl, streamName, authToken)
                 } catch (_: Exception) {}
             }
         }

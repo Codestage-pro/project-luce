@@ -144,7 +144,11 @@ fun WatchTile(
                 }
             },
             update = { renderer ->
-                videoTrack?.addSink(renderer)
+                if (renderer.tag !== videoTrack) {
+                    (renderer.tag as? org.webrtc.VideoTrack)?.removeSink(renderer)
+                    videoTrack?.addSink(renderer)
+                    renderer.tag = videoTrack
+                }
             },
             modifier = Modifier.fillMaxSize()
         )

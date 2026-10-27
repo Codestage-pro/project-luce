@@ -34,6 +34,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
@@ -81,6 +82,8 @@ fun MainScreen(
     onToggleWatchStream: (String) -> Unit,
     onCloseStream: (WatchSession) -> Unit,
     updateInfo: UpdateInfo?,
+    isDownloadingUpdate: Boolean = false,
+    updateDownloadProgress: Float = -1f,
     onUpdateClick: (UpdateInfo) -> Unit,
     onSaveSettings: (UserSettings) -> Unit
 ) {
@@ -151,6 +154,109 @@ fun MainScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // Banner de Atualização Disponível
+            if (updateInfo != null) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, LuceMagenta.copy(alpha = 0.6f), RoundedCornerShape(12.dp)),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = LuceCardElevated)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .background(LuceMagenta.copy(alpha = 0.2f), CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Default.SystemUpdate,
+                                        contentDescription = null,
+                                        tint = LuceMagenta,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text(
+                                        text = "Nova versão disponível",
+                                        color = LuceText,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "v${updateInfo.tagName}",
+                                        color = LuceMagenta,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+
+                            if (!isDownloadingUpdate) {
+                                Button(
+                                    onClick = { onUpdateClick(updateInfo) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = LuceMagenta),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("Atualizar", fontWeight = FontWeight.Bold, color = Color.White)
+                                }
+                            }
+                        }
+
+                        if (isDownloadingUpdate) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            val pctText = if (updateDownloadProgress >= 0f) {
+                                "${(updateDownloadProgress * 100).toInt()}%"
+                            } else {
+                                "baixando…"
+                            }
+                            Text(
+                                text = "Baixando atualização: $pctText",
+                                color = LuceText,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            if (updateDownloadProgress >= 0f) {
+                                LinearProgressIndicator(
+                                    progress = { updateDownloadProgress },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(6.dp)
+                                        .clip(RoundedCornerShape(3.dp)),
+                                    color = LuceMagenta,
+                                    trackColor = LuceBorder
+                                )
+                            } else {
+                                LinearProgressIndicator(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(6.dp)
+                                        .clip(RoundedCornerShape(3.dp)),
+                                    color = LuceMagenta,
+                                    trackColor = LuceBorder
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             // Áreas de streams que estamos assistindo
             if (watchedSessions.isNotEmpty()) {
                 Text(

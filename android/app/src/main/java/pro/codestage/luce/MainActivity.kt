@@ -46,6 +46,8 @@ class MainActivity : ComponentActivity() {
     private var fullscreenStream by mutableStateOf<String?>(null)
 
     private var updateInfo by mutableStateOf<UpdateInfo?>(null)
+    private var isDownloadingUpdate by mutableStateOf(false)
+    private var updateDownloadProgress by mutableStateOf(-1f)
 
     private val screenCaptureLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -96,7 +98,9 @@ class MainActivity : ComponentActivity() {
                     onToggleWatchStream = { streamName -> handleToggleWatch(streamName) },
                     onCloseStream = { session -> handleCloseWatch(session) },
                     updateInfo = updateInfo,
-                    onUpdateClick = { info -> Updater.openDownloadPage(this, info.downloadUrl) },
+                    isDownloadingUpdate = isDownloadingUpdate,
+                    updateDownloadProgress = updateDownloadProgress,
+                    onUpdateClick = { info -> handleStartUpdate(info) },
                     onSaveSettings = { newSettings ->
                         settings = newSettings
                         LuceConfig.save(this, newSettings)
@@ -256,6 +260,27 @@ class MainActivity : ComponentActivity() {
                     updateInfo = info
                 }
             } catch (_: Exception) {}
+        }
+    }
+
+    private fun handleStartUpdate(info: UpdateInfo) {
+        if (isDownloadingUpdate) return
+        isDownloadingUpdate = true
+        updateDownloadProgress = 0f
+        lifecycleScope.launch {
+            Updater.downloadAndInstall(
+                context = this@MainActivity,
+                downloadUrl = info.downloadUrl,
+                onProgress = { progress ->
+                    updateDownloadProgress = progress
+                },
+                onError = { err ->
+                    isDownloadingUpdate = false
+                    updateDownloadProgress = -1f
+                    Toast.makeText(this@MainActivity, err, Toast.LENGTH_LONG).show()
+                }
+            )
+            isDownloadingUpdate = false
         }
     }
 

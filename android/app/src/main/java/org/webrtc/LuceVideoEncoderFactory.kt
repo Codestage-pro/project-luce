@@ -89,8 +89,10 @@ class LuceVideoEncoderFactory(
         }
 
         val bitrateAdjuster: BitrateAdjuster = if (
-            codecName.startsWith("OMX.Exynos.", ignoreCase = true) ||
-            codecName.startsWith("c2.exynos.", ignoreCase = true)
+            codecName.startsWith("c2.mtk.", ignoreCase = true) ||
+            codecName.startsWith("omx.mtk.", ignoreCase = true) ||
+            codecName.startsWith("c2.exynos.", ignoreCase = true) ||
+            codecName.startsWith("omx.exynos.", ignoreCase = true)
         ) {
             FramerateBitrateAdjuster()
         } else {
@@ -106,8 +108,8 @@ class LuceVideoEncoderFactory(
             surfaceColorFormat,
             yuvColorFormat,
             inputCodecInfo.params,
-            1,      // keyFrameIntervalSec = 1s
-            1000,   // forceKeyFrameIntervalMs = 1000ms
+            2,      // keyFrameIntervalSec = 2s
+            2000,   // forceKeyFrameIntervalMs = 2000ms
             bitrateAdjuster,
             sharedContext
         )
