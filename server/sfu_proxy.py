@@ -37,6 +37,8 @@ TTL = 30  # segundos sem heartbeat até tirar do roster (o cliente manda a cada 
 WHEP_TRIES = 6  # o ICE do publisher pode estar subindo: o SFU responde not_found_track_error
 WHEP_DELAY = 1.5
 MAX_BODY = 64 * 1024
+MAX_PUBLISHERS = 100
+MAX_VIEWERS_PER_STREAM = 500
 NAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
 NOT_FOUND_TRACK = "not_found_track_error"
 # O Cloudflare na frente da API barra o User-Agent padrão do urllib (403).
@@ -94,13 +96,19 @@ def tracks_new(session: str, body: dict) -> dict:
 def offer_tracks(sdp: str) -> list[dict]:
     """Um track local por m-line de vídeo/áudio: mid vem do a=mid:, nome pelo tipo."""
     tracks = []
-    for block in re.split(r"(?m)^(?=m=)", sdp)[1:]:
+    blocks = re.split(r"(?m)^(?=m=)", sdp)[1:]
+    if len(blocks) > 16:
+        raise HttpError(400, "SDP com excesso de seções m=")
+    for block in blocks:
         kind = block.split(" ", 1)[0][2:]
-        mid = re.search(r"(?m)^a=mid:(\S+)", block)
         if kind in ("video", "audio"):
-            if mid is None:
+            mid_match = re.search(r"(?m)^a=mid:(.*?)\r?$", block)
+            if not mid_match:
                 raise HttpError(400, "SDP sem a=mid")
-            tracks.append({"location": "local", "mid": mid.group(1), "trackName": kind})
+            mid_val = mid_match.group(1).strip()
+            if not NAME.fullmatch(mid_val):
+                raise HttpError(400, "SDP com a=mid inválido")
+            tracks.append({"location": "local", "mid": mid_val, "trackName": kind})
     if not tracks:
         raise HttpError(400, "SDP sem vídeo nem áudio")
     return tracks
@@ -143,6 +151,9 @@ def close_tracks(pub: dict) -> None:
 
 
 def publish(stream: str, offer: str) -> tuple[str, str]:
+    with lock:
+        if len(publishers) >= MAX_PUBLISHERS and stream not in publishers:
+            raise HttpError(429, "limite de transmissões simultâneas atingido")
     tracks = offer_tracks(offer)
     session = sfu("POST", "/sessions/new")["sessionId"]
     res = tracks_new(session, {"sessionDescription": {"type": "offer", "sdp": offer}, "tracks": tracks})
@@ -181,8 +192,13 @@ def watching(stream: str, viewer: str | None, on: bool = True) -> None:
     if viewer is None or not NAME.fullmatch(viewer):
         raise HttpError(400, "viewer inválido")
     with lock:
+        if stream not in publishers:
+            raise HttpError(404, f"{stream} não está transmitindo")
         if on:
-            viewers.setdefault(stream, {})[viewer] = time.monotonic()
+            stream_viewers = viewers.setdefault(stream, {})
+            if len(stream_viewers) >= MAX_VIEWERS_PER_STREAM and viewer not in stream_viewers:
+                raise HttpError(429, "limite de espectadores atingido")
+            stream_viewers[viewer] = time.monotonic()
         else:
             viewers.get(stream, {}).pop(viewer, None)
 
@@ -218,9 +234,11 @@ def expire() -> None:
         log(f"{name}: sem heartbeat há {TTL}s")
         unpublish(name, None)
     with lock:
-        for who in viewers.values():
+        for stream, who in list(viewers.items()):
             for viewer in [v for v, seen in who.items() if now - seen > TTL]:
                 del who[viewer]
+            if not who and stream not in publishers:
+                del viewers[stream]
 
 
 def reap() -> None:
@@ -230,6 +248,8 @@ def reap() -> None:
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = 10  # 10s de timeout no socket contra conexões lentas / travadas
+
     def log_message(self, *args):
         pass
 
@@ -243,10 +263,17 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _body(self) -> str:
-        size = int(self.headers.get("Content-Length") or 0)
-        if size > MAX_BODY:
+        try:
+            raw = self.headers.get("Content-Length") or "0"
+            size = int(raw)
+        except (ValueError, TypeError):
+            raise HttpError(400, "Content-Length inválido")
+        if size < 0 or size > MAX_BODY:
             raise HttpError(413, "corpo grande demais")
-        return self.rfile.read(size).decode("utf-8", "replace")
+        try:
+            return self.rfile.read(size).decode("utf-8", "replace")
+        except (TimeoutError, OSError) as exc:
+            raise HttpError(408, "timeout aguardando corpo da requisição") from exc
 
     def _handle(self, fn) -> None:
         try:
@@ -259,7 +286,7 @@ class Handler(BaseHTTPRequestHandler):
         except SfuError as exc:
             log(f"ERRO {self.command} {self.path}: {exc}")
             self._reply(502, str(exc).encode())
-        except (BrokenPipeError, ConnectionResetError):  # cliente morreu antes da resposta
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):  # cliente morreu ou timeout
             log(f"cliente desconectou: {self.command} {self.path}")
         except Exception as exc:  # bug nosso: não derruba a conexão sem resposta
             log(f"ERRO interno {self.command} {self.path}: {exc!r}")

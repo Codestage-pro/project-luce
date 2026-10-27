@@ -62,7 +62,18 @@ def save(data: dict[str, Any]) -> None:
             lines.append(f'{key} = "{clean}"')
         else:
             lines.append(f"{key} = {value}")
-    CONFIG_FILE.write_text("\n".join(lines) + "\n")
+    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        try:
+            CONFIG_FILE.parent.chmod(0o700)
+        except OSError:
+            pass
+    CONFIG_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if os.name != "nt":
+        try:
+            CONFIG_FILE.chmod(0o600)
+        except OSError:
+            pass
 
 
 def whip_endpoint(path: str) -> str:

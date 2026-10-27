@@ -93,7 +93,7 @@ jobs:
       - name: Versão (o app compara com a última Release)
         shell: pwsh
         run: |
-          $v = "${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('1.0.28-probe.{0}', github.run_number) }}".TrimStart('v')
+          $v = "${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('1.0.29-probe.{0}', github.run_number) }}".TrimStart('v')
           Set-Content -NoNewline -Path dist\LUCE\version.txt -Value $v
           "LUCE_VERSION=$v" >> $env:GITHUB_ENV
 

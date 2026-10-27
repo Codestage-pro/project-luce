@@ -145,6 +145,12 @@ object Updater {
             var conn: HttpURLConnection
             var redirects = 0
             while (true) {
+                if (!currentUrl.startsWith("https://", ignoreCase = true)) {
+                    withContext(Dispatchers.Main) {
+                        onError("URL de download rejeitada: protocolo deve ser HTTPS")
+                    }
+                    return@withContext
+                }
                 conn = URL(currentUrl).openConnection() as HttpURLConnection
                 conn.instanceFollowRedirects = true
                 conn.connectTimeout = 15000

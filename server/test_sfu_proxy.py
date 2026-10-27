@@ -1,13 +1,16 @@
 """Testes do sfu_proxy com um SFU falso: `python -m unittest server/test_sfu_proxy.py`."""
 
 import json
+import sys
 import threading
 import time
 import unittest
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sfu_proxy as p
 
 OFFER = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:audio1\r\na=rtpmap:111 OPUS/48000\r\n" \
@@ -127,6 +130,86 @@ class ProxyTest(unittest.TestCase):
         p.viewers["ana"]["caio"] -= p.TTL + 1
         p.expire()
         self.assertEqual(roster(), [])
+
+    def test_handler_socket_timeout(self):
+        self.assertEqual(p.Handler.timeout, 10)
+
+    def test_content_length_validation(self):
+        # Content-Length negativo
+        req = urllib.request.Request(
+            self.url + "/ana/whip",
+            data=b"test",
+            headers={"Authorization": "Bearer bdk:segredo", "Content-Length": "-1"},
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req) as resp:
+                status = resp.status
+        except urllib.error.HTTPError as e:
+            status = e.code
+        self.assertEqual(status, 413)
+
+        # Content-Length inválido (não inteiro)
+        req = urllib.request.Request(
+            self.url + "/ana/whip",
+            data=b"test",
+            headers={"Authorization": "Bearer bdk:segredo", "Content-Length": "invalid"},
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req) as resp:
+                status = resp.status
+        except urllib.error.HTTPError as e:
+            status = e.code
+        self.assertEqual(status, 400)
+
+    def test_watching_requires_active_publisher(self):
+        # Stream que não existe
+        self.assertEqual(self.call("PATCH", "/inexistente/watch?viewer=bia")[0], 404)
+        self.assertNotIn("inexistente", p.viewers)
+
+    def test_viewers_limit_and_empty_cleanup(self):
+        self.call("POST", "/ana/whip", OFFER.encode())
+        # Limite de espectadores por stream
+        original_max = p.MAX_VIEWERS_PER_STREAM
+        try:
+            p.MAX_VIEWERS_PER_STREAM = 2
+            self.assertEqual(self.call("PATCH", "/ana/watch?viewer=v1")[0], 204)
+            self.assertEqual(self.call("PATCH", "/ana/watch?viewer=v2")[0], 204)
+            self.assertEqual(self.call("PATCH", "/ana/watch?viewer=v3")[0], 429)
+        finally:
+            p.MAX_VIEWERS_PER_STREAM = original_max
+
+        # Expira todos e verifica se a chave do stream é limpa quando publisher cai
+        p.publishers["ana"]["seen"] = time.monotonic() - p.TTL - 1
+        p.viewers["ana"]["v1"] -= p.TTL + 1
+        p.viewers["ana"]["v2"] -= p.TTL + 1
+        p.expire()
+        self.assertNotIn("ana", p.viewers)
+
+    def test_max_publishers_limit(self):
+        original_max = p.MAX_PUBLISHERS
+        try:
+            p.MAX_PUBLISHERS = 1
+            code1, _, _ = self.call("POST", "/pub1/whip", OFFER.encode())
+            self.assertEqual(code1, 201)
+            code2, _, _ = self.call("POST", "/pub2/whip", OFFER.encode())
+            self.assertEqual(code2, 429)
+        finally:
+            p.MAX_PUBLISHERS = original_max
+
+    def test_sdp_validation(self):
+        # Sem mid
+        bad_sdp = "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+        self.assertEqual(self.call("POST", "/ana/whip", bad_sdp.encode())[0], 400)
+
+        # Mid com caracteres inválidos
+        bad_mid = "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:bad!mid$with spaces\r\n"
+        self.assertEqual(self.call("POST", "/ana/whip", bad_mid.encode())[0], 400)
+
+        # Excesso de seções m= (>16)
+        many_m = "v=0\r\n" + ("m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:v\r\n" * 20)
+        self.assertEqual(self.call("POST", "/ana/whip", many_m.encode())[0], 400)
 
 
 if __name__ == "__main__":

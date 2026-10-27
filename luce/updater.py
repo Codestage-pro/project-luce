@@ -58,16 +58,27 @@ def find_update() -> tuple[str, str, str | None] | None:
         return None
     if is_flatpak():
         return tag, "", None
-    for asset in release["assets"]:
-        if asset["name"] == "Luce-Setup.exe":
+    for asset in release.get("assets", []):
+        if asset.get("name") == "Luce-Setup.exe":
+            url = asset.get("browser_download_url", "")
+            if not url.startswith("https://"):
+                continue
             digest = asset.get("digest") or ""
-            return tag, asset["browser_download_url"], digest.removeprefix("sha256:") or None
+            sha256 = digest.removeprefix("sha256:").strip() or None
+            if not sha256:
+                m = re.search(r"(?i)sha256[:\s=]+([a-f0-9]{64})", release.get("body", ""))
+                if m:
+                    sha256 = m.group(1).lower()
+            return tag, url, sha256
     return None
 
 
 def download(url: str, sha256: str | None, progress) -> Path:
-    """Baixa o instalador para a pasta temporária; progress(fração) a cada pedaço."""
-    dest = Path(tempfile.gettempdir()) / "Luce-Setup.exe"
+    """Baixa o instalador para a pasta temporária privada; progress(fração) a cada pedaço."""
+    if not url.startswith("https://"):
+        raise ValueError("URL de download insegura (deve ser HTTPS)")
+    temp_dir = Path(tempfile.mkdtemp(prefix="luce_update_"))
+    dest = temp_dir / "Luce-Setup.exe"
     hasher = hashlib.sha256()
     with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "project-luce"}), timeout=30) as resp:
         total = int(resp.headers.get("Content-Length") or 0)
@@ -79,8 +90,12 @@ def download(url: str, sha256: str | None, progress) -> Path:
                 done += len(chunk)
                 if total:
                     progress(done / total)
-    if sha256 and hasher.hexdigest() != sha256:
+    if sha256 and hasher.hexdigest().lower() != sha256.lower():
         dest.unlink(missing_ok=True)
+        try:
+            temp_dir.rmdir()
+        except OSError:
+            pass
         raise RuntimeError("o instalador baixado não confere com o publicado (sha256)")
     return dest
 
