@@ -11,6 +11,7 @@ on:
       - windows-probe
     tags:
       - 'android-v*'
+      - 'v*'
 
 concurrency:
   group: android-${{ github.ref }}
@@ -89,9 +90,23 @@ jobs:
           path: dist/Luce-Android.apk
           retention-days: 14
 
-      # Tag android-v*: Anexa na Release oficial do Android
-      - name: Anexa na Release oficial do Android
-        if: startsWith(github.ref, 'refs/tags/android-v')
+      # Tag v*: Anexa também na Release unificada da tag v*
+      - name: Anexa na Release unificada v*
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Luce-Android.apk
+          fail_on_unmatched_files: true
+
+      # Tag oficial (v* ou android-v*): atualiza a Release oficial android-latest
+      - name: Move a tag android-latest
+        if: startsWith(github.ref, 'refs/tags/android-v') || startsWith(github.ref, 'refs/tags/v')
+        run: |
+          git tag -f android-latest ${{ github.sha }}
+          git push -f origin android-latest
+
+      - name: Atualiza a Release oficial android-latest
+        if: startsWith(github.ref, 'refs/tags/android-v') || startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: android-latest
@@ -99,17 +114,18 @@ jobs:
           body: |
             Versão oficial do Project LUCE para Android.
             Versão: ${{ env.LUCE_VERSION }}
+          prerelease: false
           files: dist/Luce-Android.apk
           fail_on_unmatched_files: true
 
-      # Branch push: Anexa na Prerelease de teste do Android
+      # Branch push (sem tag): Anexa na Prerelease de teste do Android
       - name: Move a tag android-test
-        if: ${{ !startsWith(github.ref, 'refs/tags/android-v') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         run: |
           git tag -f android-test ${{ github.sha }}
           git push -f origin android-test
       - name: Atualiza a Prerelease android-test
-        if: ${{ !startsWith(github.ref, 'refs/tags/android-v') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: android-test

@@ -240,7 +240,7 @@ fun WatchTile(
                         modifier = Modifier
                             .align(Alignment.Center)
                             .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xCC12153A))
+                            .background(LuceCard.copy(alpha = 0.85f))
                             .padding(16.dp),
                         contentAlignment = Alignment.Center
                     ) {
