@@ -14,6 +14,8 @@ import json
 import os
 import re
 import secrets
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -30,7 +32,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gst", "1.0")
 gi.require_version("GstGL", "1.0")
 gi.require_version("Gdk", "4.0")
-from gi.repository import GLib, Gdk, Gst, GstGL, Gtk, Pango
+from gi.repository import Gio, GLib, Gdk, Gst, GstGL, Gtk, Pango
 
 # O GSK Vulkan do GTK no mesmo processo faz o glupload do NVENC importar DMA-BUF
 # preto (niri + NVIDIA: transmissão toda preta, ~60 kbps). Com GL fica normal.
@@ -83,6 +85,93 @@ def _choice_row(grid: Gtk.Grid, row: int, label: str, options: list, selected, f
         box.append(btn)
         pairs.append((btn, option))
     return pairs
+
+
+def _open_url(url: str, window: Gtk.Window | None = None) -> bool:
+    """Abre URL no navegador padrão de forma infalível em Windows, Flatpak e Linux nativo (X11/Wayland)."""
+    # 1. Copia sempre para o clipboard do sistema no Linux/X11/Wayland como garantia absoluta
+    if sys.platform != "win32":
+        try:
+            display = Gdk.Display.get_default()
+            if display:
+                clipboard = display.get_clipboard()
+                clipboard.set(url)
+        except Exception:
+            pass
+
+    # 2. Windows
+    if sys.platform == "win32":
+        try:
+            os.startfile(url)
+            return True
+        except Exception:
+            try:
+                return webbrowser.open(url)
+            except Exception:
+                return False
+
+    # 3. Flatpak (usar portal OpenURI via D-Bus ou Gio)
+    if Path("/.flatpak-info").exists():
+        try:
+            import dbus
+            bus = dbus.SessionBus()
+            portal = bus.get_object("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop")
+            iface = dbus.Interface(portal, "org.freedesktop.portal.OpenURI")
+            iface.OpenURI("", url, {})
+            return True
+        except Exception:
+            try:
+                if Gio.AppInfo.launch_default_for_uri(url, None):
+                    return True
+            except Exception:
+                pass
+
+    # 4. Linux nativo (Arch Linux, WMs em X11 como i3, bspwm, etc.)
+    def _linux_spawn():
+        env = dict(os.environ)
+        # Tentativa A: xdg-open com variáveis de display preservadas
+        try:
+            proc = subprocess.run(["xdg-open", url], timeout=4, check=False, env=env)
+            if proc.returncode == 0:
+                return
+        except Exception:
+            pass
+
+        # Tentativa B: $BROWSER
+        browser_env = os.environ.get("BROWSER", "").strip()
+        if browser_env and shutil.which(browser_env):
+            try:
+                subprocess.Popen([browser_env, url], start_new_session=True, env=env)
+                return
+            except Exception:
+                pass
+
+        # Tentativa C: Navegadores conhecidos comuns no Arch Linux e distros
+        common_browsers = (
+            "firefox", "brave", "google-chrome-stable", "chromium",
+            "zen-browser", "librewolf", "vivaldi", "vivaldi-stable",
+            "floorp", "thorium-browser", "opera", "epiphany", "Falkon"
+        )
+        for b in common_browsers:
+            cmd = shutil.which(b)
+            if cmd:
+                try:
+                    subprocess.Popen([cmd, url], start_new_session=True, env=env)
+                    return
+                except Exception:
+                    pass
+
+        # Tentativa D: fallback Gio / webbrowser
+        try:
+            Gio.AppInfo.launch_default_for_uri(url, None)
+        except Exception:
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+
+    threading.Thread(target=_linux_spawn, daemon=True).start()
+    return True
 
 
 def _list_audio_sources() -> list[tuple[str, str]]:
@@ -209,11 +298,16 @@ class SettingsWindow(Gtk.Window):
         # Discord BDK OAuth2
         grid.attach(Gtk.Label(label="Discord BDK", xalign=0), 0, next_row + 9, 1, 1)
         discord_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._discord_login_url = ""
         self._discord_status_lbl = Gtk.Label(xalign=0, wrap=True)
         self._discord_btn = Gtk.Button()
         self._discord_btn.connect("clicked", self._on_discord_btn_clicked)
+        self._discord_copy_btn = Gtk.Button(label="Copiar link de login")
+        self._discord_copy_btn.set_visible(False)
+        self._discord_copy_btn.connect("clicked", self._on_discord_copy_btn_clicked)
         discord_box.append(self._discord_status_lbl)
         discord_box.append(self._discord_btn)
+        discord_box.append(self._discord_copy_btn)
         grid.attach(discord_box, 1, next_row + 9, 1, 1)
         self._update_discord_ui(cfg)
 
@@ -250,6 +344,7 @@ class SettingsWindow(Gtk.Window):
             config.save(cfg)
 
     def _update_discord_ui(self, cfg: dict) -> None:
+        self._discord_copy_btn.set_visible(False)
         if cfg.get("discord_token"):
             user = cfg.get("discord_user") or "membro"
             self._discord_status_lbl.set_markup(f"<span foreground='#00E676'>✓ Conectado como <b>@{user}</b></span>")
@@ -259,6 +354,16 @@ class SettingsWindow(Gtk.Window):
             self._discord_status_lbl.set_text("Não autenticado no BDK")
             self._discord_btn.set_label("Entrar com Discord (BDK)")
             self._discord_btn.set_sensitive(True)
+
+    def _on_discord_copy_btn_clicked(self, _btn: Gtk.Button) -> None:
+        if self._discord_login_url:
+            try:
+                display = Gdk.Display.get_default()
+                if display:
+                    display.get_clipboard().set(self._discord_login_url)
+                self._discord_status_lbl.set_text("Link copiado! Cole no seu navegador.")
+            except Exception as exc:
+                self._discord_status_lbl.set_text(f"Erro ao copiar link: {exc}")
 
     def _on_discord_btn_clicked(self, _btn: Gtk.Button) -> None:
         cfg = config.load()
@@ -275,14 +380,11 @@ class SettingsWindow(Gtk.Window):
         state = secrets.token_urlsafe(24)
         base_url = cfg.get("base_url", "https://luce.codestage.pro").strip().rstrip("/") or "https://luce.codestage.pro"
         login_url = f"{base_url}/auth/discord/login?state={state}"
+        self._discord_login_url = login_url
         self._discord_btn.set_sensitive(False)
-        self._discord_status_lbl.set_text("Aguardando login no navegador…")
-        try:
-            webbrowser.open(login_url)
-        except Exception as exc:
-            self._discord_status_lbl.set_text(f"Erro ao abrir navegador: {exc}")
-            self._discord_btn.set_sensitive(True)
-            return
+        self._discord_copy_btn.set_visible(True)
+        self._discord_status_lbl.set_text("Aguardando autorização no navegador (link também copiado para o Ctrl+V)...")
+        _open_url(login_url, self)
 
         def poll_worker():
             poll_url = f"{base_url}/auth/discord/poll?state={state}"
@@ -300,6 +402,7 @@ class SettingsWindow(Gtk.Window):
                                 d_user = data.get("discord_user", "")
                                 u_name = data.get("user", "")
                                 def apply_ok():
+                                    self._discord_copy_btn.set_visible(False)
                                     c = config.load()
                                     old_c = dict(c)
                                     c["discord_token"] = token
@@ -314,6 +417,7 @@ class SettingsWindow(Gtk.Window):
                                 return
                             elif st == "denied":
                                 def apply_denied():
+                                    self._discord_copy_btn.set_visible(False)
                                     self._discord_status_lbl.set_text("Acesso negado: sua conta não pertence ao BDK.")
                                     self._discord_btn.set_label("Tentar novamente com Discord")
                                     self._discord_btn.set_sensitive(True)
@@ -322,6 +426,7 @@ class SettingsWindow(Gtk.Window):
                 except Exception:
                     pass
             def apply_timeout():
+                self._discord_copy_btn.set_visible(False)
                 self._discord_status_lbl.set_text("Tempo limite esgotado.")
                 self._discord_btn.set_label("Entrar com Discord (BDK)")
                 self._discord_btn.set_sensitive(True)
@@ -624,12 +729,8 @@ class MainWindow(Gtk.ApplicationWindow):
         login_url = f"{base_url}/auth/discord/login?state={state}"
         self._discord_head_btn.set_sensitive(False)
         self._discord_head_btn.set_label("Aguardando login…")
-        try:
-            webbrowser.open(login_url)
-        except Exception:
-            self._update_discord_head_btn()
-            self._discord_head_btn.set_sensitive(True)
-            return
+        self._discord_head_btn.set_tooltip_text("Aguardando autorização no navegador (link copiado para Ctrl+V)")
+        _open_url(login_url, self)
 
         def poll_worker():
             poll_url = f"{base_url}/auth/discord/poll?state={state}"
@@ -1224,11 +1325,8 @@ class MainWindow(Gtk.ApplicationWindow):
         # Linux não-Flatpak (Arch/sistema): abre o link da Release no navegador
         _version, url, _sha256 = self._update
         target_url = url or "https://github.com/Codestage-pro/project-luce/releases/latest"
-        try:
-            Gtk.show_uri(self, target_url, Gdk.CURRENT_TIME)
-        except Exception:
-            webbrowser.open(target_url)
-        self._gate_status_lbl.set_label("Página de download aberta no navegador. Atualize o pacote e reinicie o app.")
+        _open_url(target_url, self)
+        self._gate_status_lbl.set_label("Página de download aberta no navegador (link copiado para Ctrl+V). Atualize o pacote e reinicie o app.")
 
     def _on_gate_flatpak_updated(self, error) -> None:
         if error is not None:

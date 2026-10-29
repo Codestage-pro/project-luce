@@ -48,15 +48,15 @@ val PaletteMurilo = LucePalette(
 )
 
 val PaletteTirigam = LucePalette(
-    night = Color(0xFF140709),
-    card = Color(0xFF260D12),
-    cardElevated = Color(0xFF38141B),
-    border = Color(0xFF4C1A24),
-    primary = Color(0xFFFF2A4B),     // Vermelho Rubi
-    secondary = Color(0xFFFF6B00),   // Laranja Fogo
-    onAir = Color(0xFFFF0055),       // Carmesim
-    text = Color(0xFFFFE8EC),
-    muted = Color(0xFFD48794)
+    night = Color(0xFF0F0406),
+    card = Color(0xFF1C070B),
+    cardElevated = Color(0xFF2B0B12),
+    border = Color(0xFF45101A),
+    primary = Color(0xFFFF1744),     // Vermelho Puro Vibrante
+    secondary = Color(0xFFB71C1C),   // Vermelho Sangue Profundo (zero laranja)
+    onAir = Color(0xFFFF0033),       // Carmesim Ao Vivo
+    text = Color(0xFFFFEEF0),
+    muted = Color(0xFFC97A85)
 )
 
 val PaletteNinjaSom = LucePalette(

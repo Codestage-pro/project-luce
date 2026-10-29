@@ -42,14 +42,14 @@ THEMES: dict[str, tuple[str, dict[str, str]]] = {
     "tirigam": (
         "Tirigam (Vermelho)",
         {
-            "noite": "#140709",
-            "painel": "#260d12",
-            "linha": "#4c1a24",
-            "ciano": "#ff2a4b",
-            "violeta": "#ff6b00",
-            "magenta": "#ff0055",
-            "texto": "#ffe8ec",
-            "mudo": "#d48794",
+            "noite": "#0f0406",
+            "painel": "#1c070b",
+            "linha": "#45101a",
+            "ciano": "#ff1744",    # Vermelho Puro Vibrante
+            "violeta": "#b71c1c",  # Vermelho Sangue Profundo (sem laranja!)
+            "magenta": "#ff0033",  # Carmesim Ao Vivo
+            "texto": "#ffeef0",
+            "mudo": "#c97a85",
         },
     ),
     "ninja_som": (

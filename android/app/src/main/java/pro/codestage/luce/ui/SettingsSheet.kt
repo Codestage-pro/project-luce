@@ -276,7 +276,7 @@ fun SettingsSheet(
             val themeOptions = listOf(
                 Triple(UserSettings.THEME_LUCE, "Padrão LUCE", Color(0xFF00E5FF)),
                 Triple(UserSettings.THEME_MURILO, "MuriloX06", Color(0xFFA855F7)),
-                Triple(UserSettings.THEME_TIRIGAM, "Tirigam", Color(0xFFFF2A4B)),
+                Triple(UserSettings.THEME_TIRIGAM, "Tirigam", Color(0xFFFF1744)),
                 Triple(UserSettings.THEME_NINJA_SOM, "Ninja / SOM", Color(0xFF3B82F6)),
                 Triple(UserSettings.THEME_DARK, "Dark OLED", Color(0xFFE4E4E7))
             )

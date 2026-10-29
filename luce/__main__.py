@@ -21,7 +21,10 @@ from .watch_pipeline import WatchPipeline
 
 class _TeeStream:
     def __init__(self, original, file_obj):
-        self.original = original
+        if isinstance(original, _TeeStream):
+            self.original = original.original
+        else:
+            self.original = original
         self.file_obj = file_obj
 
     def write(self, data):
@@ -51,7 +54,14 @@ class _TeeStream:
                 pass
 
 
+_LOG_INITIALIZED = False
+
+
 def _setup_linux_logging() -> None:
+    global _LOG_INITIALIZED
+    if _LOG_INITIALIZED:
+        return
+    _LOG_INITIALIZED = True
     if sys.platform == "win32":
         return
     log_dir = config.log_dir()
@@ -60,9 +70,11 @@ def _setup_linux_logging() -> None:
     os.environ.setdefault("GST_DEBUG_FILE", str(log_dir / "gst.log"))
 
     try:
+        out_orig = sys.stdout.original if isinstance(sys.stdout, _TeeStream) else sys.stdout
+        err_orig = sys.stderr.original if isinstance(sys.stderr, _TeeStream) else sys.stderr
         log_file = open(log_dir / "luce.log", "a", encoding="utf-8", buffering=1)
-        sys.stdout = _TeeStream(sys.stdout, log_file)
-        sys.stderr = _TeeStream(sys.stderr, log_file)
+        sys.stdout = _TeeStream(out_orig, log_file)
+        sys.stderr = _TeeStream(err_orig, log_file)
     except Exception as exc:
         print(f"[log] erro ao abrir arquivo de log: {exc}", file=sys.stderr)
 

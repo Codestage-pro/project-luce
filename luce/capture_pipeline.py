@@ -678,10 +678,18 @@ class CapturePipeline:
             # o áudio; funciona tanto em PulseAudio quanto em PipeWire (via
             # pipewire-pulse), sem código separado pros dois.
             _try_set(mic, "client-name", "Project LUCE")
+            _try_set(mic, "provide-clock", False)
+            _try_set(mic, "slave-method", 1)  # skew: evita aviso de buffer overrun quando o pipewire oscilar
             if audio_device:
                 _try_set(mic, "device", audio_device)
             # microfone mudo ou ligado pelo WirePlumber num app parado não trava a transmissão
             audio_src = linux_audio.with_silence(mic)
+        # queue com leaky downstream logo após a fonte evita atrasos e alertas de gravação lenta
+        audio_queue = Gst.ElementFactory.make("queue", "audio-queue")
+        audio_queue.set_property("leaky", 2)  # downstream
+        audio_queue.set_property("max-size-time", 200_000_000)  # 200ms
+        audio_queue.set_property("max-size-buffers", 0)
+        audio_queue.set_property("max-size-bytes", 0)
         audio_convert = Gst.ElementFactory.make("audioconvert", "audio-convert")
         audio_resample = Gst.ElementFactory.make("audioresample", "audio-resample")
         self._audio_volume = Gst.ElementFactory.make("volume", "audio-volume")
@@ -691,7 +699,7 @@ class CapturePipeline:
         _try_set(audio_enc, "audio-type", "restricted-lowdelay")
         audio_pay = Gst.ElementFactory.make("rtpopuspay", "audio-pay")
         _try_set(audio_pay, "pt", 97)
-        audio_chain = (audio_src, audio_convert, audio_resample, self._audio_volume, audio_enc, audio_pay)
+        audio_chain = (audio_src, audio_queue, audio_convert, audio_resample, self._audio_volume, audio_enc, audio_pay)
         for element in audio_chain:
             self.pipeline.add(element)
         for left, right in zip(audio_chain, audio_chain[1:]):

@@ -67,15 +67,25 @@ def _silent_mixer() -> tuple[Gst.Bin, Gst.Element]:
 
 
 def _branch(src: Gst.Element, name: str | None = None) -> Gst.Bin:
-    """src -> estéreo -> caps do mixer, numa bin com pad "src"."""
+    """src -> queue (leaky) -> estéreo -> caps do mixer, numa bin com pad "src"."""
     branch = Gst.Bin.new(name)
+    if hasattr(src, "find_property") and src.find_property("provide-clock"):
+        try:
+            src.set_property("provide-clock", False)
+        except Exception:
+            pass
+    queue = Gst.ElementFactory.make("queue", None)
+    queue.set_property("leaky", 2)  # downstream: descarta buffers velhos se a thread oscilar
+    queue.set_property("max-size-time", 200_000_000)  # 200ms
+    queue.set_property("max-size-buffers", 0)
+    queue.set_property("max-size-bytes", 0)
     audio = Gst.ElementFactory.make("capsfilter", None)  # sem caps de áudio o pipewiresrc não acha o alvo
     audio.set_property("caps", Gst.Caps.from_string("audio/x-raw,channels=2"))
     convert = Gst.ElementFactory.make("audioconvert", None)
     resample = Gst.ElementFactory.make("audioresample", None)
     caps = Gst.ElementFactory.make("capsfilter", None)
     caps.set_property("caps", Gst.Caps.from_string(_CAPS))
-    chain = (src, audio, convert, resample, caps)
+    chain = (src, queue, audio, convert, resample, caps)
     for element in chain:
         branch.add(element)
     for left, right in zip(chain, chain[1:]):
@@ -90,7 +100,11 @@ def with_silence(src: Gst.Element) -> Gst.Bin:
     Fonte muda (app pausado, pulsesrc que o WirePlumber ligou num app parado) segurava o opusenc
     sem caps, o whipsink sem oferta e, se o relógio fosse dela, o vídeo inteiro: tela preta.
     """
-    src.set_property("provide-clock", False)
+    if hasattr(src, "find_property") and src.find_property("provide-clock"):
+        try:
+            src.set_property("provide-clock", False)
+        except Exception:
+            pass
     bin_, mixer = _silent_mixer()
     branch = _branch(src)
     bin_.add(branch)
