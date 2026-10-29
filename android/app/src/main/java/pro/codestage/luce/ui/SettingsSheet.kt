@@ -226,7 +226,7 @@ fun SettingsSheet(
                                         discordUser = res.discordUser
                                         isDiscordPolling = false
                                         discordStatusMsg = "✓ Conectado como @${res.discordUser}"
-                                        LuceConfig.saveDiscordAuth(context, res.token, res.discordUser, res.user)
+                                        LuceConfig.saveDiscordAuth(context, res.token, res.discordUser, res.user, res.avatar)
                                         Toast.makeText(context, "Autenticado como @${res.discordUser}!", Toast.LENGTH_SHORT).show()
                                     }
                                     return@launch

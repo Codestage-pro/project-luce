@@ -96,7 +96,7 @@ jobs:
         run: |
           $isTag = "${{ github.ref }}".StartsWith("refs/tags/")
           $rawTag = "${{ github.ref_name }}" -replace '^(windows-)?v', ''
-          $v = if ($isTag) { $rawTag } else { "1.0.33-probe.${{ github.run_number }}" }
+          $v = if ($isTag) { $rawTag } else { "1.0.34-probe.${{ github.run_number }}" }
           Set-Content -NoNewline -Path dist\LUCE\version.txt -Value $v
           "LUCE_VERSION=$v" >> $env:GITHUB_ENV
 

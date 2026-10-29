@@ -40,6 +40,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -53,7 +54,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
@@ -61,11 +66,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.graphics.BitmapFactory
+import android.util.LruCache
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import pro.codestage.luce.LuceApi
 import pro.codestage.luce.R
 import pro.codestage.luce.RosterItem
 import pro.codestage.luce.UpdateInfo
 import pro.codestage.luce.UserSettings
 import pro.codestage.luce.WatchSession
+import java.io.ByteArrayOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -438,6 +451,99 @@ fun MainScreen(
     }
 }
 
+object AvatarCache {
+    private val lru = LruCache<String, ImageBitmap>(50)
+
+    fun get(url: String): ImageBitmap? = synchronized(this) { lru.get(url) }
+    fun put(url: String, bmp: ImageBitmap) = synchronized(this) { lru.put(url, bmp) }
+}
+
+@Composable
+fun DiscordAvatar(
+    name: String,
+    avatarUrl: String,
+    modifier: Modifier = Modifier.size(36.dp)
+) {
+    var bitmap by remember(avatarUrl) {
+        mutableStateOf(if (avatarUrl.isNotBlank()) AvatarCache.get(avatarUrl) else null)
+    }
+
+    LaunchedEffect(avatarUrl) {
+        if (avatarUrl.isBlank() || bitmap != null) return@LaunchedEffect
+        if (!avatarUrl.startsWith("https://cdn.discordapp.com/")) return@LaunchedEffect
+
+        withContext(Dispatchers.IO) {
+            try {
+                val url = URL(avatarUrl)
+                val conn = url.openConnection() as HttpURLConnection
+                conn.connectTimeout = 5000
+                conn.readTimeout = 5000
+                conn.instanceFollowRedirects = false
+                conn.setRequestProperty("User-Agent", LuceApi.USER_AGENT)
+                val code = conn.responseCode
+                if (code in 200..299) {
+                    val bytes = conn.inputStream.use { stream ->
+                        val buf = ByteArrayOutputStream()
+                        val b = ByteArray(4096)
+                        var total = 0
+                        var n: Int
+                        while (stream.read(b).also { n = it } != -1) {
+                            total += n
+                            if (total > 512 * 1024) return@use null
+                            buf.write(b, 0, n)
+                        }
+                        buf.toByteArray()
+                    }
+                    if (bytes != null) {
+                        val androidBmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        if (androidBmp != null) {
+                            val imgBmp = androidBmp.asImageBitmap()
+                            AvatarCache.put(avatarUrl, imgBmp)
+                            bitmap = imgBmp
+                        }
+                    }
+                }
+                conn.disconnect()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    Surface(
+        modifier = modifier.clip(CircleShape),
+        shape = CircleShape,
+        color = LuceCardElevated
+    ) {
+        val currentBitmap = bitmap
+        if (currentBitmap != null) {
+            Image(
+                bitmap = currentBitmap,
+                contentDescription = "Avatar de $name",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.linearGradient(
+                            listOf(LuceCyan, LucePurple)
+                        )
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = name.take(1).uppercase(),
+                    color = LuceNight,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 15.sp
+                )
+            }
+        }
+    }
+}
+
 @Composable
 fun RosterItemCard(
     item: RosterItem,
@@ -453,45 +559,56 @@ fun RosterItemCard(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(LuceMagenta)
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                ) {
+        Row(
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            DiscordAvatar(
+                name = item.name,
+                avatarUrl = item.avatar,
+                modifier = Modifier.size(36.dp)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(LuceMagenta)
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = "AO VIVO",
+                            color = Color.White,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "AO VIVO",
-                        color = Color.White,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold
+                        text = item.name,
+                        color = LuceText,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = item.name,
-                    color = LuceText,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
 
-            if (item.viewers.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Default.Visibility,
-                        contentDescription = "Espectadores",
-                        tint = LuceMuted,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "${item.viewers.size}: ${item.viewers.joinToString(", ")}",
-                        color = LuceMuted,
-                        fontSize = 11.sp
-                    )
+                if (item.viewers.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Visibility,
+                            contentDescription = "Espectadores",
+                            tint = LuceMuted,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "${item.viewers.size}: ${item.viewers.joinToString(", ")}",
+                            color = LuceMuted,
+                            fontSize = 11.sp
+                        )
+                    }
                 }
             }
         }

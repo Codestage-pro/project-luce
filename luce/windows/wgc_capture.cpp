@@ -22,7 +22,10 @@ using namespace Windows::Graphics::DirectX::Direct3D11;
 
 #ifndef __IGraphicsCaptureAccessStatics_INTERFACE_DEFINED__
 #define __IGraphicsCaptureAccessStatics_INTERFACE_DEFINED__
-struct __declspec(uuid("743ED370-06EC-5040-A58A-901F0F757095")) IGraphicsCaptureAccessStatics : public IInspectable {
+static const GUID IID_IGraphicsCaptureAccessStatics = {
+    0x743ED370, 0x06EC, 0x5040, { 0xA5, 0x8A, 0x90, 0x1F, 0x0F, 0x75, 0x70, 0x95 }
+};
+struct IGraphicsCaptureAccessStatics : public IInspectable {
     virtual HRESULT STDMETHODCALLTYPE RequestAccessAsync(
         int request,
         IInspectable** operation) = 0;
@@ -176,11 +179,19 @@ __declspec(dllexport) LuceWGC* luce_wgc_create(HWND hwnd, int capture_cursor) {
         session2->put_IsCursorCaptureEnabled(capture_cursor ? TRUE : FALSE);
     }
 
-    ComPtr<IGraphicsCaptureAccessStatics> access_statics;
-    HRESULT hr_acc = GetActivationFactory(L"Windows.Graphics.Capture.GraphicsCaptureAccess", access_statics);
-    if (SUCCEEDED(hr_acc) && access_statics) {
-        ComPtr<IInspectable> async_op;
-        access_statics->RequestAccessAsync(0 /* GraphicsCaptureAccessKind_Borderless */, &async_op);
+    HSTRING hstr_acc = nullptr;
+    if (SUCCEEDED(WindowsCreateString(L"Windows.Graphics.Capture.GraphicsCaptureAccess", 47, &hstr_acc))) {
+        ComPtr<IGraphicsCaptureAccessStatics> access_statics;
+        HRESULT hr_acc = RoGetActivationFactory(
+            hstr_acc,
+            IID_IGraphicsCaptureAccessStatics,
+            reinterpret_cast<void**>(access_statics.GetAddressOf())
+        );
+        WindowsDeleteString(hstr_acc);
+        if (SUCCEEDED(hr_acc) && access_statics) {
+            ComPtr<IInspectable> async_op;
+            access_statics->RequestAccessAsync(0 /* GraphicsCaptureAccessKind_Borderless */, &async_op);
+        }
     }
 
     ComPtr<IGraphicsCaptureSession3> session3;

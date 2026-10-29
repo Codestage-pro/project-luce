@@ -275,7 +275,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch(Dispatchers.IO) {
             isRosterLoading = true
             try {
-                val state = LuceApi.fetchRosterState(settings.serverUrl, settings.authToken, userName)
+                val state = LuceApi.fetchRosterState(settings.serverUrl, settings.authToken, userName, settings.discordAvatar)
                 withContext(Dispatchers.Main) {
                     rosterList.clear()
                     rosterList.addAll(state.items.filter { it.ready })
@@ -308,7 +308,8 @@ class MainActivity : ComponentActivity() {
         if (hadDiscord) {
             val updated = settings.copy(
                 discordToken = "",
-                discordUser = ""
+                discordUser = "",
+                discordAvatar = ""
             )
             settings = updated
             LuceConfig.save(this, updated)

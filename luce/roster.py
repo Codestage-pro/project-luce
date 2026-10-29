@@ -18,6 +18,9 @@ _USER_AGENT = (
 )
 
 
+LAST_AVATARS: dict[str, str] = {}
+
+
 def _request(url: str, token: str | None, method: str = "GET") -> urllib.request.Request:
     headers = {"User-Agent": _USER_AGENT}
     if token:
@@ -26,21 +29,35 @@ def _request(url: str, token: str | None, method: str = "GET") -> urllib.request
 
 
 def fetch_state(
-    base_url: str, token: str | None, viewer_name: str = "", timeout: float = 2.0
-) -> tuple[dict[str, list[str]], int, list[str]]:
-    """Consulta o roster completo: (paths_dict, online_count, online_users)."""
+    base_url: str,
+    token: str | None,
+    viewer_name: str = "",
+    timeout: float = 2.0,
+    avatar_url: str = "",
+) -> tuple[dict[str, list[str]], int, list[str], dict[str, str]]:
+    """Consulta o roster completo: (paths_dict, online_count, online_users, avatars)."""
+    global LAST_AVATARS
     headers = {"User-Agent": _USER_AGENT}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     if viewer_name:
         headers["X-Luce-Viewer"] = viewer_name
+    if avatar_url and avatar_url.startswith("https://cdn.discordapp.com/"):
+        headers["X-Luce-Avatar"] = avatar_url
     req = urllib.request.Request(f"{base_url}/v3/paths/list", method="GET", headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = json.load(resp)
     paths = {item["name"]: item.get("viewers", []) for item in data.get("items", []) if item.get("ready")}
     online_count = int(data.get("online_count", len(paths)))
     online_users = [str(u) for u in data.get("online_users", list(paths.keys()))]
-    return paths, online_count, online_users
+    avatars = {str(k): str(v) for k, v in data.get("avatars", {}).items() if isinstance(v, str)}
+    for item in data.get("items", []):
+        name = item.get("name")
+        av = item.get("avatar")
+        if name and av and isinstance(av, str):
+            avatars[name] = av
+    LAST_AVATARS = avatars
+    return paths, online_count, online_users, avatars
 
 
 def list_paths(base_url: str, token: str | None, timeout: float = 2.0) -> dict[str, list[str]]:
@@ -50,7 +67,7 @@ def list_paths(base_url: str, token: str | None, timeout: float = 2.0) -> dict[s
     no ar" e "não falei com o servidor" são coisas diferentes, e confundir as
     duas foi o que escondeu o 403 acima. Quem chama decide o que mostrar.
     """
-    paths, _count, _users = fetch_state(base_url, token, timeout=timeout)
+    paths, _count, _users, _avatars = fetch_state(base_url, token, timeout=timeout)
     return paths
 
 

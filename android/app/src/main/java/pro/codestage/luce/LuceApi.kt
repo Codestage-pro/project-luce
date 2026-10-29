@@ -11,13 +11,15 @@ import java.nio.charset.StandardCharsets
 data class RosterItem(
     val name: String,
     val ready: Boolean,
-    val viewers: List<String>
+    val viewers: List<String>,
+    val avatar: String = ""
 )
 
 data class RosterResponse(
     val items: List<RosterItem>,
     val onlineCount: Int,
-    val onlineUsers: List<String>
+    val onlineUsers: List<String>,
+    val avatars: Map<String, String> = emptyMap()
 )
 
 data class SdpResponse(
@@ -30,6 +32,7 @@ data class DiscordPollResult(
     val token: String = "",
     val discordUser: String = "",
     val user: String = "",
+    val avatar: String = "",
     val message: String = ""
 )
 
@@ -57,10 +60,13 @@ object LuceApi {
         return BufferedReader(InputStreamReader(stream, StandardCharsets.UTF_8)).use { it.readText() }
     }
 
-    fun fetchRosterState(baseUrl: String, token: String?, viewer: String? = null): RosterResponse {
+    fun fetchRosterState(baseUrl: String, token: String?, viewer: String? = null, avatarUrl: String? = null): RosterResponse {
         val conn = openConnection("$baseUrl/v3/paths/list", "GET", token)
         if (!viewer.isNullOrBlank()) {
             conn.setRequestProperty("X-Luce-Viewer", viewer)
+        }
+        if (!avatarUrl.isNullOrBlank() && avatarUrl.startsWith("https://cdn.discordapp.com/")) {
+            conn.setRequestProperty("X-Luce-Avatar", avatarUrl)
         }
         val code = conn.responseCode
         if (code == 401) {
@@ -72,6 +78,18 @@ object LuceApi {
         }
         val body = readResponse(conn)
         val json = JSONObject(body)
+        val avatarsJson = json.optJSONObject("avatars")
+        val avatarsMap = mutableMapOf<String, String>()
+        if (avatarsJson != null) {
+            val keys = avatarsJson.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                val v = avatarsJson.optString(k, "")
+                if (v.isNotBlank()) {
+                    avatarsMap[k] = v
+                }
+            }
+        }
         val itemsArray = json.optJSONArray("items")
         val list = mutableListOf<RosterItem>()
         if (itemsArray != null) {
@@ -79,6 +97,10 @@ object LuceApi {
                 val item = itemsArray.getJSONObject(i)
                 val name = item.optString("name", "")
                 val ready = item.optBoolean("ready", false)
+                var avatar = item.optString("avatar", "")
+                if (avatar.isBlank() && name.isNotBlank() && avatarsMap.containsKey(name)) {
+                    avatar = avatarsMap[name] ?: ""
+                }
                 val viewersJson = item.optJSONArray("viewers")
                 val viewers = mutableListOf<String>()
                 if (viewersJson != null) {
@@ -87,7 +109,7 @@ object LuceApi {
                     }
                 }
                 if (name.isNotBlank()) {
-                    list.add(RosterItem(name = name, ready = ready, viewers = viewers))
+                    list.add(RosterItem(name = name, ready = ready, viewers = viewers, avatar = avatar))
                 }
             }
         }
@@ -99,7 +121,7 @@ object LuceApi {
                 onlineUsers.add(usersArray.getString(i))
             }
         }
-        return RosterResponse(items = list, onlineCount = onlineCount, onlineUsers = onlineUsers)
+        return RosterResponse(items = list, onlineCount = onlineCount, onlineUsers = onlineUsers, avatars = avatarsMap)
     }
 
     fun listPaths(baseUrl: String, token: String?, viewer: String? = null): List<RosterItem> {
@@ -121,6 +143,7 @@ object LuceApi {
                     token = json.optString("token", ""),
                     discordUser = json.optString("discord_user", ""),
                     user = json.optString("user", ""),
+                    avatar = json.optString("avatar", ""),
                     message = json.optString("message", "")
                 )
             }

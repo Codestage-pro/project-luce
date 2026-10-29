@@ -46,6 +46,7 @@ class ProxyTest(unittest.TestCase):
         p.viewers.clear()
         p.online_users.clear()
         p.discord_sessions.clear()
+        p.user_avatars.clear()
         p.WHEP_DELAY = 0
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), p.Handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -54,9 +55,12 @@ class ProxyTest(unittest.TestCase):
     def tearDown(self):
         self.server.shutdown()
 
-    def call(self, method, path, body=b"", auth="Bearer bdk:segredo"):
+    def call(self, method, path, body=b"", auth="Bearer bdk:segredo", headers=None):
+        hdrs = {"Authorization": auth} if auth else {}
+        if headers:
+            hdrs.update(headers)
         req = urllib.request.Request(self.url + path, method=method, data=body or None,
-                                     headers={"Authorization": auth} if auth else {})
+                                     headers=hdrs)
         try:
             with urllib.request.urlopen(req) as r:
                 return r.status, r.read().decode(), r.headers
@@ -85,7 +89,7 @@ class ProxyTest(unittest.TestCase):
         sid = headers["Location"].rsplit("/", 1)[1]
         self.assertTrue(headers["Location"].startswith("/ana/whip/"))
         roster = json.loads(self.call("GET", "/v3/paths/list")[1])
-        self.assertEqual(roster["items"], [{"name": "ana", "ready": True, "viewers": []}])
+        self.assertEqual(roster["items"], [{"name": "ana", "ready": True, "viewers": [], "avatar": ""}])
         self.assertEqual(roster["online_count"], 1)
         self.assertEqual(roster["online_users"], ["ana"])
         self.assertEqual(self.call("PATCH", "/ana/whip")[0], 204)
@@ -347,6 +351,57 @@ class ProxyTest(unittest.TestCase):
         self.assertIn("ana", roster["online_users"])
         self.assertIn("bob", roster["online_users"])
         self.assertEqual(roster["online_count"], len(roster["online_users"]))
+
+    def test_discord_avatar_building_and_ssrf_rejection(self):
+        # 1. Montagem com hash customizado
+        u1 = {"id": "1234567890", "avatar": "abcdef123456"}
+        self.assertEqual(
+            p._build_discord_avatar_url(u1),
+            "https://cdn.discordapp.com/avatars/1234567890/abcdef123456.png?size=128"
+        )
+
+        # 2. Montagem com avatar padrão (sem hash)
+        u2 = {"id": "1234567890", "avatar": None}
+        idx = (1234567890 >> 22) % 6
+        self.assertEqual(
+            p._build_discord_avatar_url(u2),
+            f"https://cdn.discordapp.com/embed/avatars/{idx}.png"
+        )
+
+        # 3. Validação estrita de SSRF (_is_valid_discord_avatar_url)
+        self.assertTrue(p._is_valid_discord_avatar_url("https://cdn.discordapp.com/avatars/1/a.png"))
+        self.assertTrue(p._is_valid_discord_avatar_url("https://cdn.discordapp.com/embed/avatars/0.png"))
+
+        # Rejeições SSRF
+        self.assertFalse(p._is_valid_discord_avatar_url("http://cdn.discordapp.com/avatars/1/a.png"))
+        self.assertFalse(p._is_valid_discord_avatar_url("https://evil.com/avatars/1/a.png"))
+        self.assertFalse(p._is_valid_discord_avatar_url("https://cdn.discordapp.com.attacker.com/a.png"))
+        self.assertFalse(p._is_valid_discord_avatar_url("http://169.254.169.254/latest/meta-data/"))
+        self.assertFalse(p._is_valid_discord_avatar_url("file:///etc/passwd"))
+        self.assertFalse(p._is_valid_discord_avatar_url(""))
+        self.assertFalse(p._is_valid_discord_avatar_url(None))
+
+    def test_roster_avatars(self):
+        # Transmissão de ana enviando X-Luce-Avatar válido
+        valid_avatar = "https://cdn.discordapp.com/avatars/11111/avatar_ana.png?size=128"
+        code, _, _ = self.call("POST", "/ana/whip", OFFER.encode(), headers={"X-Luce-Avatar": valid_avatar})
+        self.assertEqual(code, 201)
+
+        code, body, _ = self.call("GET", "/v3/paths/list")
+        self.assertEqual(code, 200)
+        data = json.loads(body)
+        self.assertIn("avatars", data)
+        self.assertEqual(data["avatars"].get("ana"), valid_avatar)
+        self.assertEqual(len(data["items"]), 1)
+        self.assertEqual(data["items"][0]["avatar"], valid_avatar)
+
+        # Transmissão com tentativa de SSRF via header X-Luce-Avatar é ignorada
+        p.user_avatars.clear()
+        malicious_avatar = "http://169.254.169.254/latest/meta-data/"
+        self.call("POST", "/ana/whip", OFFER.encode(), headers={"X-Luce-Avatar": malicious_avatar})
+        data2 = json.loads(self.call("GET", "/v3/paths/list")[1])
+        self.assertNotEqual(data2["avatars"].get("ana"), malicious_avatar)
+        self.assertEqual(data2["items"][0]["avatar"], "")
 
 
 if __name__ == "__main__":

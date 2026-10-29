@@ -174,6 +174,63 @@ def _open_url(url: str, window: Gtk.Window | None = None) -> bool:
     return True
 
 
+AVATAR_TEXTURE_CACHE: dict[str, Gdk.Texture] = {}
+_PENDING_AVATAR_FETCHES: set[str] = set()
+
+
+def _is_safe_discord_avatar_url(url: str) -> bool:
+    if not url or not isinstance(url, str):
+        return False
+    if not url.startswith("https://cdn.discordapp.com/"):
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        return parsed.scheme == "https" and parsed.netloc == "cdn.discordapp.com"
+    except Exception:
+        return False
+
+
+def _fetch_avatar_texture(url: str, callback) -> None:
+    """Carrega textura de avatar do Discord assincronamente com cache e validação anti-SSRF."""
+    if not _is_safe_discord_avatar_url(url):
+        callback(None)
+        return
+    if url in AVATAR_TEXTURE_CACHE:
+        callback(AVATAR_TEXTURE_CACHE[url])
+        return
+    if url in _PENDING_AVATAR_FETCHES:
+        return
+    _PENDING_AVATAR_FETCHES.add(url)
+
+    def _worker():
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Project-LUCE"}
+            )
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
+                final_url = resp.geturl()
+                if not _is_safe_discord_avatar_url(final_url):
+                    _PENDING_AVATAR_FETCHES.discard(url)
+                    GLib.idle_add(callback, None)
+                    return
+                raw = resp.read(512 * 1024 + 1)
+                if len(raw) > 512 * 1024:
+                    _PENDING_AVATAR_FETCHES.discard(url)
+                    GLib.idle_add(callback, None)
+                    return
+            gbytes = GLib.Bytes.new(raw)
+            texture = Gdk.Texture.new_from_bytes(gbytes)
+            AVATAR_TEXTURE_CACHE[url] = texture
+            _PENDING_AVATAR_FETCHES.discard(url)
+            GLib.idle_add(callback, texture)
+        except Exception:
+            _PENDING_AVATAR_FETCHES.discard(url)
+            GLib.idle_add(callback, None)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
 class LogViewerWindow(Gtk.Window):
     """Visualizador nativo de logs do GTK4 para visualização direta ou fallback."""
 
@@ -252,6 +309,19 @@ class LogViewerWindow(Gtk.Window):
 
         copy_logs_btn.connect("clicked", _copy_active_log)
         actions_bar.append(copy_logs_btn)
+
+        close_btn = Gtk.Button(label="Fechar", css_classes=["stop"])
+        close_btn.connect("clicked", lambda _b: self.close())
+        actions_bar.append(close_btn)
+
+        key_ctl = Gtk.EventControllerKey.new()
+        def _on_key_pressed(_ctl, keyval, _keycode, _state):
+            if keyval == Gdk.KEY_Escape:
+                self.close()
+                return True
+            return False
+        key_ctl.connect("key-pressed", _on_key_pressed)
+        self.add_controller(key_ctl)
 
         root.append(actions_bar)
         self._reload_logs()
@@ -518,6 +588,7 @@ class SettingsWindow(Gtk.Window):
             old = dict(cfg)
             cfg["discord_token"] = ""
             cfg["discord_user"] = ""
+            cfg["discord_avatar"] = ""
             config.save(cfg)
             self._update_discord_ui(cfg)
             if self._on_saved:
@@ -554,6 +625,7 @@ class SettingsWindow(Gtk.Window):
                                     old_c = dict(c)
                                     c["discord_token"] = token
                                     c["discord_user"] = d_user
+                                    c["discord_avatar"] = data.get("avatar") or data.get("discord_avatar") or ""
                                     if u_name and not c.get("name"):
                                         c["name"] = u_name
                                     config.save(c)
@@ -906,6 +978,7 @@ class MainWindow(Gtk.ApplicationWindow):
                                     old_c = dict(c)
                                     c["discord_token"] = token
                                     c["discord_user"] = d_user
+                                    c["discord_avatar"] = data.get("avatar") or data.get("discord_avatar") or ""
                                     if u_name and not c.get("name"):
                                         c["name"] = u_name
                                         self._name_entry.set_text(u_name)
@@ -1583,13 +1656,46 @@ class MainWindow(Gtk.ApplicationWindow):
             self._status.set_label("Permissão revogada: conta não pertence mais ao servidor BDK no Discord.")
             SettingsWindow(self, self._on_settings_saved).present()
 
+    @staticmethod
+    def _make_avatar_widget(name: str, avatar_url: str) -> Gtk.Widget:
+        box = Gtk.Box(css_classes=["avatar-box"], width_request=34, height_request=34)
+        if avatar_url and avatar_url in AVATAR_TEXTURE_CACHE:
+            pic = Gtk.Picture.new_for_paintable(AVATAR_TEXTURE_CACHE[avatar_url])
+            pic.set_can_shrink(True)
+            pic.set_content_fit(Gtk.ContentFit.COVER)
+            pic.set_size_request(34, 34)
+            pic.add_css_class("avatar-img")
+            box.append(pic)
+            return box
+
+        fallback = Gtk.Label(label=name[:1].upper(), css_classes=["avatar"], width_chars=2)
+        box.append(fallback)
+        if avatar_url and _is_safe_discord_avatar_url(avatar_url):
+            def on_loaded(tex: Gdk.Texture | None):
+                if tex is not None:
+                    while box.get_first_child():
+                        box.remove(box.get_first_child())
+                    pic = Gtk.Picture.new_for_paintable(tex)
+                    pic.set_can_shrink(True)
+                    pic.set_content_fit(Gtk.ContentFit.COVER)
+                    pic.set_size_request(34, 34)
+                    pic.add_css_class("avatar-img")
+                    box.append(pic)
+            _fetch_avatar_texture(avatar_url, on_loaded)
+        return box
+
     def _refresh_roster(self) -> bool:
         """Pede o roster fora da thread da GUI (servidor lento travava a janela, inclusive na abertura)."""
         if not self._roster_busy:
             self._roster_busy = True
-            base_url, token = config.load()["base_url"], config.auth_token()
-            viewer_name = config.load().get("name", "")
-            self._run_in_thread(lambda: roster.fetch_state(base_url, token, viewer_name), self._draw_roster)
+            cfg = config.load()
+            base_url, token = cfg["base_url"], config.auth_token()
+            viewer_name = cfg.get("name", "")
+            avatar_url = cfg.get("discord_avatar", "")
+            self._run_in_thread(
+                lambda: roster.fetch_state(base_url, token, viewer_name, avatar_url=avatar_url),
+                self._draw_roster,
+            )
         return True
 
     def _draw_roster(self, state, error) -> None:
@@ -1607,7 +1713,11 @@ class MainWindow(Gtk.ApplicationWindow):
                 Gtk.Label(label=msg, xalign=0, wrap=True)
             )
             return
-        live, online_count, online_users = state
+        if len(state) == 4:
+            live, online_count, online_users, avatars = state
+        else:
+            live, online_count, online_users = state
+            avatars = {}
         self._online_label.set_label(f"{online_count} online")
         if online_users:
             self._online_pill.set_tooltip_text("Online: " + ", ".join(online_users))
@@ -1632,7 +1742,8 @@ class MainWindow(Gtk.ApplicationWindow):
             self._roster_box.append(Gtk.Label(label="Ninguém no ar. Que tal abrir a sala?", xalign=0, margin_top=6, css_classes=["dim"]))
         for name in names:
             row = Gtk.Box(spacing=10, margin_top=6, margin_bottom=6, margin_start=6, margin_end=6)
-            row.append(Gtk.Label(label=name[:1].upper(), css_classes=["avatar"], width_chars=2))
+            av_url = avatars.get(name, "")
+            row.append(self._make_avatar_widget(name, av_url))
             row.append(Gtk.Label(label=name, xalign=0, hexpand=True))
             row.append(Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["on-air"]))
             watch = self._watches.get(name)

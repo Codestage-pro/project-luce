@@ -17,7 +17,8 @@ data class UserSettings(
     val audioSource: String = AUDIO_SOURCE_SYSTEM,
     val theme: String = THEME_LUCE,
     val discordToken: String = "",
-    val discordUser: String = ""
+    val discordUser: String = "",
+    val discordAvatar: String = ""
 ) {
     companion object {
         const val AUDIO_SOURCE_SYSTEM = "SYSTEM"
@@ -53,6 +54,7 @@ object LuceConfig {
     private const val KEY_THEME = "theme"
     private const val KEY_DISCORD_TOKEN = "discord_token"
     private const val KEY_DISCORD_USER = "discord_user"
+    private const val KEY_DISCORD_AVATAR = "discord_avatar"
 
     fun cleanName(raw: String): String {
         val ascii = Normalizer.normalize(raw.trim(), Normalizer.Form.NFKD)
@@ -97,7 +99,8 @@ object LuceConfig {
             audioSource = audio,
             theme = theme,
             discordToken = prefs.getString(KEY_DISCORD_TOKEN, "")?.trim() ?: "",
-            discordUser = prefs.getString(KEY_DISCORD_USER, "")?.trim() ?: ""
+            discordUser = prefs.getString(KEY_DISCORD_USER, "")?.trim() ?: "",
+            discordAvatar = prefs.getString(KEY_DISCORD_AVATAR, "")?.trim() ?: ""
         )
     }
 
@@ -118,6 +121,7 @@ object LuceConfig {
             .putString(KEY_THEME, settings.theme)
             .putString(KEY_DISCORD_TOKEN, settings.discordToken.trim())
             .putString(KEY_DISCORD_USER, settings.discordUser.trim())
+            .putString(KEY_DISCORD_AVATAR, settings.discordAvatar.trim())
             .apply()
     }
 
@@ -129,11 +133,12 @@ object LuceConfig {
         return cleaned
     }
 
-    fun saveDiscordAuth(context: Context, token: String, discordUser: String, userName: String) {
+    fun saveDiscordAuth(context: Context, token: String, discordUser: String, userName: String, avatarUrl: String = "") {
         val cleanUser = cleanName(userName)
         val editor = getPrefs(context).edit()
             .putString(KEY_DISCORD_TOKEN, token.trim())
             .putString(KEY_DISCORD_USER, discordUser.trim())
+            .putString(KEY_DISCORD_AVATAR, avatarUrl.trim())
         if (cleanUser.isNotBlank()) {
             editor.putString(KEY_USER_NAME, cleanUser)
         }
@@ -144,6 +149,7 @@ object LuceConfig {
         getPrefs(context).edit()
             .remove(KEY_DISCORD_TOKEN)
             .remove(KEY_DISCORD_USER)
+            .remove(KEY_DISCORD_AVATAR)
             .apply()
     }
 

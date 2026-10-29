@@ -70,6 +70,32 @@ STATE_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 pending_logins: dict[str, dict] = {}
 pending_lock = threading.Lock()
 
+user_avatars: dict[str, str] = {}  # clean_username -> avatar_url
+user_avatars_lock = threading.Lock()
+
+
+def _is_valid_discord_avatar_url(url: str) -> bool:
+    if not url or not isinstance(url, str):
+        return False
+    if not url.startswith("https://cdn.discordapp.com/"):
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        return parsed.scheme == "https" and parsed.netloc == "cdn.discordapp.com"
+    except Exception:
+        return False
+
+
+def _build_discord_avatar_url(user_info: dict) -> str:
+    user_id = str(user_info.get("id") or "").strip()
+    avatar_hash = str(user_info.get("avatar") or "").strip()
+    if user_id and avatar_hash and re.fullmatch(r"[A-Za-z0-9_]{1,64}", avatar_hash) and user_id.isdigit():
+        return f"https://cdn.discordapp.com/avatars/{user_id}/{avatar_hash}.png?size=128"
+    if user_id.isdigit():
+        idx = (int(user_id) >> 22) % 6
+        return f"https://cdn.discordapp.com/embed/avatars/{idx}.png"
+    return ""
+
 
 def clean_username(raw: str) -> str:
     import unicodedata
@@ -175,16 +201,40 @@ def check_bdk_membership_live(user_id: str, access_token: str = "", username: st
             return discord_sessions.get(user_id, {}).get("is_member", True)
 
     with discord_sessions_lock:
+        existing_avatar = discord_sessions.get(user_id, {}).get("avatar_url", "")
         discord_sessions[user_id] = {
             "access_token": access_token,
             "last_checked": now,
             "is_member": is_member,
+            "avatar_url": existing_avatar,
         }
 
     if not is_member:
         log(f"acesso revogado: user_id {user_id} (@{username}) não está na guild BDK")
         _cleanup_revoked(user_id, username)
         return False
+
+    clean_name = clean_username(username) if username else ""
+    with user_avatars_lock:
+        has_avatar = bool(user_avatars.get(clean_name)) if clean_name else False
+    if not has_avatar and access_token:
+        try:
+            u_req = urllib.request.Request(
+                "https://discord.com/api/v10/users/@me",
+                headers={"Authorization": f"Bearer {access_token}", "User-Agent": USER_AGENT},
+            )
+            with urllib.request.urlopen(u_req, timeout=5) as u_resp:
+                u_info = json.loads(u_resp.read().decode("utf-8"))
+                av_url = _build_discord_avatar_url(u_info)
+                if av_url:
+                    if clean_name:
+                        with user_avatars_lock:
+                            user_avatars[clean_name] = av_url
+                    with discord_sessions_lock:
+                        if user_id in discord_sessions:
+                            discord_sessions[user_id]["avatar_url"] = av_url
+        except Exception as exc:
+            log(f"falha ao buscar avatar Discord para {user_id}: {exc}")
 
     return True
 
@@ -196,10 +246,12 @@ def issue_discord_token(user_id: str, username: str, ttl_days: int = 30, access_
     enc_token = _encrypt_discord_token(access_token) if access_token else ""
     if access_token:
         with discord_sessions_lock:
+            existing_avatar = discord_sessions.get(user_id, {}).get("avatar_url", "")
             discord_sessions[user_id] = {
                 "access_token": access_token,
                 "last_checked": time.time(),
                 "is_member": True,
+                "avatar_url": existing_avatar,
             }
     if enc_token:
         payload = f"discord:{user_id}:{username}:{exp}:{enc_token}"
@@ -416,6 +468,11 @@ def handle_discord_callback(code: str, state: str) -> tuple[int, bytes, str]:
     raw_name = user_info.get("global_name") or user_info.get("username") or "user"
     clean_name = clean_username(raw_name)
     user_id = str(user_info.get("id", "0"))
+    avatar_url = _build_discord_avatar_url(user_info)
+    if avatar_url:
+        with user_avatars_lock:
+            user_avatars[clean_name] = avatar_url
+
     token = issue_discord_token(user_id, clean_name, access_token=access_token)
 
     with pending_lock:
@@ -426,7 +483,13 @@ def handle_discord_callback(code: str, state: str) -> tuple[int, bytes, str]:
             "user": clean_name,
             "discord_tag": discord_username,
             "discord_user": discord_username,
+            "avatar_url": avatar_url,
         }
+
+    if user_id:
+        with discord_sessions_lock:
+            if user_id in discord_sessions:
+                discord_sessions[user_id]["avatar_url"] = avatar_url
 
     return 200, _render_auth_page(
         "Acesso BDK Confirmado!",
@@ -611,9 +674,10 @@ def subscribe(stream: str, offer: str) -> tuple[str, str]:
     raise AssertionError("unreachable")
 
 
-def _record_online_user(auth_header: str, headers) -> None:
+def _record_online_user(auth_header: str, headers, path_user: str = "") -> None:
     viewer = headers.get("X-Luce-Viewer", "").strip() if headers else ""
     username = ""
+    discord_uid = ""
     if auth_header:
         raw = auth_header.strip()
         if raw.startswith("Bearer "):
@@ -621,14 +685,29 @@ def _record_online_user(auth_header: str, headers) -> None:
         for p in raw.split("|"):
             if p.startswith("discord:"):
                 d_parts = p.split(":")
+                if len(d_parts) >= 2 and d_parts[1]:
+                    discord_uid = d_parts[1]
                 if len(d_parts) >= 3 and d_parts[2]:
                     username = clean_username(d_parts[2])
                     break
-    user = viewer or username
+    user = viewer or username or path_user
     if user:
         clean = clean_username(user)
         with online_users_lock:
             online_users[clean] = time.time()
+
+        avatar_hdr = ""
+        if headers:
+            avatar_hdr = (headers.get("X-Luce-Avatar") or headers.get("x-luce-avatar") or "").strip()
+        if avatar_hdr and _is_valid_discord_avatar_url(avatar_hdr):
+            with user_avatars_lock:
+                user_avatars[clean] = avatar_hdr
+        elif discord_uid:
+            with discord_sessions_lock:
+                session_av = discord_sessions.get(discord_uid, {}).get("avatar_url", "")
+            if session_av:
+                with user_avatars_lock:
+                    user_avatars[clean] = session_av
 
 
 def expire() -> None:
@@ -692,16 +771,18 @@ class Handler(BaseHTTPRequestHandler):
     def _handle(self, fn, auth_required: bool = True) -> None:
         try:
             token = self.headers.get("Authorization", "")
+            p_parts = [p for p in self.path.split("?")[0].split("/") if p]
+            path_user = p_parts[0] if (len(p_parts) == 2 and p_parts[1] == "whip") else ""
             if auth_required:
                 if not verify_token(token):
                     raise HttpError(401, "não autorizado")
-                _record_online_user(token, self.headers)
+                _record_online_user(token, self.headers, path_user)
             else:
                 if token and verify_token(token):
-                    _record_online_user(token, self.headers)
-                elif self.headers.get("X-Luce-Viewer"):
-                    _record_online_user("", self.headers)
-            fn([p for p in self.path.split("?")[0].split("/") if p])
+                    _record_online_user(token, self.headers, path_user)
+                elif self.headers.get("X-Luce-Viewer") or path_user:
+                    _record_online_user("", self.headers, path_user)
+            fn(p_parts)
         except HttpError as exc:
             self._reply(exc.code, str(exc).encode())
         except SfuError as exc:
@@ -770,7 +851,17 @@ class Handler(BaseHTTPRequestHandler):
                 raise HttpError(404, "rota desconhecida")
             now_wall = time.time()
             with lock:
-                items = [{"name": name, "ready": True, "viewers": sorted(viewers.get(name, {}))} for name in publishers]
+                with user_avatars_lock:
+                    avatars_snapshot = dict(user_avatars)
+                items = [
+                    {
+                        "name": name,
+                        "ready": True,
+                        "viewers": sorted(viewers.get(name, {})),
+                        "avatar": avatars_snapshot.get(name, ""),
+                    }
+                    for name in publishers
+                ]
                 with online_users_lock:
                     for name in publishers:
                         online_users[name] = now_wall
@@ -782,6 +873,7 @@ class Handler(BaseHTTPRequestHandler):
                 "items": items,
                 "online_count": len(active_users),
                 "online_users": active_users,
+                "avatars": avatars_snapshot,
             }
             self._reply(200, json.dumps(data).encode(), "application/json")
 

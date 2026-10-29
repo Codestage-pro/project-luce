@@ -35,6 +35,7 @@ DEFAULTS: dict[str, Any] = {
     "theme": "luce",  # tema visual: luce, murilo, tirigam, ninja_som, dark
     "discord_token": "",  # token OAuth2 autenticado no Discord (membro BDK)
     "discord_user": "",  # tag / username no Discord
+    "discord_avatar": "",  # URL do avatar no Discord (cdn.discordapp.com)
 }
 
 
