@@ -48,6 +48,7 @@ class MainActivity : ComponentActivity() {
     private var updateInfo by mutableStateOf<UpdateInfo?>(null)
     private var isDownloadingUpdate by mutableStateOf(false)
     private var updateDownloadProgress by mutableStateOf(-1f)
+    private var openSettingsTrigger by mutableStateOf(false)
     private var pendingStartStreamAfterPermission = false
 
     private val screenCaptureLauncher = registerForActivityResult(
@@ -123,13 +124,24 @@ class MainActivity : ComponentActivity() {
                         LuceConfig.save(this, newSettings)
                         Toast.makeText(this, "Configurações salvas!", Toast.LENGTH_SHORT).show()
                         fetchRoster()
-                    }
+                    },
+                    openSettingsTrigger = openSettingsTrigger,
+                    onSettingsOpened = { openSettingsTrigger = false }
                 )
             }
         }
 
+        if (!settings.isFullyAuthenticated) {
+            openSettingsTrigger = true
+        }
+
         startRosterPolling()
         startStreamStatusWatcher()
+        checkForUpdates()
+    }
+
+    override fun onResume() {
+        super.onResume()
         checkForUpdates()
     }
 
@@ -142,6 +154,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleStartStream() {
+        if (!settings.isFullyAuthenticated) {
+            Toast.makeText(this, "Faça login no Discord (BDK) e digite a senha em Configurações", Toast.LENGTH_LONG).show()
+            openSettingsTrigger = true
+            return
+        }
+
         val clean = LuceConfig.cleanName(userName)
         if (clean.isBlank()) {
             Toast.makeText(this, "Digite um nome válido antes de transmitir", Toast.LENGTH_SHORT).show()
@@ -179,6 +197,12 @@ class MainActivity : ComponentActivity() {
         val existing = watchedSessions.find { it.streamName == streamName }
         if (existing != null) {
             handleCloseWatch(existing)
+            return
+        }
+
+        if (!settings.isFullyAuthenticated) {
+            Toast.makeText(this, "Faça login no Discord (BDK) e digite a senha em Configurações", Toast.LENGTH_LONG).show()
+            openSettingsTrigger = true
             return
         }
 
@@ -264,6 +288,12 @@ class MainActivity : ComponentActivity() {
                 val info = Updater.checkUpdate(BuildConfig.VERSION_NAME)
                 if (info != null) {
                     updateInfo = info
+                    // Para imediatamente transmissões e visualizações ativas
+                    handleStopStream()
+                    watchedSessions.forEach { it.stop() }
+                    watchedSessions.clear()
+                    fullscreenStream = null
+                    updateAudioRouting()
                 }
             } catch (_: Exception) {}
         }

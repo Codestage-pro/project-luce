@@ -18,7 +18,10 @@ data class UpdateInfo(
     val tagName: String,
     val downloadUrl: String,
     val releaseNotes: String
-)
+) {
+    val version: String
+        get() = Updater.extractVersion(tagName, releaseNotes)
+}
 
 object Updater {
     private const val ANDROID_LATEST_URL =
@@ -31,7 +34,7 @@ object Updater {
     private const val FALLBACK_ANDROID_TEST_URL =
         "https://api.github.com/repos/MuriloX06/project-luce/releases/tags/android-test"
 
-    private fun extractVersion(tagName: String, body: String): String {
+    fun extractVersion(tagName: String, body: String): String {
         val regex = Regex("""Vers[ãa]o:\s*([^\s\r\n]+)""", RegexOption.IGNORE_CASE)
         val match = regex.find(body)
         if (match != null) {

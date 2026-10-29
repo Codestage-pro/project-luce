@@ -29,10 +29,13 @@ data class UserSettings(
         const val THEME_DARK = "dark"
     }
 
+    val isFullyAuthenticated: Boolean
+        get() = discordToken.isNotBlank() && authPassword.isNotBlank()
+
     val authToken: String?
-        get() = discordToken.ifBlank {
-            if (authPassword.isNotBlank()) "bdk:$authPassword" else null
-        }
+        get() = if (isFullyAuthenticated) {
+            "$discordToken|bdk:$authPassword"
+        } else null
 }
 
 object LuceConfig {

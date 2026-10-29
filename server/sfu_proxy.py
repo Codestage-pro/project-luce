@@ -81,32 +81,55 @@ def issue_discord_token(user_id: str, username: str, ttl_days: int = 30) -> str:
     return f"{payload}:{sig}"
 
 
+def _verify_discord_part(raw_discord: str) -> bool:
+    if not raw_discord.startswith("discord:"):
+        return False
+    parts = raw_discord.split(":")
+    if len(parts) != 5:
+        return False
+    _, user_id, username, exp_str, sig = parts
+    try:
+        exp = int(exp_str)
+    except ValueError:
+        return False
+    if exp < time.time():
+        return False
+    secret = (cfg.get("secret") or cfg.get("password") or "luce_secret").encode("utf-8")
+    payload = f"discord:{user_id}:{username}:{exp_str}"
+    expected_sig = hmac.new(secret, payload.encode("utf-8"), "sha256").hexdigest()
+    return hmac.compare_digest(sig, expected_sig)
+
+
+def _verify_password_part(raw_bdk: str) -> bool:
+    if not raw_bdk.startswith("bdk:"):
+        return False
+    passwd = raw_bdk[4:]
+    server_pw = cfg.get("password", "")
+    return bool(server_pw and hmac.compare_digest(passwd, server_pw))
+
+
 def verify_token(auth_header: str) -> bool:
-    """Valida Bearer discord:<user_id>:<username>:<exp>:<sig> ou Bearer bdk:<BDK_PASSWORD>."""
+    """Valida token de autenticação: formato duplo discord:...|bdk:... ou individual em modo teste."""
     if not auth_header:
         return False
     raw_token = auth_header.strip()
     if raw_token.startswith("Bearer "):
         raw_token = raw_token[7:].strip()
+
+    if "|bdk:" in raw_token:
+        discord_part, bdk_part = raw_token.split("|", 1)
+        return _verify_discord_part(discord_part) and _verify_password_part(bdk_part)
+
+    # Se Discord estiver configurado no servidor, dupla autenticação é obrigatória
+    is_discord_enforced = bool(cfg.get("discord_client_id") and cfg.get("discord_guild_id"))
+    if is_discord_enforced:
+        return False
+
+    # Fallback para ambiente de desenvolvimento/testes unitários sem Discord configurado
     if raw_token.startswith("discord:"):
-        parts = raw_token.split(":")
-        if len(parts) != 5:
-            return False
-        _, user_id, username, exp_str, sig = parts
-        try:
-            exp = int(exp_str)
-        except ValueError:
-            return False
-        if exp < time.time():
-            return False
-        secret = (cfg.get("secret") or cfg.get("password") or "luce_secret").encode("utf-8")
-        payload = f"discord:{user_id}:{username}:{exp_str}"
-        expected_sig = hmac.new(secret, payload.encode("utf-8"), "sha256").hexdigest()
-        return hmac.compare_digest(sig, expected_sig)
+        return _verify_discord_part(raw_token)
     elif raw_token.startswith("bdk:"):
-        passwd = raw_token[4:]
-        server_pw = cfg.get("password", "")
-        return bool(server_pw and hmac.compare_digest(passwd, server_pw))
+        return _verify_password_part(raw_token)
     return False
 
 
@@ -249,7 +272,9 @@ def handle_discord_callback(code: str, state: str) -> tuple[int, bytes, str]:
             "status": "ok",
             "token": token,
             "username": clean_name,
+            "user": clean_name,
             "discord_tag": discord_username,
+            "discord_user": discord_username,
         }
 
     return 200, _render_auth_page(

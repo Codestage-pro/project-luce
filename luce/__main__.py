@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import os
 import signal
 import sys
 import time
@@ -18,7 +19,56 @@ from .capture_pipeline import CapturePipeline
 from .watch_pipeline import WatchPipeline
 
 
+class _TeeStream:
+    def __init__(self, original, file_obj):
+        self.original = original
+        self.file_obj = file_obj
+
+    def write(self, data):
+        if self.original:
+            try:
+                self.original.write(data)
+                self.original.flush()
+            except Exception:
+                pass
+        if self.file_obj:
+            try:
+                self.file_obj.write(data)
+                self.file_obj.flush()
+            except Exception:
+                pass
+
+    def flush(self):
+        if self.original:
+            try:
+                self.original.flush()
+            except Exception:
+                pass
+        if self.file_obj:
+            try:
+                self.file_obj.flush()
+            except Exception:
+                pass
+
+
+def _setup_linux_logging() -> None:
+    if sys.platform == "win32":
+        return
+    log_dir = config.log_dir()
+    os.environ.setdefault("GST_DEBUG", "2")
+    os.environ.setdefault("GST_DEBUG_NO_COLOR", "1")
+    os.environ.setdefault("GST_DEBUG_FILE", str(log_dir / "gst.log"))
+
+    try:
+        log_file = open(log_dir / "luce.log", "a", encoding="utf-8", buffering=1)
+        sys.stdout = _TeeStream(sys.stdout, log_file)
+        sys.stderr = _TeeStream(sys.stderr, log_file)
+    except Exception as exc:
+        print(f"[log] erro ao abrir arquivo de log: {exc}", file=sys.stderr)
+
+
 def cmd_gui(_args: argparse.Namespace) -> int:
+    _setup_linux_logging()
     from .gui import main as gui_main
 
     return gui_main()
@@ -190,6 +240,7 @@ def main() -> int:
     gui.set_defaults(func=cmd_gui)
 
     args = parser.parse_args()
+    _setup_linux_logging()
     return args.func(args)
 
 

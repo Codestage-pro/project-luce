@@ -138,6 +138,14 @@ scale slider { background: @texto; border-radius: 999px; min-width: 14px; min-he
 dropdown > button, switch { border-radius: 10px; }
 switch { background: @linha; }
 switch:checked { background-image: linear-gradient(135deg, @ciano, @violeta); }
+
+.update-card { background: @painel; border: 1px solid alpha(@ciano, 0.4); border-radius: 16px; padding: 24px; }
+.update-badge { background: alpha(@magenta, 0.2); color: @magenta; border: 1px solid @magenta; border-radius: 999px; padding: 4px 12px; font-weight: 700; font-size: 11px; }
+.update-title { font-size: 18px; font-weight: 800; color: @texto; }
+.update-version { font-size: 14px; font-weight: 700; color: @ciano; }
+.update-desc { font-size: 13px; color: @mudo; }
+progressbar trough { background: @linha; border-radius: 6px; min-height: 8px; }
+progressbar progress { background-image: linear-gradient(to right, @ciano, @violeta); border-radius: 6px; }
 """
 
 _provider: Gtk.CssProvider | None = None

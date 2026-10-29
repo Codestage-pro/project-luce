@@ -132,12 +132,11 @@ class SettingsWindow(Gtk.Window):
 
         self._fields: dict[str, Gtk.Entry] = {}
         text_rows = [
-            ("base_url", "Servidor (WHIP/WHEP)"),
             ("auth_password", "Senha do grupo (BDK)"),
         ]
         for i, (key, label) in enumerate(text_rows):
             grid.attach(Gtk.Label(label=label, xalign=0), 0, i, 1, 1)
-            entry = Gtk.Entry(text=str(cfg[key]))
+            entry = Gtk.Entry(text=str(cfg.get(key, "")))
             grid.attach(entry, 1, i, 1, 1)
             self._fields[key] = entry
 
@@ -219,11 +218,23 @@ class SettingsWindow(Gtk.Window):
         self._update_discord_ui(cfg)
 
         save_row = next_row + 10
-        if os.name == "nt":  # AppData\Local é oculta: sem este atalho ninguém acha o luce.log pra mandar
-            logs = Gtk.Button(label="Abrir pasta de logs")
-            logs.connect("clicked", lambda _b: os.startfile(Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "LUCE"))
-            grid.attach(logs, 0, save_row, 2, 1)
-            save_row += 1
+        logs = Gtk.Button(label="Abrir pasta de logs")
+        def _open_logs(_b: Gtk.Button) -> None:
+            d = config.log_dir()
+            if os.name == "nt":
+                try:
+                    os.startfile(str(d))
+                except Exception:
+                    pass
+            else:
+                try:
+                    Gtk.show_uri(self, d.as_uri(), Gdk.CURRENT_TIME)
+                except Exception:
+                    import subprocess
+                    subprocess.Popen(["xdg-open", str(d)])
+        logs.connect("clicked", _open_logs)
+        grid.attach(logs, 0, save_row, 2, 1)
+        save_row += 1
 
         save = Gtk.Button(label="Salvar", css_classes=["go"])
         save.connect("clicked", self._on_save)
@@ -262,8 +273,7 @@ class SettingsWindow(Gtk.Window):
             return
 
         state = secrets.token_urlsafe(24)
-        base_url = self._fields["base_url"].get_text().strip() or cfg.get("base_url", "https://luce.codestage.pro")
-        base_url = base_url.rstrip("/")
+        base_url = cfg.get("base_url", "https://luce.codestage.pro").strip().rstrip("/") or "https://luce.codestage.pro"
         login_url = f"{base_url}/auth/discord/login?state={state}"
         self._discord_btn.set_sensitive(False)
         self._discord_status_lbl.set_text("Aguardando login no navegador…")
@@ -383,8 +393,14 @@ class MainWindow(Gtk.ApplicationWindow):
         # EGL_BAD_CONTEXT — ver comentário em CapturePipeline._on_need_context.
         self._gl_display = GstGL.GLDisplay.new()
 
+        self._stack = Gtk.Stack()
+        self._stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.set_child(self._stack)
+
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin_top=14, margin_bottom=14, margin_start=14, margin_end=14)
-        self.set_child(root)
+        self._stack.add_named(root, "main")
+        self._build_update_gate()
+        self._stack.set_visible_child_name("main")
 
         # cabeçalho: logo, nome e o feixe de luz (vira magenta e respira no ar)
         head = Gtk.Box(spacing=10)
@@ -409,18 +425,15 @@ class MainWindow(Gtk.ApplicationWindow):
         self._tray = None
         self._apply_tray(config.load()["keep_in_tray"])
 
-        if WINDOWS or updater.is_flatpak():
-            self._update_btn = Gtk.Button(visible=False, css_classes=["suggested-action"])
-            self._update_btn.connect("clicked", self._on_update_clicked)
-            root.append(self._update_btn)
-            self._update: tuple[str, str, str | None] | None = None
-            self._run_in_thread(updater.find_update, self._on_update_found)
+        self._update: tuple[str, str, str | None] | None = None
+        self._run_in_thread(updater.find_update, self._on_update_found)
+        GLib.timeout_add_seconds(600, lambda: (self._run_in_thread(updater.find_update, self._on_update_found), True)[1])
 
         cfg = config.load()
         self._name_entry = Gtk.Entry(text=cfg["name"], placeholder_text="seu nome")
         root.append(self._name_entry)
         self._update_discord_head_btn()
-        if not cfg["auth_password"] and not cfg.get("discord_token"):  # primeira abertura: sem senha do grupo nem discord
+        if not config.is_fully_authenticated(cfg):
             GLib.idle_add(SettingsWindow(self, self._on_settings_saved).present)
 
         share_row = Gtk.Box(spacing=8)
@@ -434,7 +447,8 @@ class MainWindow(Gtk.ApplicationWindow):
 
         status_pill = Gtk.Box(spacing=10, css_classes=["status"])
         status_pill.append(Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["status-dot"]))
-        self._status = Gtk.Label(label="pronto para transmitir", xalign=0, wrap=True, hexpand=True)
+        initial_status = "pronto para transmitir" if config.is_fully_authenticated(cfg) else "faça login no Discord (BDK) e digite a senha em Configurações"
+        self._status = Gtk.Label(label=initial_status, xalign=0, wrap=True, hexpand=True)
         status_pill.append(self._status)
         root.append(status_pill)
         self._stats_label = Gtk.Label(label="", xalign=0, css_classes=["monospace", "stats"])
@@ -481,6 +495,10 @@ class MainWindow(Gtk.ApplicationWindow):
         if self._capture is not None:
             self._stop_sharing()
             return
+        if not config.is_fully_authenticated():
+            self._status.set_label("faça login no Discord (BDK) e digite a senha em Configurações")
+            SettingsWindow(self, self._on_settings_saved).present()
+            return
         name = self._sync_user_name(fallback_os=False)
         if not name:
             self._status.set_label("digite um nome válido antes de transmitir")
@@ -492,7 +510,8 @@ class MainWindow(Gtk.ApplicationWindow):
             roster.list_paths(cfg["base_url"], config.auth_token())
         except urllib.error.HTTPError as exc:
             if exc.code == 401:
-                self._status.set_label("senha do grupo errada ou vazia: confira em Configurações")
+                self._status.set_label("faça login no Discord (BDK) e digite a senha em Configurações")
+                SettingsWindow(self, self._on_settings_saved).present()
                 return
         except Exception as exc:
             self._status.set_label(f"servidor não respondeu: {exc}")
@@ -670,6 +689,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self._update_discord_head_btn()
         if new.get("name") and self._name_entry.get_text() != new["name"]:
             self._name_entry.set_text(new["name"])
+        if not config.is_fully_authenticated(new):
+            self._status.set_label("faça login no Discord (BDK) e digite a senha em Configurações")
+        else:
+            if self._capture is None:
+                self._status.set_label("pronto para transmitir")
         self._refresh_roster()
         cap = self._capture
         if cap is None:
@@ -940,6 +964,11 @@ class MainWindow(Gtk.ApplicationWindow):
             self._stop_watch(name)
             return
 
+        if not config.is_fully_authenticated():
+            self._status.set_label("faça login no Discord (BDK) e digite a senha em Configurações")
+            SettingsWindow(self, self._on_settings_saved).present()
+            return
+
         sink = Gst.ElementFactory.make("gtk4paintablesink", None)
         if sink is None:
             self._status.set_label("falta o pacote gst-plugin-gtk4 para exibir o vídeo")
@@ -1089,49 +1118,143 @@ class MainWindow(Gtk.ApplicationWindow):
             GLib.idle_add(done, result, error)
         threading.Thread(target=run, daemon=True).start()
 
+    def _build_update_gate(self) -> None:
+        gate_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=16,
+            valign=Gtk.Align.CENTER,
+            halign=Gtk.Align.CENTER,
+            margin_top=24,
+            margin_bottom=24,
+            margin_start=24,
+            margin_end=24,
+        )
+        card = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=14,
+            css_classes=["update-card"],
+        )
+        card.set_size_request(320, -1)
+        gate_box.append(card)
+
+        badge_box = Gtk.Box(halign=Gtk.Align.CENTER)
+        badge = Gtk.Label(label="ATUALIZAÇÃO OBRIGATÓRIA", css_classes=["update-badge"])
+        badge_box.append(badge)
+        card.append(badge_box)
+
+        title = Gtk.Label(label="Project LUCE", css_classes=["update-title"])
+        card.append(title)
+
+        self._gate_version_lbl = Gtk.Label(label="Nova versão disponível", css_classes=["update-version"])
+        card.append(self._gate_version_lbl)
+
+        desc = Gtk.Label(
+            label="Uma nova versão é necessária para continuar usando o Project LUCE.",
+            wrap=True,
+            justify=Gtk.Justification.CENTER,
+            css_classes=["update-desc"],
+        )
+        card.append(desc)
+
+        self._gate_progress = Gtk.ProgressBar(visible=False, hexpand=True)
+        card.append(self._gate_progress)
+
+        self._gate_status_lbl = Gtk.Label(label="", wrap=True, css_classes=["dim"], visible=False)
+        card.append(self._gate_status_lbl)
+
+        actions_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=8)
+        self._gate_update_btn = Gtk.Button(label="Atualizar Agora", css_classes=["go"])
+        self._gate_update_btn.connect("clicked", self._on_gate_update_clicked)
+        actions_box.append(self._gate_update_btn)
+
+        self._gate_quit_btn = Gtk.Button(label="Sair")
+        self._gate_quit_btn.connect("clicked", lambda _b: self.quit_app())
+        actions_box.append(self._gate_quit_btn)
+
+        card.append(actions_box)
+        self._stack.add_named(gate_box, "update_gate")
+
     def _on_update_found(self, found, error) -> None:
         if error is not None or found is None:  # na checagem, falhar em silêncio: não atrapalha quem só quer transmitir
             return
         self._update = found
-        self._update_btn.set_label(f"Nova versão {found[0]} disponível · Atualizar agora")
-        self._update_btn.set_visible(True)
+        tag = found[0]
+        # Interrompe transmissões e visualizações ativas imediatamente
+        self._stop_sharing()
+        for name in list(self._watches.keys()):
+            self._stop_watch(name)
+        if self._viewer:
+            try:
+                self._viewer.close()
+            except Exception:
+                pass
 
-    def _on_update_clicked(self, _btn) -> None:
-        self._update_btn.set_sensitive(False)
+        self._gate_version_lbl.set_label(f"Versão {tag}")
+        self._stack.set_visible_child_name("update_gate")
+
+    def _on_gate_update_clicked(self, _btn: Gtk.Button) -> None:
+        if not self._update:
+            return
+        self._gate_update_btn.set_sensitive(False)
+        self._gate_progress.set_visible(True)
+        self._gate_status_lbl.set_visible(True)
+
         if updater.is_flatpak():
-            self._update_btn.set_label("Atualizando… 0%")
-            updater.flatpak_update(
-                lambda p: self._update_btn.set_label(f"Atualizando… {p}%"),
-                self._on_flatpak_updated,
+            self._gate_status_lbl.set_label("Atualizando via Flatpak… 0%")
+            self._gate_progress.set_fraction(0.0)
+            def on_progress(p):
+                self._gate_progress.set_fraction(p / 100.0)
+                self._gate_status_lbl.set_label(f"Atualizando… {p}%")
+            updater.flatpak_update(on_progress, self._on_gate_flatpak_updated)
+            return
+
+        if WINDOWS:
+            _version, url, sha256 = self._update
+            self._gate_status_lbl.set_label("Baixando atualização… 0%")
+            self._gate_progress.set_fraction(0.0)
+            def on_dl_progress(f):
+                GLib.idle_add(self._gate_progress.set_fraction, f)
+                GLib.idle_add(self._gate_status_lbl.set_label, f"Baixando… {f:.0%}")
+            self._run_in_thread(
+                lambda: updater.download(url, sha256, on_dl_progress),
+                self._on_gate_downloaded,
             )
             return
-        _version, url, sha256 = self._update
-        self._update_btn.set_label("Baixando… 0%")
-        self._run_in_thread(
-            lambda: updater.download(url, sha256, lambda f: GLib.idle_add(self._update_btn.set_label, f"Baixando… {f:.0%}")),
-            self._on_update_downloaded,
-        )
 
-    def _on_flatpak_updated(self, error) -> None:
+        # Linux não-Flatpak (Arch/sistema): abre o link da Release no navegador
+        _version, url, _sha256 = self._update
+        target_url = url or "https://github.com/Codestage-pro/project-luce/releases/latest"
+        try:
+            Gtk.show_uri(self, target_url, Gdk.CURRENT_TIME)
+        except Exception:
+            webbrowser.open(target_url)
+        self._gate_status_lbl.set_label("Página de download aberta no navegador. Atualize o pacote e reinicie o app.")
+
+    def _on_gate_flatpak_updated(self, error) -> None:
         if error is not None:
-            self._update_btn.set_label(f"Falha ao atualizar ({error}) · Tentar de novo")
-            self._update_btn.set_sensitive(True)
+            self._gate_status_lbl.set_label(f"Falha ao atualizar ({error})")
+            self._gate_update_btn.set_label("Tentar de novo")
+            self._gate_update_btn.set_sensitive(True)
             return
-        self._update_btn.set_label("Atualizado! Reiniciando…")
+        self._gate_status_lbl.set_label("Atualizado com sucesso! Reiniciando…")
+        self._gate_progress.set_fraction(1.0)
         try:
             updater.restart_flatpak()
-        except Exception as exc:  # sem reabrir sozinho, ao menos não deixa o botão preso
-            self._update_btn.set_label(f"Atualizado! Abra o LUCE de novo ({exc})")
+        except Exception as exc:
+            self._gate_status_lbl.set_label(f"Atualizado! Abra o LUCE de novo ({exc})")
             return
         self.quit_app()
 
-    def _on_update_downloaded(self, installer, error) -> None:
+    def _on_gate_downloaded(self, installer, error) -> None:
         if error is not None:
-            self._update_btn.set_label(f"Não consegui baixar ({error}) · Tentar de novo")
-            self._update_btn.set_sensitive(True)
+            self._gate_status_lbl.set_label(f"Falha ao baixar ({error})")
+            self._gate_update_btn.set_label("Tentar de novo")
+            self._gate_update_btn.set_sensitive(True)
             return
-        updater.run_installer(installer)  # fecha o app e abre de novo quando terminar
-        self.get_application().quit()
+        self._gate_status_lbl.set_label("Iniciando instalador…")
+        self._gate_progress.set_fraction(1.0)
+        updater.run_installer(installer)
+        self.quit_app()
 
     def _apply_tray(self, enabled: bool) -> None:
         """Cria ou remove o ícone da bandeja conforme "Manter na bandeja ao fechar"."""
@@ -1206,11 +1329,12 @@ class MainWindow(Gtk.ApplicationWindow):
         for child in list(self._roster_box):
             self._roster_box.remove(child)
         if error is not None:
-            # Falha de rede vira mensagem na própria lista: antes virava lista
-            # vazia indistinguível de "ninguém no ar", que foi o que escondeu
-            # um 403 do Cloudflare.
+            if isinstance(error, urllib.error.HTTPError) and error.code == 401:
+                msg = "faça login no Discord (BDK) e digite a senha em Configurações"
+            else:
+                msg = f"servidor não respondeu: {error}"
             self._roster_box.append(
-                Gtk.Label(label=f"servidor não respondeu: {error}", xalign=0, wrap=True)
+                Gtk.Label(label=msg, xalign=0, wrap=True)
             )
             return
         names = [n for n in live if n != cfg["name"]]

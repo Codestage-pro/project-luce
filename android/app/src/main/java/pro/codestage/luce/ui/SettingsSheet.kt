@@ -121,26 +121,6 @@ fun SettingsSheet(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // URL do Servidor
-            OutlinedTextField(
-                value = serverUrl,
-                onValueChange = { serverUrl = it },
-                label = { Text("Servidor") },
-                placeholder = { Text("https://luce.codestage.pro") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = LuceCyan,
-                    unfocusedBorderColor = LuceBorder,
-                    focusedLabelColor = LuceCyan,
-                    unfocusedLabelColor = LuceMuted,
-                    focusedTextColor = LuceText,
-                    unfocusedTextColor = LuceText
-                )
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
             // Senha do Grupo
             OutlinedTextField(
                 value = password,

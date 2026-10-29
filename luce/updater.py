@@ -17,8 +17,12 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-API = "https://api.github.com/repos/Codestage-pro/project-luce/releases?per_page=10"
+API_URLS = [
+    "https://api.github.com/repos/Codestage-pro/project-luce/releases?per_page=15",
+    "https://api.github.com/repos/MuriloX06/project-luce/releases?per_page=15",
+]
 ROOT = Path(__file__).resolve().parents[1]  # no bundle: a pasta com version.txt e luce.ico
+BUILTIN_VERSION = "1.0.31"
 
 
 def is_flatpak() -> bool:
@@ -30,58 +34,76 @@ def _numbers(version: str) -> tuple[int, ...]:
     return tuple(int(n) for n in re.findall(r"\d+", version.split("-")[0].lstrip("v")))
 
 
-def current_version() -> str | None:
-    """None fora do bundle ou flatpak (rodando do repositório): nesse caso não há o que atualizar."""
-    if is_flatpak():
+def current_version() -> str:
+    """Retorna a versão instalada atual procurando metainfo, version.txt ou builtin."""
+    candidates = [
+        Path("/app/share/metainfo/pro.codestage.Luce.metainfo.xml"),
+        Path("/usr/share/metainfo/pro.codestage.Luce.metainfo.xml"),
+        ROOT / "packaging" / "pro.codestage.Luce.metainfo.xml",
+    ]
+    for p in candidates:
+        if p.exists():
+            try:
+                xml = p.read_text(encoding="utf-8")
+                m = re.search(r'<release\s+version="([^"]+)"', xml)
+                if m:
+                    return m.group(1).strip()
+            except OSError:
+                pass
+
+    version_file = ROOT / "version.txt"
+    if version_file.exists():
         try:
-            xml = Path("/app/share/metainfo/pro.codestage.Luce.metainfo.xml").read_text()
-            m = re.search(r'<release\s+version="([^"]+)"', xml)
-            return m.group(1) if m else None
+            v = version_file.read_text(encoding="utf-8").strip()
+            if v:
+                return v
         except OSError:
-            return None
-    try:
-        return (ROOT / "version.txt").read_text().strip()
-    except OSError:
-        return None
+            pass
+
+    return BUILTIN_VERSION
 
 
 def find_update() -> tuple[str, str, str | None] | None:
-    """(versão nova, url do instalador, sha256) se há Release mais nova que a instalada."""
+    """(versão nova, url do instalador/release, sha256) se há Release mais nova que a instalada."""
     mine = current_version()
-    if mine is None:
-        return None
-    req = urllib.request.Request(API, headers={"Accept": "application/vnd.github+json", "User-Agent": "project-luce"})
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            releases = json.load(resp)
-    except Exception:
-        return None
+    releases = []
+    for api_url in API_URLS:
+        try:
+            req = urllib.request.Request(
+                api_url,
+                headers={"Accept": "application/vnd.github+json", "User-Agent": "project-luce"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+                if isinstance(data, list) and data:
+                    releases = data
+                    break
+        except Exception:
+            continue
 
-    if not isinstance(releases, list):
+    if not releases:
         return None
-
-    flatpak = is_flatpak()
 
     for release in releases:
         if release.get("draft"):
             continue
-        tag_raw = release.get("tag_name", "")
-        # Ignora releases exclusivas de Android ou outras plataformas
-        if tag_raw.startswith("android-") or "android" in tag_raw.lower():
+        tag = release.get("tag_name", "")
+        if tag in ("windows-test", "android-test", "android-latest"):
+            continue
+        # Ignora releases exclusivas de Android
+        if tag.startswith("android-") or "android" in tag.lower():
+            continue
+        if not (tag.startswith("v") or tag.startswith("windows-v") or tag.startswith("linux-v")):
             continue
 
-        if flatpak:
-            # Para Flatpak: primeira release oficial v* ou linux-v*
-            if tag_raw.startswith("v") or tag_raw.startswith("linux-v"):
-                tag = tag_raw.removeprefix("linux-v").removeprefix("v")
-                if _numbers(tag) > _numbers(mine):
-                    return tag, "", None
-        else:
-            # Para Windows: primeira release não-prerelease com Luce-Setup.exe
+        clean_tag = tag.removeprefix("windows-v").removeprefix("linux-v").removeprefix("v")
+        if _numbers(clean_tag) > _numbers(mine):
+            if sys.platform != "win32":
+                url = release.get("html_url") or "https://github.com/Codestage-pro/project-luce/releases/latest"
+                return tag, url, None
+
+            # No Windows procura o Luce-Setup.exe
             if release.get("prerelease"):
-                continue
-            tag = tag_raw.removeprefix("windows-v").removeprefix("v")
-            if _numbers(tag) <= _numbers(mine):
                 continue
             for asset in release.get("assets", []):
                 if asset.get("name") == "Luce-Setup.exe":

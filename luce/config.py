@@ -20,7 +20,7 @@ if os.name == "nt":  # o instalador do Windows põe o default ao lado de luce/
     SYSTEM_CONFIG_FILES.append(Path(__file__).resolve().parents[1] / "config.toml")
 
 DEFAULTS: dict[str, Any] = {
-    "base_url": "http://127.0.0.1:8889",  # server/sfu_proxy.py (WHIP, WHEP e roster)
+    "base_url": os.environ.get("LUCE_BASE_URL", "https://luce.codestage.pro"),  # server/sfu_proxy.py (WHIP, WHEP e roster)
     "name": "",
     "width": 1920,
     "height": 1080,
@@ -51,6 +51,13 @@ def load() -> dict[str, Any]:
             data.update(tomllib.loads(CONFIG_FILE.read_text()))
         except Exception as exc:
             print(f"[config] {CONFIG_FILE} corrompido ou inválido ({exc}), usando padrões", file=sys.stderr)
+
+    # Força URL oficial caso esteja vazia ou apontando para localhost antigo
+    base_url = (data.get("base_url") or "").strip()
+    if not base_url or base_url.startswith("http://127.0.0.1:8889"):
+        data["base_url"] = os.environ.get("LUCE_BASE_URL", "https://luce.codestage.pro")
+    elif os.environ.get("LUCE_BASE_URL"):
+        data["base_url"] = os.environ["LUCE_BASE_URL"]
     return data
 
 
@@ -87,11 +94,27 @@ def whep_endpoint(path: str) -> str:
     return f"{load()['base_url']}/{path}/whep"
 
 
+def is_fully_authenticated(cfg: dict[str, Any] | None = None) -> bool:
+    """Verifica se o usuário possui a dupla autenticação configurada (Discord BDK + Senha)."""
+    c = cfg if cfg is not None else load()
+    return bool(c.get("discord_token", "").strip() and c.get("auth_password", "").strip())
+
+
 def auth_token() -> str | None:
-    """Header Authorization para WHIP/WHEP: discord:<token> ou bdk:<password>."""
+    """Retorna o token combinado discord:...|bdk:... exigido para dupla autenticação."""
     cfg = load()
-    token = cfg.get("discord_token", "").strip()
-    if token:
-        return token
-    password = cfg.get("auth_password", "").strip()
-    return f"bdk:{password}" if password else None
+    discord_token = cfg.get("discord_token", "").strip()
+    auth_password = cfg.get("auth_password", "").strip()
+    if discord_token and auth_password:
+        return f"{discord_token}|bdk:{auth_password}"
+    return None
+
+
+def log_dir() -> Path:
+    """Diretório de logs do Project LUCE por plataforma."""
+    if os.name == "nt":
+        d = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "LUCE"
+    else:
+        d = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")) / "project-luce" / "logs"
+    d.mkdir(parents=True, exist_ok=True)
+    return d

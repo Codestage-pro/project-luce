@@ -219,21 +219,42 @@ class ProxyTest(unittest.TestCase):
         self.assertTrue(p.verify_token(f"Bearer {token}"))
         self.assertTrue(p.verify_token(token))  # sem prefixo
 
-        # Legacy BDK token ainda funciona
+        # Legacy BDK token ainda funciona em dev
         self.assertTrue(p.verify_token("Bearer bdk:segredo"))
 
-        # Token adulterado / assinatura inválida
+        # Dupla autenticação combinada: discord:...|bdk:...
+        dual_token = f"{token}|bdk:segredo"
+        self.assertTrue(p.verify_token(f"Bearer {dual_token}"))
+        self.assertTrue(p.verify_token(dual_token))
+
+        # Dupla autenticação com senha errada
+        self.assertFalse(p.verify_token(f"Bearer {token}|bdk:errada"))
+
+        # Dupla autenticação com token discord expirado ou adulterado
         corrupt = token[:-4] + "ffff"
         self.assertFalse(p.verify_token(f"Bearer {corrupt}"))
+        self.assertFalse(p.verify_token(f"Bearer {corrupt}|bdk:segredo"))
 
-        # Token expirado
         expired_token = p.issue_discord_token("987654321", "MuriloX06", ttl_days=-1)
         self.assertFalse(p.verify_token(f"Bearer {expired_token}"))
+        self.assertFalse(p.verify_token(f"Bearer {expired_token}|bdk:segredo"))
 
         # Token com formato quebrado
         self.assertFalse(p.verify_token("Bearer discord:bad"))
         self.assertFalse(p.verify_token("Bearer discord:123:user:notanint:fakehmac"))
         self.assertFalse(p.verify_token("Bearer outro:token"))
+
+        # Em produção (quando discord_client_id e discord_guild_id estão definidos),
+        # dupla autenticação é estritamente obrigatória (rejeita individual)
+        try:
+            p.cfg["discord_client_id"] = "mock_client_id"
+            p.cfg["discord_guild_id"] = "mock_guild_id"
+            self.assertFalse(p.verify_token("Bearer bdk:segredo"))
+            self.assertFalse(p.verify_token(f"Bearer {token}"))
+            self.assertTrue(p.verify_token(f"Bearer {dual_token}"))
+        finally:
+            p.cfg.pop("discord_client_id", None)
+            p.cfg.pop("discord_guild_id", None)
 
     def test_discord_poll_endpoint(self):
         # State com caracteres inválidos

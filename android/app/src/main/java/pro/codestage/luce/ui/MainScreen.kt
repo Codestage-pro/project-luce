@@ -1,5 +1,6 @@
 package pro.codestage.luce.ui
 
+import android.app.Activity
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -44,6 +45,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,9 +54,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import pro.codestage.luce.R
@@ -87,10 +91,32 @@ fun MainScreen(
     updateDownloadProgress: Float = -1f,
     onUpdateClick: (UpdateInfo) -> Unit,
     onThemeChange: ((String) -> Unit)? = null,
-    onSaveSettings: (UserSettings) -> Unit
+    onSaveSettings: (UserSettings) -> Unit,
+    openSettingsTrigger: Boolean = false,
+    onSettingsOpened: (() -> Unit)? = null
 ) {
     var showSettingsSheet by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    LaunchedEffect(openSettingsTrigger) {
+        if (openSettingsTrigger) {
+            showSettingsSheet = true
+            onSettingsOpened?.invoke()
+        }
+    }
+
+    if (updateInfo != null) {
+        val context = LocalContext.current
+        val activity = context as? Activity
+        MandatoryUpdateScreen(
+            updateInfo = updateInfo,
+            isDownloading = isDownloadingUpdate,
+            progress = updateDownloadProgress,
+            onUpdateClick = { onUpdateClick(updateInfo) },
+            onQuitClick = { activity?.finishAffinity() }
+        )
+        return
+    }
 
     if (fullscreenStream != null) {
         WatchGrid(
@@ -123,15 +149,6 @@ fun MainScreen(
                     }
                 },
                 actions = {
-                    if (updateInfo != null) {
-                        IconButton(onClick = { onUpdateClick(updateInfo) }) {
-                            Icon(
-                                Icons.Default.SystemUpdate,
-                                contentDescription = "Atualização disponível",
-                                tint = LuceCyan
-                            )
-                        }
-                    }
                     IconButton(onClick = { showSettingsSheet = true }) {
                         Icon(
                             Icons.Default.Settings,
@@ -156,109 +173,6 @@ fun MainScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Banner de Atualização Disponível
-            if (updateInfo != null) {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(1.dp, LuceMagenta.copy(alpha = 0.6f), RoundedCornerShape(12.dp)),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = LuceCardElevated)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(36.dp)
-                                        .background(LuceMagenta.copy(alpha = 0.2f), CircleShape),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        Icons.Default.SystemUpdate,
-                                        contentDescription = null,
-                                        tint = LuceMagenta,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column {
-                                    Text(
-                                        text = "Nova versão disponível",
-                                        color = LuceText,
-                                        fontSize = 15.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        text = "v${updateInfo.tagName}",
-                                        color = LuceMagenta,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                }
-                            }
-
-                            if (!isDownloadingUpdate) {
-                                Button(
-                                    onClick = { onUpdateClick(updateInfo) },
-                                    colors = ButtonDefaults.buttonColors(containerColor = LuceMagenta),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text("Atualizar", fontWeight = FontWeight.Bold, color = Color.White)
-                                }
-                            }
-                        }
-
-                        if (isDownloadingUpdate) {
-                            Spacer(modifier = Modifier.height(12.dp))
-                            val pctText = if (updateDownloadProgress >= 0f) {
-                                "${(updateDownloadProgress * 100).toInt()}%"
-                            } else {
-                                "baixando…"
-                            }
-                            Text(
-                                text = "Baixando atualização: $pctText",
-                                color = LuceText,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            if (updateDownloadProgress >= 0f) {
-                                LinearProgressIndicator(
-                                    progress = { updateDownloadProgress },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(6.dp)
-                                        .clip(RoundedCornerShape(3.dp)),
-                                    color = LuceMagenta,
-                                    trackColor = LuceBorder
-                                )
-                            } else {
-                                LinearProgressIndicator(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(6.dp)
-                                        .clip(RoundedCornerShape(3.dp)),
-                                    color = LuceMagenta,
-                                    trackColor = LuceBorder
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
             // Áreas de streams que estamos assistindo
             if (watchedSessions.isNotEmpty()) {
                 Text(
@@ -296,21 +210,21 @@ fun MainScreen(
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Bold
                         )
-                        if (settings.discordToken.isNotBlank()) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
+                        if (settings.isFullyAuthenticated) {
+                            val user = settings.discordUser.ifBlank { "membro" }
+                            Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(6.dp))
-                                    .background(LucePurple.copy(alpha = 0.2f))
-                                    .border(1.dp, LucePurple.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                                    .background(LuceCyan.copy(alpha = 0.15f))
+                                    .border(1.dp, LuceCyan.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
                                     .clickable { showSettingsSheet = true }
                                     .padding(horizontal = 8.dp, vertical = 3.dp)
                             ) {
                                 Text(
-                                    text = "✓ BDK @${settings.discordUser.ifBlank { "membro" }}",
-                                    color = LuceText,
+                                    text = "@$user (BDK) · Senha OK",
+                                    color = LuceCyan,
                                     fontSize = 11.sp,
-                                    fontWeight = FontWeight.Medium
+                                    fontWeight = FontWeight.Bold
                                 )
                             }
                         } else {
@@ -318,15 +232,15 @@ fun MainScreen(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(6.dp))
                                     .background(LuceCardElevated)
-                                    .border(1.dp, LuceBorder, RoundedCornerShape(6.dp))
+                                    .border(1.dp, LuceMagenta.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
                                     .clickable { showSettingsSheet = true }
                                     .padding(horizontal = 8.dp, vertical = 3.dp)
                             ) {
                                 Text(
-                                    text = "Discord BDK",
-                                    color = LuceMuted,
+                                    text = "⚠ Autenticação necessária",
+                                    color = LuceMagenta,
                                     fontSize = 11.sp,
-                                    fontWeight = FontWeight.Medium
+                                    fontWeight = FontWeight.SemiBold
                                 )
                             }
                         }
@@ -363,15 +277,22 @@ fun MainScreen(
                             .padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        val isOk = settings.isFullyAuthenticated && !isStreaming
+                        val dotColor = if (isStreaming) LuceMagenta else if (isOk) LuceSuccess else LuceMuted
                         Box(
                             modifier = Modifier
                                 .size(8.dp)
                                 .clip(CircleShape)
-                                .background(if (isStreaming) LuceMagenta else LuceSuccess)
+                                .background(dotColor)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
+                        val effectiveStatus = if (!settings.isFullyAuthenticated && !isStreaming) {
+                            "faça login no Discord (BDK) e digite a senha em Configurações"
+                        } else {
+                            streamStatusText
+                        }
                         Text(
-                            text = streamStatusText,
+                            text = effectiveStatus,
                             color = LuceText,
                             fontSize = 13.sp,
                             modifier = Modifier.weight(1f)
@@ -560,6 +481,149 @@ fun RosterItemCard(
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold
             )
+        }
+    }
+}
+
+@Composable
+fun MandatoryUpdateScreen(
+    updateInfo: UpdateInfo,
+    isDownloading: Boolean,
+    progress: Float,
+    onUpdateClick: () -> Unit,
+    onQuitClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(LuceNight)
+            .padding(24.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, LuceCyan.copy(alpha = 0.5f), RoundedCornerShape(16.dp)),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = LuceCard)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .background(LuceMagenta.copy(alpha = 0.15f))
+                        .border(1.dp, LuceMagenta, CircleShape)
+                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "ATUALIZAÇÃO OBRIGATÓRIA",
+                        color = LuceMagenta,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Text(
+                    text = "Project LUCE",
+                    color = LuceText,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Text(
+                    text = "Versão ${updateInfo.version}",
+                    color = LuceCyan,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                Text(
+                    text = "Uma nova versão é necessária para continuar usando o Project LUCE.",
+                    color = LuceMuted,
+                    fontSize = 13.sp,
+                    textAlign = TextAlign.Center,
+                    lineHeight = 18.sp
+                )
+
+                if (isDownloading) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        val pctText = if (progress >= 0f) "${(progress * 100).toInt()}%" else "baixando…"
+                        Text(
+                            text = "Baixando atualização: $pctText",
+                            color = LuceText,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        if (progress >= 0f) {
+                            LinearProgressIndicator(
+                                progress = { progress },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(8.dp)
+                                    .clip(RoundedCornerShape(4.dp)),
+                                color = LuceMagenta,
+                                trackColor = LuceBorder
+                            )
+                        } else {
+                            LinearProgressIndicator(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(8.dp)
+                                    .clip(RoundedCornerShape(4.dp)),
+                                color = LuceMagenta,
+                                trackColor = LuceBorder
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Button(
+                    onClick = onUpdateClick,
+                    enabled = !isDownloading,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = LuceCyan)
+                ) {
+                    Text(
+                        text = if (isDownloading) "Baixando…" else "Atualizar Agora",
+                        color = LuceNight,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp
+                    )
+                }
+
+                Button(
+                    onClick = onQuitClick,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = LuceCardElevated,
+                        contentColor = LuceMuted
+                    )
+                ) {
+                    Text(
+                        text = "Sair",
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 14.sp
+                    )
+                }
+            }
         }
     }
 }
