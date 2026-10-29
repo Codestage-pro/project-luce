@@ -82,6 +82,16 @@ def imports(dll: Path, cache: dict[Path, list[str]]) -> list[str]:
 
 
 def main(root: Path) -> None:
+    # Garante que o bundle do Windows não contenha arquivos exclusivos de Linux nem C++ fonte
+    luce_dir = root / "luce"
+    if luce_dir.exists():
+        for item in ["linux", "linux_audio.py", "portal.py", "windows/wgc_capture.cpp"]:
+            p = luce_dir / item
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+            elif p.is_file():
+                p.unlink(missing_ok=True)
+
     prefix = root / "ucrt64"
     for path in root.rglob("*"):  # o tar do MSYS2 extrai arquivos somente leitura e o Windows não deixa apagar
         path.chmod(0o777)

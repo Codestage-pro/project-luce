@@ -28,6 +28,7 @@ import re
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -44,10 +45,218 @@ NOT_FOUND_TRACK = "not_found_track_error"
 # O Cloudflare na frente da API barra o User-Agent padrão do urllib (403).
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
 
-cfg = {"base": "", "secret": "", "password": ""}
+cfg = {
+    "base": "",
+    "secret": "",
+    "password": "",
+    "discord_client_id": "",
+    "discord_client_secret": "",
+    "discord_guild_id": "",
+    "discord_redirect_uri": "https://luce.codestage.pro/auth/discord/callback",
+}
 publishers: dict[str, dict] = {}  # nome -> {session, tracks: [{trackName, mid}], seen}
 viewers: dict[str, dict[str, float]] = {}  # transmissão -> {quem assiste: último heartbeat}
 lock = threading.Lock()
+
+STATE_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+pending_logins: dict[str, dict] = {}
+pending_lock = threading.Lock()
+
+
+def clean_username(raw: str) -> str:
+    import unicodedata
+
+    ascii_str = unicodedata.normalize("NFKD", raw.strip()).encode("ascii", "ignore").decode("ascii")
+    clean = re.sub(r"\s+", "_", ascii_str)
+    clean = re.sub(r"[^A-Za-z0-9._-]", "", clean).strip("._-")
+    return clean[:64] or "user"
+
+
+def issue_discord_token(user_id: str, username: str, ttl_days: int = 30) -> str:
+    """Gera discord:<user_id>:<username>:<exp_unix>:<hmac_hex> válido por 30 dias (ou ttl_days)."""
+    secret = (cfg.get("secret") or cfg.get("password") or "luce_secret").encode("utf-8")
+    exp = int(time.time() + ttl_days * 86400)
+    payload = f"discord:{user_id}:{username}:{exp}"
+    sig = hmac.new(secret, payload.encode("utf-8"), "sha256").hexdigest()
+    return f"{payload}:{sig}"
+
+
+def verify_token(auth_header: str) -> bool:
+    """Valida Bearer discord:<user_id>:<username>:<exp>:<sig> ou Bearer bdk:<BDK_PASSWORD>."""
+    if not auth_header:
+        return False
+    raw_token = auth_header.strip()
+    if raw_token.startswith("Bearer "):
+        raw_token = raw_token[7:].strip()
+    if raw_token.startswith("discord:"):
+        parts = raw_token.split(":")
+        if len(parts) != 5:
+            return False
+        _, user_id, username, exp_str, sig = parts
+        try:
+            exp = int(exp_str)
+        except ValueError:
+            return False
+        if exp < time.time():
+            return False
+        secret = (cfg.get("secret") or cfg.get("password") or "luce_secret").encode("utf-8")
+        payload = f"discord:{user_id}:{username}:{exp_str}"
+        expected_sig = hmac.new(secret, payload.encode("utf-8"), "sha256").hexdigest()
+        return hmac.compare_digest(sig, expected_sig)
+    elif raw_token.startswith("bdk:"):
+        passwd = raw_token[4:]
+        server_pw = cfg.get("password", "")
+        return bool(server_pw and hmac.compare_digest(passwd, server_pw))
+    return False
+
+
+def _render_auth_page(title: str, message: str, is_error: bool = False) -> bytes:
+    accent = "#ff2a4b" if is_error else "#00e5ff"
+    status_icon = "⚠️" if is_error else "✨"
+    html = f"""<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Project LUCE — {title}</title>
+  <style>
+    body {{
+      background: #0a0c1f;
+      color: #e8ebff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 16px;
+    }}
+    .card {{
+      background: #12153a;
+      border: 1px solid #232859;
+      border-radius: 16px;
+      padding: 32px;
+      max-width: 440px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    }}
+    .badge {{
+      display: inline-block;
+      font-size: 32px;
+      margin-bottom: 12px;
+    }}
+    h1 {{
+      font-size: 20px;
+      margin: 0 0 12px;
+      color: {accent};
+      letter-spacing: 1px;
+    }}
+    p {{
+      color: #8d93c7;
+      font-size: 14px;
+      line-height: 1.6;
+      margin: 0 0 24px;
+    }}
+    .hint {{
+      font-size: 12px;
+      color: #555c91;
+    }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">{status_icon}</div>
+    <h1>{title}</h1>
+    <p>{message}</p>
+    <div class="hint">Você já pode fechar esta aba e voltar para o aplicativo LUCE.</div>
+  </div>
+</body>
+</html>"""
+    return html.encode("utf-8")
+
+
+def handle_discord_callback(code: str, state: str) -> tuple[int, bytes, str]:
+    if not cfg.get("discord_client_id") or not cfg.get("discord_client_secret"):
+        return (
+            503,
+            _render_auth_page("Configuração Pendente", "Discord OAuth2 não está configurado no servidor.", True),
+            "text/html",
+        )
+
+    # 1. Troca code por access_token
+    token_url = "https://discord.com/api/v10/oauth2/token"
+    data = urllib.parse.urlencode({
+        "client_id": cfg["discord_client_id"],
+        "client_secret": cfg["discord_client_secret"],
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": cfg.get("discord_redirect_uri", ""),
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        token_url,
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            token_data = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        return 502, _render_auth_page("Erro de Autenticação", f"Falha ao validar com o Discord: {exc}", True), "text/html"
+
+    access_token = token_data.get("access_token")
+    if not access_token:
+        return 400, _render_auth_page("Erro de Autenticação", "Resposta inválida do Discord.", True), "text/html"
+
+    # 2. Busca perfil e lista de servidores (guilds)
+    headers = {"Authorization": f"Bearer {access_token}", "User-Agent": USER_AGENT}
+    try:
+        user_req = urllib.request.Request("https://discord.com/api/v10/users/@me", headers=headers)
+        with urllib.request.urlopen(user_req, timeout=10) as resp:
+            user_info = json.loads(resp.read().decode("utf-8"))
+
+        guilds_req = urllib.request.Request("https://discord.com/api/v10/users/@me/guilds", headers=headers)
+        with urllib.request.urlopen(guilds_req, timeout=10) as resp:
+            guilds = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        return 502, _render_auth_page("Erro de Verificação", f"Falha ao consultar perfil no Discord: {exc}", True), "text/html"
+
+    guild_id = cfg.get("discord_guild_id", "").strip()
+    is_member = False
+    if guild_id and isinstance(guilds, list):
+        is_member = any(str(g.get("id")) == guild_id for g in guilds)
+
+    discord_username = user_info.get("username", "usuário")
+    if not is_member:
+        with pending_lock:
+            pending_logins[state] = {
+                "status": "denied",
+                "error": "Sua conta do Discord não faz parte do servidor BDK.",
+            }
+        return 403, _render_auth_page(
+            "Acesso Exclusivo BDK",
+            f"Olá, @{discord_username}. O acesso a este servidor é restrito aos membros da BDK.",
+            True,
+        ), "text/html"
+
+    raw_name = user_info.get("global_name") or user_info.get("username") or "user"
+    clean_name = clean_username(raw_name)
+    user_id = str(user_info.get("id", "0"))
+    token = issue_discord_token(user_id, clean_name)
+
+    with pending_lock:
+        pending_logins[state] = {
+            "status": "ok",
+            "token": token,
+            "username": clean_name,
+            "discord_tag": discord_username,
+        }
+
+    return 200, _render_auth_page(
+        "Acesso BDK Confirmado!",
+        f"Bem-vindo(a), {clean_name}! Sua conta do Discord foi verificada com sucesso.",
+        False,
+    ), "text/html"
 
 
 class SfuError(RuntimeError):
@@ -239,6 +448,10 @@ def expire() -> None:
                 del who[viewer]
             if not who and stream not in publishers:
                 del viewers[stream]
+    with pending_lock:
+        expired_states = [s for s, data in pending_logins.items() if now - data.get("created", 0) > 300]
+        for s in expired_states:
+            del pending_logins[s]
 
 
 def reap() -> None:
@@ -275,11 +488,12 @@ class Handler(BaseHTTPRequestHandler):
         except (TimeoutError, OSError) as exc:
             raise HttpError(408, "timeout aguardando corpo da requisição") from exc
 
-    def _handle(self, fn) -> None:
+    def _handle(self, fn, auth_required: bool = True) -> None:
         try:
-            token = self.headers.get("Authorization", "").encode()
-            if not hmac.compare_digest(token, f"Bearer bdk:{cfg['password']}".encode()):
-                raise HttpError(401, "não autorizado")
+            if auth_required:
+                token = self.headers.get("Authorization", "")
+                if not verify_token(token):
+                    raise HttpError(401, "não autorizado")
             fn([p for p in self.path.split("?")[0].split("/") if p])
         except HttpError as exc:
             self._reply(exc.code, str(exc).encode())
@@ -299,14 +513,59 @@ class Handler(BaseHTTPRequestHandler):
         return parts[0]
 
     def do_GET(self):
-        def run(parts):
-            if parts != ["v3", "paths", "list"]:
+        parsed = urlparse(self.path)
+        parts = [p for p in parsed.path.split("/") if p]
+        is_auth_route = len(parts) >= 2 and parts[0] == "auth" and parts[1] == "discord"
+
+        def run(p_parts):
+            query = parse_qs(parsed.query)
+            if is_auth_route:
+                action = p_parts[2] if len(p_parts) >= 3 else ""
+                if action == "login":
+                    state = query.get("state", [""])[0]
+                    if not STATE_RE.fullmatch(state):
+                        raise HttpError(400, "state inválido")
+                    if not cfg.get("discord_client_id") or not cfg.get("discord_redirect_uri"):
+                        raise HttpError(503, "OAuth2 do Discord não configurado no servidor")
+                    with pending_lock:
+                        pending_logins[state] = {"status": "pending", "created": time.monotonic()}
+                    scope = "identify+guilds"
+                    target = (
+                        f"https://discord.com/oauth2/authorize?client_id={cfg['discord_client_id']}"
+                        f"&response_type=code&redirect_uri={urllib.parse.quote(cfg['discord_redirect_uri'], safe='')}"
+                        f"&scope={scope}&state={state}"
+                    )
+                    return self._reply(302, b"", extra={"Location": target})
+                elif action == "callback":
+                    code = query.get("code", [""])[0]
+                    state = query.get("state", [""])[0]
+                    if not code or not state or not STATE_RE.fullmatch(state):
+                        raise HttpError(400, "Parâmetros de callback inválidos")
+                    code_res, body, ctype = handle_discord_callback(code, state)
+                    return self._reply(code_res, body, ctype)
+                elif action == "poll":
+                    state = query.get("state", [""])[0]
+                    if not STATE_RE.fullmatch(state):
+                        raise HttpError(400, "state inválido")
+                    with pending_lock:
+                        info = pending_logins.get(state, {"status": "not_found"})
+                        if info.get("status") in ("ok", "denied"):
+                            pending_logins.pop(state, None)
+                    return self._reply(
+                        200,
+                        json.dumps(info).encode("utf-8"),
+                        "application/json",
+                        extra={"Access-Control-Allow-Origin": "*"},
+                    )
+                raise HttpError(404, "rota não existe")
+
+            if p_parts != ["v3", "paths", "list"]:
                 raise HttpError(404, "rota desconhecida")
             with lock:
-                items = [{"name": name, "ready": True, "viewers": sorted(viewers.get(name, {}))}
-                         for name in publishers]
+                items = [{"name": name, "ready": True, "viewers": sorted(viewers.get(name, {}))} for name in publishers]
             self._reply(200, json.dumps({"items": items}).encode(), "application/json")
-        self._handle(run)
+
+        self._handle(run, auth_required=not is_auth_route)
 
     def do_POST(self):
         def run(parts):
@@ -369,6 +628,10 @@ def main() -> None:
     cfg["base"] = f"https://rtc.live.cloudflare.com/v1/apps/{os.environ['CF_SFU_APP_ID']}"
     cfg["secret"] = os.environ["CF_SFU_APP_SECRET"]
     cfg["password"] = os.environ["BDK_PASSWORD"]
+    cfg["discord_client_id"] = os.environ.get("DISCORD_CLIENT_ID", "")
+    cfg["discord_client_secret"] = os.environ.get("DISCORD_CLIENT_SECRET", "")
+    cfg["discord_guild_id"] = os.environ.get("DISCORD_GUILD_ID", "")
+    cfg["discord_redirect_uri"] = os.environ.get("DISCORD_REDIRECT_URI", "")
     threading.Thread(target=reap, daemon=True).start()
     addr = (os.environ.get("LUCE_BIND", "127.0.0.1"), int(os.environ.get("LUCE_PORT", "8889")))
     log(f"LUCE WHIP/WHEP -> SFU em http://{addr[0]}:{addr[1]}")

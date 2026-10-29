@@ -1,4 +1,4 @@
-"""Visual do Project LUCE: noite azulada, ciano/violeta da marca e UM só brilho — o magenta de "ao vivo".
+"""Visual do Project LUCE: temas personalizados dos membros da BDK.
 
 Tudo o mais fica quieto de propósito; o olho vai pra o que está no ar. As animações
 somem sozinhas quando o sistema pede menos movimento (gtk-enable-animations).
@@ -12,16 +12,75 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 from gi.repository import Gdk, Gtk
 
-_CSS = """
-@define-color noite #0a0c1f;
-@define-color painel #12153a;
-@define-color linha #232859;
-@define-color ciano #00e5ff;
-@define-color violeta #7c4dff;
-@define-color magenta #ff2d95;
-@define-color texto #e8ebff;
-@define-color mudo #8d93c7;
+THEMES: dict[str, tuple[str, dict[str, str]]] = {
+    "luce": (
+        "Padrão (LUCE)",
+        {
+            "noite": "#0a0c1f",
+            "painel": "#12153a",
+            "linha": "#232859",
+            "ciano": "#00e5ff",
+            "violeta": "#7c4dff",
+            "magenta": "#ff2d95",
+            "texto": "#e8ebff",
+            "mudo": "#8d93c7",
+        },
+    ),
+    "murilo": (
+        "MuriloX06 (Roxo)",
+        {
+            "noite": "#0d0718",
+            "painel": "#1a0f2e",
+            "linha": "#341d59",
+            "ciano": "#a855f7",
+            "violeta": "#6366f1",
+            "magenta": "#ec4899",
+            "texto": "#f3e8ff",
+            "mudo": "#a78bfa",
+        },
+    ),
+    "tirigam": (
+        "Tirigam (Vermelho)",
+        {
+            "noite": "#140709",
+            "painel": "#260d12",
+            "linha": "#4c1a24",
+            "ciano": "#ff2a4b",
+            "violeta": "#ff6b00",
+            "magenta": "#ff0055",
+            "texto": "#ffe8ec",
+            "mudo": "#d48794",
+        },
+    ),
+    "ninja_som": (
+        "Ninja / SOM (Azul)",
+        {
+            "noite": "#050d1a",
+            "painel": "#0b1930",
+            "linha": "#183461",
+            "ciano": "#3b82f6",
+            "violeta": "#06b6d4",
+            "magenta": "#38bdf8",
+            "texto": "#e5f0ff",
+            "mudo": "#7da2d6",
+        },
+    ),
+    "dark": (
+        "Dark (Escuro OLED)",
+        {
+            "noite": "#050507",
+            "painel": "#101014",
+            "linha": "#26262e",
+            "ciano": "#e4e4e7",
+            "violeta": "#52525b",
+            "magenta": "#ef4444",
+            "texto": "#fafafa",
+            "mudo": "#8e8e99",
+        },
+    ),
+}
 
+_BASE_CSS = """
 window, window.background { background: @noite; color: @texto; }
 label { color: @texto; }
 .dim { color: @mudo; }
@@ -81,16 +140,31 @@ switch { background: @linha; }
 switch:checked { background-image: linear-gradient(135deg, @ciano, @violeta); }
 """
 
-_loaded = False
+_provider: Gtk.CssProvider | None = None
 
 
-def load() -> None:
-    """Instala o tema uma vez por processo (vale pra todas as janelas)."""
-    global _loaded
-    if _loaded:
-        return
-    Gtk.Settings.get_default().set_property("gtk-application-prefer-dark-theme", True)
-    provider = Gtk.CssProvider()
-    provider.load_from_string(_CSS)
-    Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-    _loaded = True
+def _build_css(colors: dict[str, str]) -> str:
+    defs = "\n".join(f"@define-color {k} {v};" for k, v in colors.items())
+    return f"{defs}\n{_BASE_CSS}"
+
+
+def load(theme_name: str | None = None) -> None:
+    """Instala ou atualiza o tema visual dinamicamente para todas as janelas."""
+    global _provider
+    from . import config
+
+    if theme_name is None:
+        theme_name = config.load().get("theme", "luce")
+    if theme_name not in THEMES:
+        theme_name = "luce"
+
+    _label, colors = THEMES[theme_name]
+    css = _build_css(colors)
+
+    if _provider is None:
+        Gtk.Settings.get_default().set_property("gtk-application-prefer-dark-theme", True)
+        _provider = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), _provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+    _provider.load_from_string(css)

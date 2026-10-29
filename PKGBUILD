@@ -37,6 +37,7 @@ optdepends=('xdg-desktop-portal-gnome: seletor de tela no GNOME'
 package() {
     install -d "$pkgdir/usr/share/project-luce"
     cp -r "$startdir/luce" "$pkgdir/usr/share/project-luce/"
+    rm -rf "$pkgdir/usr/share/project-luce/luce/windows" "$pkgdir/usr/share/project-luce/luce/winenv.py" "$pkgdir/usr/share/project-luce/luce/winsys.py"
     find "$pkgdir/usr/share/project-luce" -name __pycache__ -exec rm -rf {} +
     install -Dm755 "$startdir/packaging/luce-launcher.sh" "$pkgdir/usr/bin/luce"
     install -Dm644 "$startdir/packaging/pro.codestage.Luce.desktop" "$pkgdir/usr/share/applications/pro.codestage.Luce.desktop"

@@ -13,15 +13,26 @@ data class UserSettings(
     val resolutionHeight: Int = 720,
     val fps: Int = 30,
     val bitrateKbps: Int = 4000,
-    val audioSource: String = AUDIO_SOURCE_SYSTEM
+    val audioSource: String = AUDIO_SOURCE_SYSTEM,
+    val theme: String = THEME_LUCE,
+    val discordToken: String = "",
+    val discordUser: String = ""
 ) {
     companion object {
         const val AUDIO_SOURCE_SYSTEM = "SYSTEM"
         const val AUDIO_SOURCE_MUTED = "MUTED"
+
+        const val THEME_LUCE = "luce"
+        const val THEME_MURILO = "murilo"
+        const val THEME_TIRIGAM = "tirigam"
+        const val THEME_NINJA_SOM = "ninja_som"
+        const val THEME_DARK = "dark"
     }
 
     val authToken: String?
-        get() = if (authPassword.isNotBlank()) "bdk:$authPassword" else null
+        get() = discordToken.ifBlank {
+            if (authPassword.isNotBlank()) "bdk:$authPassword" else null
+        }
 }
 
 object LuceConfig {
@@ -34,6 +45,9 @@ object LuceConfig {
     private const val KEY_FPS = "fps"
     private const val KEY_BITRATE_KBPS = "bitrate_kbps"
     private const val KEY_AUDIO_SOURCE = "audio_source"
+    private const val KEY_THEME = "theme"
+    private const val KEY_DISCORD_TOKEN = "discord_token"
+    private const val KEY_DISCORD_USER = "discord_user"
 
     fun cleanName(raw: String): String {
         val ascii = Normalizer.normalize(raw.trim(), Normalizer.Form.NFKD)
@@ -60,6 +74,12 @@ object LuceConfig {
         val prefs = getPrefs(context)
         val rawAudio = prefs.getString(KEY_AUDIO_SOURCE, UserSettings.AUDIO_SOURCE_SYSTEM)
         val audio = if (rawAudio == UserSettings.AUDIO_SOURCE_MUTED) UserSettings.AUDIO_SOURCE_MUTED else UserSettings.AUDIO_SOURCE_SYSTEM
+        val rawTheme = prefs.getString(KEY_THEME, UserSettings.THEME_LUCE) ?: UserSettings.THEME_LUCE
+        val theme = when (rawTheme) {
+            UserSettings.THEME_MURILO, UserSettings.THEME_TIRIGAM,
+            UserSettings.THEME_NINJA_SOM, UserSettings.THEME_DARK -> rawTheme
+            else -> UserSettings.THEME_LUCE
+        }
         return UserSettings(
             serverUrl = prefs.getString(KEY_SERVER_URL, "https://luce.codestage.pro")?.trim() ?: "https://luce.codestage.pro",
             authPassword = prefs.getString(KEY_AUTH_PASSWORD, "")?.trim() ?: "",
@@ -68,7 +88,10 @@ object LuceConfig {
             resolutionHeight = prefs.getInt(KEY_RES_HEIGHT, 720),
             fps = prefs.getInt(KEY_FPS, 30),
             bitrateKbps = prefs.getInt(KEY_BITRATE_KBPS, 4000),
-            audioSource = audio
+            audioSource = audio,
+            theme = theme,
+            discordToken = prefs.getString(KEY_DISCORD_TOKEN, "")?.trim() ?: "",
+            discordUser = prefs.getString(KEY_DISCORD_USER, "")?.trim() ?: ""
         )
     }
 
@@ -85,6 +108,9 @@ object LuceConfig {
             .putInt(KEY_FPS, settings.fps)
             .putInt(KEY_BITRATE_KBPS, settings.bitrateKbps)
             .putString(KEY_AUDIO_SOURCE, settings.audioSource)
+            .putString(KEY_THEME, settings.theme)
+            .putString(KEY_DISCORD_TOKEN, settings.discordToken.trim())
+            .putString(KEY_DISCORD_USER, settings.discordUser.trim())
             .apply()
     }
 
@@ -94,6 +120,24 @@ object LuceConfig {
             getPrefs(context).edit().putString(KEY_USER_NAME, cleaned).apply()
         }
         return cleaned
+    }
+
+    fun saveDiscordAuth(context: Context, token: String, discordUser: String, userName: String) {
+        val cleanUser = cleanName(userName)
+        val editor = getPrefs(context).edit()
+            .putString(KEY_DISCORD_TOKEN, token.trim())
+            .putString(KEY_DISCORD_USER, discordUser.trim())
+        if (cleanUser.isNotBlank()) {
+            editor.putString(KEY_USER_NAME, cleanUser)
+        }
+        editor.apply()
+    }
+
+    fun clearDiscordAuth(context: Context) {
+        getPrefs(context).edit()
+            .remove(KEY_DISCORD_TOKEN)
+            .remove(KEY_DISCORD_USER)
+            .apply()
     }
 
     private fun getPrefs(context: Context): SharedPreferences {

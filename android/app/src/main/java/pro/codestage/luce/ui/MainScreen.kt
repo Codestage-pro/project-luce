@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -85,6 +86,7 @@ fun MainScreen(
     isDownloadingUpdate: Boolean = false,
     updateDownloadProgress: Float = -1f,
     onUpdateClick: (UpdateInfo) -> Unit,
+    onThemeChange: ((String) -> Unit)? = null,
     onSaveSettings: (UserSettings) -> Unit
 ) {
     var showSettingsSheet by remember { mutableStateOf(false) }
@@ -283,12 +285,52 @@ fun MainScreen(
                 colors = CardDefaults.cardColors(containerColor = LuceCard)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "Transmitir Tela",
-                        color = LuceCyan,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Transmitir Tela",
+                            color = LuceCyan,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (settings.discordToken.isNotBlank()) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(LucePurple.copy(alpha = 0.2f))
+                                    .border(1.dp, LucePurple.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                                    .clickable { showSettingsSheet = true }
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                            ) {
+                                Text(
+                                    text = "✓ BDK @${settings.discordUser.ifBlank { "membro" }}",
+                                    color = LuceText,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(LuceCardElevated)
+                                    .border(1.dp, LuceBorder, RoundedCornerShape(6.dp))
+                                    .clickable { showSettingsSheet = true }
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                            ) {
+                                Text(
+                                    text = "Discord BDK",
+                                    color = LuceMuted,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                    }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
@@ -438,6 +480,7 @@ fun MainScreen(
             sheetState = sheetState,
             initialSettings = settings,
             onSave = onSaveSettings,
+            onThemeChange = onThemeChange,
             onDismiss = { showSettingsSheet = false }
         )
     }

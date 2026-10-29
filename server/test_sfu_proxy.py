@@ -211,6 +211,67 @@ class ProxyTest(unittest.TestCase):
         many_m = "v=0\r\n" + ("m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:v\r\n" * 20)
         self.assertEqual(self.call("POST", "/ana/whip", many_m.encode())[0], 400)
 
+    def test_discord_token_issuance_and_verification(self):
+        token = p.issue_discord_token("987654321", "MuriloX06")
+        self.assertTrue(token.startswith("discord:987654321:MuriloX06:"))
+
+        # Verificação válida via Bearer
+        self.assertTrue(p.verify_token(f"Bearer {token}"))
+        self.assertTrue(p.verify_token(token))  # sem prefixo
+
+        # Legacy BDK token ainda funciona
+        self.assertTrue(p.verify_token("Bearer bdk:segredo"))
+
+        # Token adulterado / assinatura inválida
+        corrupt = token[:-4] + "ffff"
+        self.assertFalse(p.verify_token(f"Bearer {corrupt}"))
+
+        # Token expirado
+        expired_token = p.issue_discord_token("987654321", "MuriloX06", ttl_days=-1)
+        self.assertFalse(p.verify_token(f"Bearer {expired_token}"))
+
+        # Token com formato quebrado
+        self.assertFalse(p.verify_token("Bearer discord:bad"))
+        self.assertFalse(p.verify_token("Bearer discord:123:user:notanint:fakehmac"))
+        self.assertFalse(p.verify_token("Bearer outro:token"))
+
+    def test_discord_poll_endpoint(self):
+        # State com caracteres inválidos
+        code, _, _ = self.call("GET", "/auth/discord/poll?state=bad!char$")
+        self.assertEqual(code, 400)
+
+        # State não encontrado
+        code, body, _ = self.call("GET", "/auth/discord/poll?state=valid_test_state_1234")
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(body).get("status"), "not_found")
+
+        # State pendente
+        with p.pending_lock:
+            p.pending_logins["valid_test_state_1234"] = {"status": "pending", "created": time.monotonic()}
+        code, body, _ = self.call("GET", "/auth/discord/poll?state=valid_test_state_1234")
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(body).get("status"), "pending")
+
+        # State resolvido com sucesso
+        test_token = p.issue_discord_token("111", "Tirigam")
+        with p.pending_lock:
+            p.pending_logins["valid_test_state_1234"] = {
+                "status": "ok",
+                "token": test_token,
+                "discord_user": "Tirigam",
+                "user": "Tirigam"
+            }
+        code, body, _ = self.call("GET", "/auth/discord/poll?state=valid_test_state_1234")
+        self.assertEqual(code, 200)
+        res = json.loads(body)
+        self.assertEqual(res.get("status"), "ok")
+        self.assertEqual(res.get("token"), test_token)
+
+        # Consumido uma vez: próxima chamada deve ser not_found
+        code, body, _ = self.call("GET", "/auth/discord/poll?state=valid_test_state_1234")
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(body).get("status"), "not_found")
+
 
 if __name__ == "__main__":
     unittest.main()

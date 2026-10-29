@@ -63,6 +63,7 @@ jobs:
           while read -r f; do [ -e "/$f" ] && echo "$f"; done < files.txt | sort -u > present.txt
           (cd / && tar -T "$OLDPWD/present.txt" -cf -) | tar -C "$out" -xf -
           cp -r luce "$out/luce"
+          rm -rf "$out/luce/linux" "$out/luce/linux_audio.py" "$out/luce/portal.py" "$out/luce/windows/wgc_capture.cpp"
           cp packaging/windows/luce_launcher.pyw packaging/windows/luce.ico "$out/"
           # luce.exe = cópia do pythonw.exe: o Gerenciador de Tarefas mostra nome/ícone do exe, não do script
           cp "$out/ucrt64/bin/pythonw.exe" "$out/ucrt64/bin/luce.exe"

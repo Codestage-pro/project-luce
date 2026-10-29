@@ -71,6 +71,7 @@ modules:
     build-commands:
       - install -d /app/share/project-luce
       - cp -r luce /app/share/project-luce/
+      - rm -rf /app/share/project-luce/luce/windows /app/share/project-luce/luce/winenv.py /app/share/project-luce/luce/winsys.py
       - find /app/share/project-luce -name __pycache__ -exec rm -rf {} +
       - install -Dm755 flatpak/luce-launcher.sh /app/bin/luce
       - install -Dm644 flatpak/config.toml /app/etc/project-luce/config.toml

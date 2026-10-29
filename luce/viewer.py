@@ -63,13 +63,15 @@ class _Tile(Gtk.Overlay):
         vol.set_draw_value(False)
         vol.set_size_request(110, -1)
         vol.connect("value-changed", lambda s: viewer.on_volume(name, s.get_value()))
+        self._popout = Gtk.Button(icon_name="window-new-symbolic", css_classes=["flat"], tooltip_text="Abrir em janela separada")
+        self._popout.connect("clicked", lambda _b: viewer.toggle_popout(self))
         self._full = Gtk.Button(icon_name="view-fullscreen-symbolic", css_classes=["flat"], tooltip_text="Tela cheia (duplo clique)")
         self._full.connect("clicked", lambda _b: viewer.toggle_focus(self))
         close = Gtk.Button(icon_name="window-close-symbolic", css_classes=["flat"], tooltip_text="Parar de assistir")
         close.connect("clicked", lambda _b: viewer.on_close_tile(name))
 
         bar = Gtk.Box(spacing=8, css_classes=["luce-bar"])
-        for widget in (self._mute, vol, text, self._full, close):
+        for widget in (self._mute, vol, text, self._popout, self._full, close):
             bar.append(widget)
         self._revealer = Gtk.Revealer(
             child=bar, transition_type=Gtk.RevealerTransitionType.CROSSFADE, reveal_child=True,
@@ -89,8 +91,17 @@ class _Tile(Gtk.Overlay):
     def _sync_mute_icon(self) -> None:
         self._mute.set_icon_name("audio-volume-muted-symbolic" if self._mute.get_active() else "audio-volume-high-symbolic")
 
+    def set_popped(self, popped: bool) -> None:
+        if popped:
+            self._popout.set_icon_name("view-restore-symbolic")
+            self._popout.set_tooltip_text("Voltar para a grade principal")
+        else:
+            self._popout.set_icon_name("window-new-symbolic")
+            self._popout.set_tooltip_text("Abrir em janela separada")
+
     def set_focused(self, focused: bool) -> None:
         self._full.set_icon_name("view-restore-symbolic" if focused else "view-fullscreen-symbolic")
+        self._full.set_tooltip_text("Voltar para a grade" if focused else "Tela cheia (duplo clique)")
 
     def _on_motion(self, _ctrl, x: float, y: float) -> None:
         # O compositor reenvia "motion" com o mesmo ponto (a imagem muda, a
@@ -130,14 +141,24 @@ class ViewerWindow(Gtk.Window):
         _load_css()
         self.set_default_size(960, 540)
         self.on_volume, self.on_mute, self.on_close_tile = on_volume, on_mute, on_close_tile
+        self.on_closed = on_closed
         self._tiles: dict[str, _Tile] = {}
+        self._popouts: dict[str, Gtk.Window] = {}
         self._focused: _Tile | None = None
         self._grid = Gtk.Grid(row_homogeneous=True, column_homogeneous=True, row_spacing=2, column_spacing=2)
         self.set_child(self._grid)
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self._on_key)
         self.add_controller(keys)
-        self.connect("close-request", lambda _w: on_closed() or False)
+        self.connect("close-request", lambda _w: self._on_window_close())
+
+    def _on_window_close(self) -> bool:
+        for win in list(self._popouts.values()):
+            win.set_child(None)
+            win.destroy()
+        self._popouts.clear()
+        self.on_closed()
+        return False
 
     def update_paintable(self, name: str, paintable) -> None:
         tile = self._tiles.get(name)
@@ -152,6 +173,11 @@ class ViewerWindow(Gtk.Window):
         return tile.stats
 
     def remove(self, name: str) -> None:
+        win = self._popouts.pop(name, None)
+        if win is not None:
+            win.set_child(None)
+            win.destroy()
+
         tile = self._tiles.pop(name, None)
         if tile is None:
             return
@@ -159,16 +185,72 @@ class ViewerWindow(Gtk.Window):
         if self._focused is tile:
             self._focused = None
             self.unfullscreen()
-        if self._tiles:
+        if self._tiles or self._popouts:
             self._layout()
         else:
             self.close()
 
+    def toggle_popout(self, tile: _Tile) -> None:
+        if tile.name not in self._popouts:
+            if self._focused is tile:
+                self.toggle_focus(tile)
+            if tile.get_parent() is self._grid:
+                self._grid.remove(tile)
+            win = Gtk.Window(title=f"LUCE — {tile.name}", default_width=854, default_height=480)
+            tile.set_popped(True)
+            win.set_child(tile)
+
+            keys = Gtk.EventControllerKey()
+            def _on_popout_key(_ctrl, keyval, *_args) -> bool:
+                if keyval == Gdk.KEY_F11:
+                    if win.is_fullscreen():
+                        win.unfullscreen()
+                        tile.set_focused(False)
+                    else:
+                        win.fullscreen()
+                        tile.set_focused(True)
+                    return True
+                if keyval == Gdk.KEY_Escape and win.is_fullscreen():
+                    win.unfullscreen()
+                    tile.set_focused(False)
+                    return True
+                return False
+            keys.connect("key-pressed", _on_popout_key)
+            win.add_controller(keys)
+
+            win.connect("close-request", lambda _w: (self.on_close_tile(tile.name), False)[1])
+            self._popouts[tile.name] = win
+            win.present()
+            self._layout()
+        else:
+            win = self._popouts.pop(tile.name)
+            win.set_child(None)
+            win.destroy()
+            tile.set_popped(False)
+            self._layout()
+            self.present()
+
+    def dock_tile(self, name: str) -> None:
+        tile = self._tiles.get(name)
+        if tile and name in self._popouts:
+            self.toggle_popout(tile)
+
     def toggle_focus(self, tile: _Tile) -> None:
         """Tela cheia de uma só; chamar de novo (ou Esc) volta pra grade."""
+        if tile.name in self._popouts:
+            win = self._popouts[tile.name]
+            if win.is_fullscreen():
+                win.unfullscreen()
+                tile.set_focused(False)
+            else:
+                win.fullscreen()
+                tile.set_focused(True)
+            return
+
         self._focused = None if self._focused is tile else tile
         for t in self._tiles.values():
-            t.set_focused(t is self._focused)
+            if t.name not in self._popouts:
+                t.set_focused(t is self._focused)
         if self._focused:
             self.fullscreen()
         else:
@@ -176,6 +258,9 @@ class ViewerWindow(Gtk.Window):
         self._layout()
 
     def _on_key(self, _ctrl, keyval, *_args) -> bool:
+        if keyval in (Gdk.KEY_F11,) and self._focused is not None:
+            self.toggle_focus(self._focused)
+            return True
         if keyval == Gdk.KEY_Escape and self._focused is not None:
             self.toggle_focus(self._focused)
             return True
@@ -185,7 +270,16 @@ class ViewerWindow(Gtk.Window):
         for tile in self._tiles.values():
             if tile.get_parent() is self._grid:
                 self._grid.remove(tile)
-        shown = [self._focused] if self._focused else list(self._tiles.values())
+
+        grid_tiles = [t for name, t in self._tiles.items() if name not in self._popouts]
+        if not grid_tiles and self._popouts:
+            self.set_visible(False)
+            return
+
+        self.set_visible(True)
+        shown = [self._focused] if (self._focused and self._focused.name not in self._popouts) else grid_tiles
+        if not shown:
+            return
         cols = math.ceil(math.sqrt(len(shown))) or 1
         for i, tile in enumerate(shown):
             self._grid.attach(tile, i % cols, i // cols, 1, 1)

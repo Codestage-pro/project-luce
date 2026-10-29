@@ -19,6 +19,14 @@ data class SdpResponse(
     val location: String
 )
 
+data class DiscordPollResult(
+    val status: String,
+    val token: String = "",
+    val discordUser: String = "",
+    val user: String = "",
+    val message: String = ""
+)
+
 object LuceApi {
     const val USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
 
@@ -70,6 +78,31 @@ object LuceApi {
             }
         }
         return list
+    }
+
+    fun pollDiscordAuth(baseUrl: String, state: String): DiscordPollResult {
+        val sSafe = URLEncoder.encode(state, StandardCharsets.UTF_8.name())
+        val conn = openConnection("$baseUrl/auth/discord/poll?state=$sSafe", "GET", null)
+        return try {
+            val code = conn.responseCode
+            if (code != 200) {
+                DiscordPollResult(status = "error", message = "HTTP $code")
+            } else {
+                val raw = readResponse(conn)
+                val json = JSONObject(raw)
+                DiscordPollResult(
+                    status = json.optString("status", "error"),
+                    token = json.optString("token", ""),
+                    discordUser = json.optString("discord_user", ""),
+                    user = json.optString("user", ""),
+                    message = json.optString("message", "")
+                )
+            }
+        } catch (e: Exception) {
+            DiscordPollResult(status = "error", message = e.message ?: "Falha de rede")
+        } finally {
+            conn.disconnect()
+        }
     }
 
     fun sendWatching(baseUrl: String, stream: String, viewer: String, token: String?, on: Boolean) {

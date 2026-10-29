@@ -32,6 +32,9 @@ DEFAULTS: dict[str, Any] = {
     "mute_app": "",  # aplicativo a silenciar na transmissão (ex: Discord); vazio = nenhum
     "keep_in_tray": True,  # fechar a janela deixa o app na bandeja; false = fechar encerra o app
     "auth_password": "",  # senha do grupo (bdk) — BDK_PASSWORD do servidor
+    "theme": "luce",  # tema visual: luce, murilo, tirigam, ninja_som, dark
+    "discord_token": "",  # token OAuth2 autenticado no Discord (membro BDK)
+    "discord_user": "",  # tag / username no Discord
 }
 
 
@@ -85,10 +88,10 @@ def whep_endpoint(path: str) -> str:
 
 
 def auth_token() -> str | None:
-    """Vira o header `Authorization: Bearer user:pass` do whipsink/whepsrc.
-
-    Usuário fixo "bdk" pra combinar com o server/sfu_proxy.py — só a senha
-    precisa ser configurada.
-    """
-    password = load()["auth_password"]
+    """Header Authorization para WHIP/WHEP: discord:<token> ou bdk:<password>."""
+    cfg = load()
+    token = cfg.get("discord_token", "").strip()
+    if token:
+        return token
+    password = cfg.get("auth_password", "").strip()
     return f"bdk:{password}" if password else None

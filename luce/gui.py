@@ -10,14 +10,18 @@ janela única de viewer.py (uma tela por pessoa, em grade).
 from __future__ import annotations
 
 import gc
+import json
 import os
 import re
+import secrets
 import sys
 import threading
 import time
 import traceback
 import unicodedata
 import urllib.error
+import urllib.request
+import webbrowser
 from pathlib import Path
 
 import gi
@@ -102,6 +106,14 @@ def _clean_name(raw: str) -> str:
     return clean[:64]
 
 
+THEME_OPTIONS = [
+    ("luce", "Padrão LUCE"),
+    ("murilo", "MuriloX06 (Roxo Neon)"),
+    ("tirigam", "Tirigam (Vermelho Rubi)"),
+    ("ninja_som", "Ninja / SOM (Azul Elétrico)"),
+    ("dark", "Dark (OLED Escuro)"),
+]
+
 _ENCODER_LABELS = {
     "nvenc": "NVENC, GPU", "nvd3d11": "NVENC, GPU", "va": "VA-API, GPU", "amf": "AMF, GPU",
     "qsv": "Quick Sync, GPU", "mf": "Media Foundation, GPU", "x264": "x264, CPU",
@@ -181,7 +193,32 @@ class SettingsWindow(Gtk.Window):
         self._tray_check = Gtk.CheckButton(label="Manter na bandeja ao fechar", active=cfg["keep_in_tray"])
         grid.attach(self._tray_check, 0, next_row + 7, 2, 1)
 
-        save_row = next_row + 8
+        # Tema visual
+        grid.attach(Gtk.Label(label="Tema visual", xalign=0), 0, next_row + 8, 1, 1)
+        theme_labels = [label for _key, label in THEME_OPTIONS]
+        self._theme_dropdown = Gtk.DropDown.new_from_strings(theme_labels)
+        current_theme = cfg.get("theme", "luce")
+        theme_idx = 0
+        for idx, (t_key, _lbl) in enumerate(THEME_OPTIONS):
+            if t_key == current_theme:
+                theme_idx = idx
+                break
+        self._theme_dropdown.set_selected(theme_idx)
+        self._theme_dropdown.connect("notify::selected", self._on_theme_selected)
+        grid.attach(self._theme_dropdown, 1, next_row + 8, 1, 1)
+
+        # Discord BDK OAuth2
+        grid.attach(Gtk.Label(label="Discord BDK", xalign=0), 0, next_row + 9, 1, 1)
+        discord_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._discord_status_lbl = Gtk.Label(xalign=0, wrap=True)
+        self._discord_btn = Gtk.Button()
+        self._discord_btn.connect("clicked", self._on_discord_btn_clicked)
+        discord_box.append(self._discord_status_lbl)
+        discord_box.append(self._discord_btn)
+        grid.attach(discord_box, 1, next_row + 9, 1, 1)
+        self._update_discord_ui(cfg)
+
+        save_row = next_row + 10
         if os.name == "nt":  # AppData\Local é oculta: sem este atalho ninguém acha o luce.log pra mandar
             logs = Gtk.Button(label="Abrir pasta de logs")
             logs.connect("clicked", lambda _b: os.startfile(Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "LUCE"))
@@ -191,6 +228,96 @@ class SettingsWindow(Gtk.Window):
         save = Gtk.Button(label="Salvar", css_classes=["go"])
         save.connect("clicked", self._on_save)
         grid.attach(save, 0, save_row, 2, 1)
+
+    def _on_theme_selected(self, dropdown: Gtk.DropDown, _param) -> None:
+        idx = dropdown.get_selected()
+        if 0 <= idx < len(THEME_OPTIONS):
+            chosen = THEME_OPTIONS[idx][0]
+            theme.load(chosen)
+            cfg = config.load()
+            cfg["theme"] = chosen
+            config.save(cfg)
+
+    def _update_discord_ui(self, cfg: dict) -> None:
+        if cfg.get("discord_token"):
+            user = cfg.get("discord_user") or "membro"
+            self._discord_status_lbl.set_markup(f"<span foreground='#00E676'>✓ Conectado como <b>@{user}</b></span>")
+            self._discord_btn.set_label("Desconectar do Discord")
+            self._discord_btn.set_sensitive(True)
+        else:
+            self._discord_status_lbl.set_text("Não autenticado no BDK")
+            self._discord_btn.set_label("Entrar com Discord (BDK)")
+            self._discord_btn.set_sensitive(True)
+
+    def _on_discord_btn_clicked(self, _btn: Gtk.Button) -> None:
+        cfg = config.load()
+        if cfg.get("discord_token"):
+            old = dict(cfg)
+            cfg["discord_token"] = ""
+            cfg["discord_user"] = ""
+            config.save(cfg)
+            self._update_discord_ui(cfg)
+            if self._on_saved:
+                self._on_saved(old, cfg)
+            return
+
+        state = secrets.token_urlsafe(24)
+        base_url = self._fields["base_url"].get_text().strip() or cfg.get("base_url", "https://luce.codestage.pro")
+        base_url = base_url.rstrip("/")
+        login_url = f"{base_url}/auth/discord/login?state={state}"
+        self._discord_btn.set_sensitive(False)
+        self._discord_status_lbl.set_text("Aguardando login no navegador…")
+        try:
+            webbrowser.open(login_url)
+        except Exception as exc:
+            self._discord_status_lbl.set_text(f"Erro ao abrir navegador: {exc}")
+            self._discord_btn.set_sensitive(True)
+            return
+
+        def poll_worker():
+            poll_url = f"{base_url}/auth/discord/poll?state={state}"
+            start_time = time.monotonic()
+            while time.monotonic() - start_time < 120:
+                time.sleep(2)
+                try:
+                    req = urllib.request.Request(poll_url, headers={"User-Agent": "Project-LUCE-Desktop"})
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        if resp.status == 200:
+                            data = json.loads(resp.read().decode("utf-8"))
+                            st = data.get("status")
+                            if st == "ok":
+                                token = data.get("token", "")
+                                d_user = data.get("discord_user", "")
+                                u_name = data.get("user", "")
+                                def apply_ok():
+                                    c = config.load()
+                                    old_c = dict(c)
+                                    c["discord_token"] = token
+                                    c["discord_user"] = d_user
+                                    if u_name and not c.get("name"):
+                                        c["name"] = u_name
+                                    config.save(c)
+                                    self._update_discord_ui(c)
+                                    if self._on_saved:
+                                        self._on_saved(old_c, c)
+                                GLib.idle_add(apply_ok)
+                                return
+                            elif st == "denied":
+                                def apply_denied():
+                                    self._discord_status_lbl.set_text("Acesso negado: sua conta não pertence ao BDK.")
+                                    self._discord_btn.set_label("Tentar novamente com Discord")
+                                    self._discord_btn.set_sensitive(True)
+                                GLib.idle_add(apply_denied)
+                                return
+                except Exception:
+                    pass
+            def apply_timeout():
+                self._discord_status_lbl.set_text("Tempo limite esgotado.")
+                self._discord_btn.set_label("Entrar com Discord (BDK)")
+                self._discord_btn.set_sensitive(True)
+            GLib.idle_add(apply_timeout)
+
+        threading.Thread(target=poll_worker, daemon=True).start()
 
     def _on_save(self, _button: Gtk.Button) -> None:
         cfg = config.load()
@@ -209,6 +336,9 @@ class SettingsWindow(Gtk.Window):
             cfg["mute_app"] = self._mute_apps[mute_idx][0]
         cfg["audio"] = self._audio_check.get_active()
         cfg["keep_in_tray"] = self._tray_check.get_active()
+        sel_t_idx = self._theme_dropdown.get_selected()
+        if 0 <= sel_t_idx < len(THEME_OPTIONS):
+            cfg["theme"] = THEME_OPTIONS[sel_t_idx][0]
         config.save(cfg)
         self.close()
         if self._on_saved is not None:
@@ -264,6 +394,10 @@ class MainWindow(Gtk.ApplicationWindow):
         title.append(Gtk.Label(label="LUCE", xalign=0, css_classes=["wordmark"]))
         title.append(Gtk.Label(label="sua tela, ao vivo, com a galera", xalign=0, css_classes=["tagline"]))
         head.append(title)
+        self._discord_head_btn = Gtk.Button(valign=Gtk.Align.CENTER)
+        self._discord_head_btn.add_css_class("flat")
+        self._discord_head_btn.connect("clicked", self._on_discord_head_clicked)
+        head.append(self._discord_head_btn)
         settings_btn = Gtk.Button(icon_name="emblem-system-symbolic", tooltip_text="Configurações", valign=Gtk.Align.CENTER)
         settings_btn.add_css_class("flat")
         settings_btn.connect("clicked", lambda _b: SettingsWindow(self, self._on_settings_saved).present())
@@ -285,8 +419,9 @@ class MainWindow(Gtk.ApplicationWindow):
         cfg = config.load()
         self._name_entry = Gtk.Entry(text=cfg["name"], placeholder_text="seu nome")
         root.append(self._name_entry)
-        if not cfg["auth_password"]:  # primeira abertura: sem senha do grupo nada conecta
-            GLib.idle_add(SettingsWindow(self).present)  # present() devolve None: roda uma vez
+        self._update_discord_head_btn()
+        if not cfg["auth_password"] and not cfg.get("discord_token"):  # primeira abertura: sem senha do grupo nem discord
+            GLib.idle_add(SettingsWindow(self, self._on_settings_saved).present)
 
         share_row = Gtk.Box(spacing=8)
         root.append(share_row)
@@ -450,6 +585,79 @@ class MainWindow(Gtk.ApplicationWindow):
         enc_label = _ENCODER_LABELS[self._capture.encoder_kind]
         self._status.set_label(f"transmitindo como {name} ({enc_label})")
 
+    def _update_discord_head_btn(self) -> None:
+        cfg = config.load()
+        if cfg.get("discord_token"):
+            user = cfg.get("discord_user") or "BDK"
+            self._discord_head_btn.set_label(f"@{user}")
+            self._discord_head_btn.set_tooltip_text(f"Conectado ao Discord BDK como @{user}")
+        else:
+            self._discord_head_btn.set_label("Discord BDK")
+            self._discord_head_btn.set_tooltip_text("Entrar com Discord (BDK)")
+
+    def _on_discord_head_clicked(self, _btn: Gtk.Button) -> None:
+        cfg = config.load()
+        if cfg.get("discord_token"):
+            SettingsWindow(self, self._on_settings_saved).present()
+            return
+        state = secrets.token_urlsafe(24)
+        base_url = cfg.get("base_url", "https://luce.codestage.pro").rstrip("/")
+        login_url = f"{base_url}/auth/discord/login?state={state}"
+        self._discord_head_btn.set_sensitive(False)
+        self._discord_head_btn.set_label("Aguardando login…")
+        try:
+            webbrowser.open(login_url)
+        except Exception:
+            self._update_discord_head_btn()
+            self._discord_head_btn.set_sensitive(True)
+            return
+
+        def poll_worker():
+            poll_url = f"{base_url}/auth/discord/poll?state={state}"
+            start_time = time.monotonic()
+            while time.monotonic() - start_time < 120:
+                time.sleep(2)
+                try:
+                    req = urllib.request.Request(poll_url, headers={"User-Agent": "Project-LUCE-Desktop"})
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        if resp.status == 200:
+                            data = json.loads(resp.read().decode("utf-8"))
+                            st = data.get("status")
+                            if st == "ok":
+                                token = data.get("token", "")
+                                d_user = data.get("discord_user", "")
+                                u_name = data.get("user", "")
+                                def apply_ok():
+                                    c = config.load()
+                                    old_c = dict(c)
+                                    c["discord_token"] = token
+                                    c["discord_user"] = d_user
+                                    if u_name and not c.get("name"):
+                                        c["name"] = u_name
+                                        self._name_entry.set_text(u_name)
+                                    config.save(c)
+                                    self._update_discord_head_btn()
+                                    self._discord_head_btn.set_sensitive(True)
+                                    self._on_settings_saved(old_c, c)
+                                    self._refresh_roster()
+                                GLib.idle_add(apply_ok)
+                                return
+                            elif st == "denied":
+                                def apply_denied():
+                                    self._status.set_label("Acesso negado: conta não pertence ao BDK.")
+                                    self._update_discord_head_btn()
+                                    self._discord_head_btn.set_sensitive(True)
+                                GLib.idle_add(apply_denied)
+                                return
+                except Exception:
+                    pass
+            def apply_timeout():
+                self._update_discord_head_btn()
+                self._discord_head_btn.set_sensitive(True)
+            GLib.idle_add(apply_timeout)
+
+        threading.Thread(target=poll_worker, daemon=True).start()
+
     def _on_settings_saved(self, old: dict, new: dict) -> None:
         """Aplica na hora o que mudou nas Configurações enquanto transmite.
 
@@ -459,11 +667,15 @@ class MainWindow(Gtk.ApplicationWindow):
         sem pedir o seletor de novo.
         """
         self._apply_tray(new["keep_in_tray"])
+        self._update_discord_head_btn()
+        if new.get("name") and self._name_entry.get_text() != new["name"]:
+            self._name_entry.set_text(new["name"])
+        self._refresh_roster()
         cap = self._capture
         if cap is None:
             return
-        rebuild = ("width", "height", "fps", "audio_device", "base_url", "auth_password")
-        if any(old[k] != new[k] for k in rebuild):
+        rebuild = ("width", "height", "fps", "audio_device", "base_url", "auth_password", "discord_token")
+        if any(old.get(k) != new.get(k) for k in rebuild):
             self._restart_count = 0
             self._status.set_label("aplicando as configurações…")
             self._preview.set_paintable(None)

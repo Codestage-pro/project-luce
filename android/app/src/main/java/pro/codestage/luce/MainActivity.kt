@@ -87,7 +87,7 @@ class MainActivity : ComponentActivity() {
         requestInitialPermissions()
 
         setContent {
-            LuceTheme {
+            LuceTheme(themeKey = settings.theme) {
                 MainScreen(
                     settings = settings,
                     userName = userName,
@@ -112,8 +112,14 @@ class MainActivity : ComponentActivity() {
                     isDownloadingUpdate = isDownloadingUpdate,
                     updateDownloadProgress = updateDownloadProgress,
                     onUpdateClick = { info -> handleStartUpdate(info) },
+                    onThemeChange = { newTheme ->
+                        settings = settings.copy(theme = newTheme)
+                    },
                     onSaveSettings = { newSettings ->
                         settings = newSettings
+                        if (newSettings.userName.isNotBlank() && newSettings.userName != userName) {
+                            userName = newSettings.userName
+                        }
                         LuceConfig.save(this, newSettings)
                         Toast.makeText(this, "Configurações salvas!", Toast.LENGTH_SHORT).show()
                         fetchRoster()
