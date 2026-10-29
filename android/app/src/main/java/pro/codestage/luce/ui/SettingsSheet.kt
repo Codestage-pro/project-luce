@@ -80,6 +80,7 @@ fun SettingsSheet(
     var selectedRes by remember { mutableStateOf(Pair(initialSettings.resolutionWidth, initialSettings.resolutionHeight)) }
     var selectedFps by remember { mutableIntStateOf(initialSettings.fps) }
     var selectedBitrate by remember { mutableIntStateOf(initialSettings.bitrateKbps) }
+    var selectedAudioBitrate by remember { mutableIntStateOf(initialSettings.audioBitrateKbps) }
     var selectedAudio by remember { mutableStateOf(initialSettings.audioSource) }
     var selectedTheme by remember { mutableStateOf(initialSettings.theme) }
     var discordToken by remember { mutableStateOf(initialSettings.discordToken) }
@@ -381,6 +382,26 @@ fun SettingsSheet(
                 )
             }
 
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Qualidade de Áudio
+            Text("Qualidade de Áudio", color = LuceCyan, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    64 to "64k",
+                    128 to "128k",
+                    256 to "256k",
+                    320 to "320k"
+                ).forEach { (ab, label) ->
+                    ChoiceButton(
+                        label = label,
+                        isSelected = selectedAudioBitrate == ab,
+                        modifier = Modifier.weight(1f)
+                    ) { selectedAudioBitrate = ab }
+                }
+            }
+
             Spacer(modifier = Modifier.height(24.dp))
 
             // Salvar
@@ -394,6 +415,7 @@ fun SettingsSheet(
                             resolutionHeight = selectedRes.second,
                             fps = selectedFps,
                             bitrateKbps = selectedBitrate,
+                            audioBitrateKbps = selectedAudioBitrate,
                             audioSource = selectedAudio,
                             theme = selectedTheme,
                             discordToken = discordToken,

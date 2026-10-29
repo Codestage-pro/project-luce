@@ -676,7 +676,7 @@ class PublishSession(
                 peerConnection = pc
 
                 val vSender = pc.addTrack(vTrack, listOf("ARDAMS"))
-                pc.addTrack(aTrack, listOf("ARDAMS"))
+                val aSender = pc.addTrack(aTrack, listOf("ARDAMS"))
 
                 // Força preferências de codec H264 no transceiver de vídeo
                 try {
@@ -694,7 +694,7 @@ class PublishSession(
                     }
                 } catch (_: Exception) {}
 
-                // Configura bitrate no RtpSender
+                // Configura bitrate de vídeo no RtpSender
                 try {
                     val params = vSender.parameters
                     params.degradationPreference = org.webrtc.RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE
@@ -703,6 +703,15 @@ class PublishSession(
                         params.encodings[0].minBitrateBps = (settings.bitrateKbps * 1000) / 2
                         params.encodings[0].maxFramerate = settings.fps
                         vSender.parameters = params
+                    }
+                } catch (_: Exception) {}
+
+                // Configura bitrate de áudio no RtpSender
+                try {
+                    val aParams = aSender.parameters
+                    if (aParams.encodings.isNotEmpty()) {
+                        aParams.encodings[0].maxBitrateBps = settings.audioBitrateKbps * 1000
+                        aSender.parameters = aParams
                     }
                 } catch (_: Exception) {}
 
@@ -732,7 +741,7 @@ class PublishSession(
 
                 val localSdp = pc.localDescription?.description
                     ?: throw RuntimeException("SDP local vazia")
-                val sanitizedSdp = LuceApi.sanitizeSdpOffer(localSdp, isPublish = true)
+                val sanitizedSdp = LuceApi.sanitizeSdpOffer(localSdp, isPublish = true, audioBitrateKbps = settings.audioBitrateKbps)
 
                 // Envia para o WHIP
                 val whipResponse = LuceApi.sendWhipOffer(baseUrl, streamName, sanitizedSdp, authToken)
@@ -806,6 +815,10 @@ class PublishSession(
                 delay(8000)
                 try {
                     LuceApi.sendWhipHeartbeat(baseUrl, streamName, authToken)
+                } catch (e: SecurityException) {
+                    statusText.value = "permissão revogada (401)"
+                    stop()
+                    break
                 } catch (_: Exception) {}
             }
         }

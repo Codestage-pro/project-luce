@@ -41,9 +41,11 @@ class ProxyTest(unittest.TestCase):
     def setUp(self):
         self.sfu = FakeSfu()
         p.sfu = self.sfu
-        p.cfg.update(password="segredo")
+        p.cfg.update(password="segredo", secret="test_secret", discord_guild_id="12345")
         p.publishers.clear()
         p.viewers.clear()
+        p.online_users.clear()
+        p.discord_sessions.clear()
         p.WHEP_DELAY = 0
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), p.Handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -82,12 +84,15 @@ class ProxyTest(unittest.TestCase):
         self.assertEqual((code, body), (201, "ANSWER"))
         sid = headers["Location"].rsplit("/", 1)[1]
         self.assertTrue(headers["Location"].startswith("/ana/whip/"))
-        self.assertEqual(json.loads(self.call("GET", "/v3/paths/list")[1]), {"items": [{"name": "ana", "ready": True, "viewers": []}]})
+        roster = json.loads(self.call("GET", "/v3/paths/list")[1])
+        self.assertEqual(roster["items"], [{"name": "ana", "ready": True, "viewers": []}])
+        self.assertEqual(roster["online_count"], 1)
+        self.assertEqual(roster["online_users"], ["ana"])
         self.assertEqual(self.call("PATCH", "/ana/whip")[0], 204)
         self.assertEqual(self.call("DELETE", "/ana/whip/outra")[0], 200)  # sessão antiga: não derruba
         self.assertIn("ana", p.publishers)
         self.assertEqual(self.call("DELETE", f"/ana/whip/{sid}")[0], 200)
-        self.assertEqual(json.loads(self.call("GET", "/v3/paths/list")[1]), {"items": []})
+        self.assertEqual(json.loads(self.call("GET", "/v3/paths/list")[1])["items"], [])
         close = [c for c in self.sfu.calls if c[1].endswith("/tracks/close")]
         self.assertEqual(close[0][2]["tracks"], [{"mid": "audio1"}, {"mid": "video0"}])
         self.assertEqual(self.call("PATCH", "/ana/whip")[0], 404)
@@ -292,6 +297,56 @@ class ProxyTest(unittest.TestCase):
         code, body, _ = self.call("GET", "/auth/discord/poll?state=valid_test_state_1234")
         self.assertEqual(code, 200)
         self.assertEqual(json.loads(body).get("status"), "not_found")
+
+    def test_token_encryption_and_decryption(self):
+        secret_token = "discord_oauth2_secret_token_abcdef123456"
+        encrypted = p._encrypt_discord_token(secret_token)
+        self.assertNotEqual(encrypted, secret_token)
+        decrypted = p._decrypt_discord_token(encrypted)
+        self.assertEqual(decrypted, secret_token)
+
+        # Token vazio retorna vazio
+        self.assertEqual(p._encrypt_discord_token(""), "")
+        self.assertEqual(p._decrypt_discord_token(""), "")
+
+    def test_live_membership_revocation(self):
+        user_id = "55555"
+        username = "Alice"
+        access_token = "valid_access_token_123"
+
+        # Emite token contendo access_token criptografado (6 partes)
+        token = p.issue_discord_token(user_id, username, access_token=access_token)
+        parts = token.split(":")
+        self.assertEqual(len(parts), 6)
+
+        # Sessão em cache com is_member=True
+        p.discord_sessions[user_id] = {
+            "access_token": access_token,
+            "last_checked": time.time(),
+            "is_member": True,
+        }
+        self.assertTrue(p.verify_token(token))
+
+        # Simula revogação (usuário saiu ou foi banido da guild)
+        p.discord_sessions[user_id]["is_member"] = False
+        self.assertFalse(p.verify_token(token))
+
+        # Adiciona ana como publisher e verifica se revogação remove ela
+        p.publishers["alice"] = {"session": "s_alice", "tracks": [], "seen": time.monotonic()}
+        self.assertIn("alice", p.publishers)
+        # Ao detectar is_member=False, check_bdk_membership_live fecha a stream e remove de publishers
+        p.check_bdk_membership_live(user_id, access_token, "alice")
+        self.assertNotIn("alice", p.publishers)
+
+    def test_online_users_tracking(self):
+        # Transmissão gera publisher e viewer
+        self.call("POST", "/ana/whip", OFFER.encode())
+        self.call("PATCH", "/ana/watch?viewer=bob")
+
+        roster = json.loads(self.call("GET", "/v3/paths/list")[1])
+        self.assertIn("ana", roster["online_users"])
+        self.assertIn("bob", roster["online_users"])
+        self.assertEqual(roster["online_count"], len(roster["online_users"]))
 
 
 if __name__ == "__main__":

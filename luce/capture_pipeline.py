@@ -12,6 +12,7 @@ import os
 import sys
 import threading
 import time
+import urllib.error
 
 import gi
 
@@ -270,9 +271,11 @@ class CapturePipeline:
         mute_app: str = "",
         auth_token: str | None = None,
         on_pipeline_error=None,
+        on_unauthorized=None,
         gl_display: GstGL.GLDisplay | None = None,
     ) -> None:
         self._on_pipeline_error = on_pipeline_error
+        self._on_unauthorized = on_unauthorized
         self._whip_endpoint = whip_endpoint
         self._auth_token = auth_token
         self._stop_heartbeat = threading.Event()
@@ -290,9 +293,17 @@ class CapturePipeline:
         if self._window and os.environ.get("LUCE_WINDOW_MODE") == "crop":
             self._crop = _window_crop(self._window)
         self._grab = bool(self._window) and self._crop is None  # quadros vêm do WindowGrabber (WGC ou PrintWindow)
-        if self._window and not (width and height):  # "Fonte": tamanho fixo = o da janela agora; depois a GPU escala
-            left, top, right, bottom = winsys.window_rect(self._window)
-            width, height = max(64, (right - left) & ~1), max(64, (bottom - top) & ~1)
+        if self._window and not (width and height):  # "Fonte": tamanho do monitor onde a janela está, evitando recorte/tamanho fixo pequeno ao maximizar
+            try:
+                _hmon, (m_left, m_top, m_right, m_bottom) = winsys.monitor_of_window(self._window)
+                mw = (m_right - m_left) & ~1
+                mh = (m_bottom - m_top) & ~1
+            except Exception:
+                mw, mh = 0, 0
+            if mw >= 64 and mh >= 64:
+                width, height = mw, mh
+            else:
+                width, height = 1920, 1080
         self._monitor = monitor_handle
         self._frames = 0
         self._reported = -1
@@ -335,6 +346,7 @@ class CapturePipeline:
             src = Gst.ElementFactory.make("d3d11screencapturesrc", "src")
             if src is None:
                 raise RuntimeError("falta o d3d11screencapturesrc (gst-plugins-bad)")
+            _try_set(src, "show-border", False)
             if self._grab:
                 src = Gst.ElementFactory.make("appsrc", "src")  # alimentado por _grab_loop (ver winsys.WindowGrabber)
                 _try_set(src, "is-live", True)
@@ -351,6 +363,7 @@ class CapturePipeline:
                 src.set_property("monitor-handle", monitor_handle)
             if not self._grab:
                 _try_set(src, "show-cursor", True)
+                _try_set(src, "show-border", False)
         else:
             src = Gst.ElementFactory.make("pipewiresrc", "src")
             src.set_property("fd", int(portal_fd))
@@ -730,6 +743,12 @@ class CapturePipeline:
         while not self._stop_heartbeat.wait(HEARTBEAT_SECONDS):
             try:
                 roster.heartbeat(self._whip_endpoint, self._auth_token)
+            except urllib.error.HTTPError as exc:
+                if exc.code == 401:
+                    log.warning("heartbeat retornou 401 Unauthorized (permissão revogada)")
+                    if self._on_unauthorized is not None:
+                        GLib.idle_add(self._on_unauthorized)
+                    break
             except OSError as exc:  # queda de rede passageira: o próximo tenta de novo
                 log.debug("heartbeat falhou: %s", exc)
 
@@ -1084,6 +1103,9 @@ class CapturePipeline:
         detail = f"{err.message} [{src_name}: {dbg_tail}]" if dbg_tail else f"{err.message} [{src_name}]"
         print(f"pipeline parou: {detail}", flush=True)
         log.error("pipeline [%s]: %s (%s)", src_name, err.message, debug)
+        if "401" in err.message or "Unauthorized" in err.message or (debug and "401" in debug):
+            if self._on_unauthorized is not None:
+                GLib.idle_add(self._on_unauthorized)
         if WINDOWS and src_name.startswith("audio"):
             _WIN_AUDIO_FALLBACK = min(_WIN_AUDIO_FALLBACK + 1, 2)
             print(f"áudio no Windows falhou ({detail}); recuando nível de áudio para {_WIN_AUDIO_FALLBACK}", flush=True)

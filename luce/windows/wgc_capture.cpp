@@ -20,6 +20,15 @@ using namespace ABI::Windows::Graphics::DirectX;
 using namespace ABI::Windows::Graphics::DirectX::Direct3D11;
 using namespace Windows::Graphics::DirectX::Direct3D11;
 
+#ifndef __IGraphicsCaptureAccessStatics_INTERFACE_DEFINED__
+#define __IGraphicsCaptureAccessStatics_INTERFACE_DEFINED__
+struct __declspec(uuid("743ED370-06EC-5040-A58A-901F0F757095")) IGraphicsCaptureAccessStatics : public IInspectable {
+    virtual HRESULT STDMETHODCALLTYPE RequestAccessAsync(
+        int request,
+        IInspectable** operation) = 0;
+};
+#endif
+
 struct LuceWGC {
     HWND hwnd = nullptr;
     ComPtr<ID3D11Device> device;
@@ -33,6 +42,7 @@ struct LuceWGC {
     uint32_t staging_height = 0;
     uint32_t width = 0;
     uint32_t height = 0;
+    int borderless_supported = 0;
     std::mutex mutex;
 };
 
@@ -166,9 +176,18 @@ __declspec(dllexport) LuceWGC* luce_wgc_create(HWND hwnd, int capture_cursor) {
         session2->put_IsCursorCaptureEnabled(capture_cursor ? TRUE : FALSE);
     }
 
+    ComPtr<IGraphicsCaptureAccessStatics> access_statics;
+    HRESULT hr_acc = GetActivationFactory(L"Windows.Graphics.Capture.GraphicsCaptureAccess", access_statics);
+    if (SUCCEEDED(hr_acc) && access_statics) {
+        ComPtr<IInspectable> async_op;
+        access_statics->RequestAccessAsync(0 /* GraphicsCaptureAccessKind_Borderless */, &async_op);
+    }
+
     ComPtr<IGraphicsCaptureSession3> session3;
     if (SUCCEEDED(wgc->session.As(&session3))) {
-        session3->put_IsBorderRequired(FALSE);
+        if (SUCCEEDED(session3->put_IsBorderRequired(FALSE))) {
+            wgc->borderless_supported = 1;
+        }
     }
 
     if (!CreateStagingTexture(wgc, wgc->width, wgc->height)) {
@@ -183,6 +202,11 @@ __declspec(dllexport) LuceWGC* luce_wgc_create(HWND hwnd, int capture_cursor) {
     }
 
     return wgc;
+}
+
+__declspec(dllexport) int luce_wgc_is_borderless(LuceWGC* wgc) {
+    if (!wgc) return 0;
+    return wgc->borderless_supported;
 }
 
 __declspec(dllexport) int luce_wgc_grab_frame(
@@ -225,12 +249,25 @@ __declspec(dllexport) int luce_wgc_grab_frame(
     D3D11_TEXTURE2D_DESC desc;
     tex->GetDesc(&desc);
 
-    if (desc.Width != wgc->staging_width || desc.Height != wgc->staging_height) {
-        if (!CreateStagingTexture(wgc, desc.Width, desc.Height)) return -1;
-        wgc->width = desc.Width;
-        wgc->height = desc.Height;
-        SizeInt32 new_size = { (INT32)desc.Width, (INT32)desc.Height };
+    SizeInt32 content_size = { 0, 0 };
+    frame->get_ContentSize(&content_size);
+
+    RECT client_rect = {};
+    GetClientRect(wgc->hwnd, &client_rect);
+    uint32_t cr_w = (client_rect.right > client_rect.left) ? (uint32_t)(client_rect.right - client_rect.left) : 0;
+    uint32_t cr_h = (client_rect.bottom > client_rect.top) ? (uint32_t)(client_rect.bottom - client_rect.top) : 0;
+
+    uint32_t target_w = (content_size.Width > 0) ? (uint32_t)content_size.Width : (cr_w > 0 ? cr_w : desc.Width);
+    uint32_t target_h = (content_size.Height > 0) ? (uint32_t)content_size.Height : (cr_h > 0 ? cr_h : desc.Height);
+
+    if (target_w != wgc->staging_width || target_h != wgc->staging_height || desc.Width != target_w || desc.Height != target_h) {
+        wgc->width = target_w;
+        wgc->height = target_h;
+        SizeInt32 new_size = { (INT32)target_w, (INT32)target_h };
         wgc->pool->Recreate(wgc->winrt_device.Get(), DirectXPixelFormat_B8G8R8A8UIntNormalized, 2, new_size);
+        if (desc.Width != wgc->staging_width || desc.Height != wgc->staging_height) {
+            if (!CreateStagingTexture(wgc, desc.Width, desc.Height)) return -1;
+        }
     }
 
     wgc->context->CopyResource(wgc->staging.Get(), tex.Get());
@@ -239,8 +276,10 @@ __declspec(dllexport) int luce_wgc_grab_frame(
     hr = wgc->context->Map(wgc->staging.Get(), 0, D3D11_MAP_READ, 0, &mapped);
     if (FAILED(hr)) return -1;
 
-    uint32_t even_w = desc.Width & ~1;
-    uint32_t even_h = desc.Height & ~1;
+    uint32_t copy_w = (desc.Width < target_w) ? desc.Width : target_w;
+    uint32_t copy_h = (desc.Height < target_h) ? desc.Height : target_h;
+    uint32_t even_w = copy_w & ~1;
+    uint32_t even_h = copy_h & ~1;
     if (even_w == 0 || even_h == 0) {
         wgc->context->Unmap(wgc->staging.Get(), 0);
         return 0;

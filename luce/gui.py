@@ -65,7 +65,7 @@ from .watch_pipeline import WatchPipeline
 RESOLUTIONS = [(0, 0), (1280, 720), (1920, 1080), (2560, 1440)]
 FPS_OPTIONS = [30, 60, 120, 240]
 VIDEO_BITRATES_KBPS = [2500, 4000, 8000, 16000, 32000]
-AUDIO_BITRATES_KBPS = [64, 128, 256]
+AUDIO_BITRATES_KBPS = [64, 128, 256, 320]
 
 
 def _choice_row(grid: Gtk.Grid, row: int, label: str, options: list, selected, fmt=str) -> list[tuple[Gtk.ToggleButton, object]]:
@@ -172,6 +172,161 @@ def _open_url(url: str, window: Gtk.Window | None = None) -> bool:
 
     threading.Thread(target=_linux_spawn, daemon=True).start()
     return True
+
+
+class LogViewerWindow(Gtk.Window):
+    """Visualizador nativo de logs do GTK4 para visualização direta ou fallback."""
+
+    def __init__(self, parent: Gtk.Window) -> None:
+        super().__init__(title="Logs — Project LUCE", transient_for=parent, modal=False)
+        self.set_default_size(720, 500)
+
+        root = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=10,
+            margin_top=14,
+            margin_bottom=14,
+            margin_start=14,
+            margin_end=14,
+        )
+        self.set_child(root)
+
+        # Caminho da pasta de logs + botão de copiar caminho
+        log_dir = config.log_dir()
+        path_box = Gtk.Box(spacing=8, valign=Gtk.Align.CENTER)
+        path_box.append(Gtk.Label(label="Pasta de logs:", css_classes=["dim"]))
+        path_entry = Gtk.Entry(text=str(log_dir), editable=False, hexpand=True)
+        path_box.append(path_entry)
+
+        copy_path_btn = Gtk.Button(label="Copiar caminho")
+
+        def _copy_path(_b: Gtk.Button) -> None:
+            clipboard = Gdk.Display.get_default().get_clipboard()
+            clipboard.set(str(log_dir))
+            copy_path_btn.set_label("Copiado!")
+            GLib.timeout_add_seconds(2, lambda: copy_path_btn.set_label("Copiar caminho"))
+
+        copy_path_btn.connect("clicked", _copy_path)
+        path_box.append(copy_path_btn)
+        root.append(path_box)
+
+        # Notebook com abas para luce.log e gst.log
+        notebook = Gtk.Notebook(hexpand=True, vexpand=True)
+        root.append(notebook)
+
+        self._views: dict[str, Gtk.TextView] = {}
+        for name in ("luce.log", "gst.log"):
+            tv = Gtk.TextView(editable=False, monospace=True, wrap_mode=Gtk.WrapMode.WORD_CHAR)
+            tv.set_left_margin(8)
+            tv.set_right_margin(8)
+            tv.set_top_margin(8)
+            tv.set_bottom_margin(8)
+            scroller = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
+            scroller.set_child(tv)
+            notebook.append_page(scroller, Gtk.Label(label=name))
+            self._views[name] = tv
+
+        # Barra inferior com botões de ação
+        actions_bar = Gtk.Box(spacing=8, halign=Gtk.Align.END)
+
+        refresh_btn = Gtk.Button(label="Atualizar")
+        refresh_btn.connect("clicked", lambda _b: self._reload_logs())
+        actions_bar.append(refresh_btn)
+
+        copy_logs_btn = Gtk.Button(label="Copiar log ativo")
+
+        def _copy_active_log(_b: Gtk.Button) -> None:
+            page_idx = notebook.get_current_page()
+            page_name = "luce.log" if page_idx == 0 else "gst.log"
+            log_path = log_dir / page_name
+            text = ""
+            if log_path.exists():
+                try:
+                    text = log_path.read_text(encoding="utf-8", errors="replace")
+                except Exception as exc:
+                    text = f"Erro ao ler log: {exc}"
+            clipboard = Gdk.Display.get_default().get_clipboard()
+            clipboard.set(text)
+            copy_logs_btn.set_label("Copiado!")
+            GLib.timeout_add_seconds(2, lambda: copy_logs_btn.set_label("Copiar log ativo"))
+
+        copy_logs_btn.connect("clicked", _copy_active_log)
+        actions_bar.append(copy_logs_btn)
+
+        root.append(actions_bar)
+        self._reload_logs()
+
+    def _reload_logs(self) -> None:
+        log_dir = config.log_dir()
+        for name, tv in self._views.items():
+            path = log_dir / name
+            content = ""
+            if path.exists():
+                try:
+                    size = path.stat().st_size
+                    with open(path, "r", encoding="utf-8", errors="replace") as f:
+                        if size > 300 * 1024:
+                            f.seek(size - 300 * 1024)
+                            content = "... (truncado: últimos 300 KB)\n" + f.read()
+                        else:
+                            content = f.read()
+                except Exception as exc:
+                    content = f"Erro ao ler {path}: {exc}"
+            else:
+                content = f"Arquivo {name} ainda não existe."
+            buf = tv.get_buffer()
+            buf.set_text(content)
+            mark = buf.create_mark(None, buf.get_end_iter(), False)
+            tv.scroll_to_mark(mark, 0.0, True, 0.0, 1.0)
+
+
+def _open_logs_folder(parent_win: Gtk.Window) -> None:
+    """Tenta abrir a pasta de logs no explorador do sistema; se nenhum abrir ou falhar, abre LogViewerWindow."""
+    d = config.log_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    opened = False
+
+    if os.name == "nt":
+        try:
+            os.startfile(str(d))
+            return
+        except Exception:
+            pass
+    else:
+        # Gerenciadores de arquivos gráficos comuns
+        managers = ["thunar", "dolphin", "nemo", "nautilus", "pcmanfm", "caja", "io.elementary.files", "dde-file-manager"]
+        for mgr in managers:
+            if shutil.which(mgr):
+                try:
+                    subprocess.Popen([mgr, str(d)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    opened = True
+                    break
+                except Exception:
+                    pass
+
+        if not opened:
+            try:
+                Gtk.show_uri(parent_win, d.as_uri(), Gdk.CURRENT_TIME)
+                opened = True
+            except Exception:
+                pass
+
+        if not opened and shutil.which("gio"):
+            try:
+                subprocess.Popen(["gio", "open", str(d)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                opened = True
+            except Exception:
+                pass
+
+        if not opened and shutil.which("xdg-open"):
+            try:
+                subprocess.Popen(["xdg-open", str(d)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                opened = True
+            except Exception:
+                pass
+
+    if not opened:
+        LogViewerWindow(parent_win).present()
 
 
 def _list_audio_sources() -> list[tuple[str, str]]:
@@ -312,22 +467,14 @@ class SettingsWindow(Gtk.Window):
         self._update_discord_ui(cfg)
 
         save_row = next_row + 10
-        logs = Gtk.Button(label="Abrir pasta de logs")
-        def _open_logs(_b: Gtk.Button) -> None:
-            d = config.log_dir()
-            if os.name == "nt":
-                try:
-                    os.startfile(str(d))
-                except Exception:
-                    pass
-            else:
-                try:
-                    Gtk.show_uri(self, d.as_uri(), Gdk.CURRENT_TIME)
-                except Exception:
-                    import subprocess
-                    subprocess.Popen(["xdg-open", str(d)])
-        logs.connect("clicked", _open_logs)
-        grid.attach(logs, 0, save_row, 2, 1)
+        logs_box = Gtk.Box(spacing=8)
+        logs = Gtk.Button(label="Abrir pasta de logs", hexpand=True)
+        logs.connect("clicked", lambda _b: _open_logs_folder(self))
+        logs_box.append(logs)
+        view_logs_btn = Gtk.Button(label="Ver logs", tooltip_text="Visualizar arquivos de log diretamente")
+        view_logs_btn.connect("clicked", lambda _b: LogViewerWindow(self).present())
+        logs_box.append(view_logs_btn)
+        grid.attach(logs_box, 0, save_row, 2, 1)
         save_row += 1
 
         save = Gtk.Button(label="Salvar", css_classes=["go"])
@@ -515,6 +662,12 @@ class MainWindow(Gtk.ApplicationWindow):
         title.append(Gtk.Label(label="LUCE", xalign=0, css_classes=["wordmark"]))
         title.append(Gtk.Label(label="sua tela, ao vivo, com a galera", xalign=0, css_classes=["tagline"]))
         head.append(title)
+        self._online_pill = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER, css_classes=["online-pill"])
+        self._online_pill.append(Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["online-dot"]))
+        self._online_label = Gtk.Label(label="0 online", css_classes=["online-label"])
+        self._online_pill.append(self._online_label)
+        self._online_pill.set_tooltip_text("Usuários online no LUCE")
+        head.append(self._online_pill)
         self._discord_head_btn = Gtk.Button(valign=Gtk.Align.CENTER)
         self._discord_head_btn.add_css_class("flat")
         self._discord_head_btn.connect("clicked", self._on_discord_head_clicked)
@@ -681,6 +834,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 audio_device=cfg["audio_device"],
                 auth_token=config.auth_token(),
                 on_pipeline_error=self._on_share_error,
+                on_unauthorized=self._handle_unauthorized,
                 gl_display=self._gl_display,
             )
             self._capture.start()
@@ -945,6 +1099,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 audio_device=cfg["audio_device"],
                 auth_token=config.auth_token(),
                 on_pipeline_error=self._on_share_error,
+                on_unauthorized=self._handle_unauthorized,
                 gl_display=self._gl_display,
             )
             self._capture.start()
@@ -1413,28 +1568,51 @@ class MainWindow(Gtk.ApplicationWindow):
             f"👁 {len(who)} assistindo: {', '.join(who)}" if who else "👁 ninguém assistindo ainda"
         )
 
+    def _handle_unauthorized(self) -> None:
+        """Chamado quando o servidor rejeita autenticação (401 - ex: membro saiu da BDK)."""
+        if self._capture is not None:
+            self._stop_sharing()
+        cfg = config.load()
+        had_token = bool(cfg.get("discord_token"))
+        if had_token:
+            cfg.pop("discord_token", None)
+            cfg.pop("discord_user", None)
+            cfg.pop("discord_avatar", None)
+            config.save(cfg)
+            self._update_discord_head_btn()
+            self._status.set_label("Permissão revogada: conta não pertence mais ao servidor BDK no Discord.")
+            SettingsWindow(self, self._on_settings_saved).present()
+
     def _refresh_roster(self) -> bool:
         """Pede o roster fora da thread da GUI (servidor lento travava a janela, inclusive na abertura)."""
         if not self._roster_busy:
             self._roster_busy = True
             base_url, token = config.load()["base_url"], config.auth_token()
-            self._run_in_thread(lambda: roster.list_paths(base_url, token), self._draw_roster)
+            viewer_name = config.load().get("name", "")
+            self._run_in_thread(lambda: roster.fetch_state(base_url, token, viewer_name), self._draw_roster)
         return True
 
-    def _draw_roster(self, live, error) -> None:
+    def _draw_roster(self, state, error) -> None:
         self._roster_busy = False
         cfg = config.load()
         for child in list(self._roster_box):
             self._roster_box.remove(child)
         if error is not None:
             if isinstance(error, urllib.error.HTTPError) and error.code == 401:
-                msg = "faça login no Discord (BDK) e digite a senha em Configurações"
+                self._handle_unauthorized()
+                msg = "Acesso revogado: faça login novamente no Discord (BDK)"
             else:
                 msg = f"servidor não respondeu: {error}"
             self._roster_box.append(
                 Gtk.Label(label=msg, xalign=0, wrap=True)
             )
             return
+        live, online_count, online_users = state
+        self._online_label.set_label(f"{online_count} online")
+        if online_users:
+            self._online_pill.set_tooltip_text("Online: " + ", ".join(online_users))
+        else:
+            self._online_pill.set_tooltip_text("Nenhum usuário online no momento")
         names = [n for n in live if n != cfg["name"]]
         # Leituras sem ele: quem reinicia a transmissão pode sumir do roster por instantes.
         self._missed = {n: self._missed.get(n, 0) + 1 for n in self._watches if n not in live}

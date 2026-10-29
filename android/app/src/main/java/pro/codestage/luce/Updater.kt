@@ -26,13 +26,8 @@ data class UpdateInfo(
 object Updater {
     private const val ANDROID_LATEST_URL =
         "https://api.github.com/repos/Codestage-pro/project-luce/releases/tags/android-latest"
-    private const val ANDROID_TEST_URL =
-        "https://api.github.com/repos/Codestage-pro/project-luce/releases/tags/android-test"
-
     private const val FALLBACK_ANDROID_LATEST_URL =
         "https://api.github.com/repos/MuriloX06/project-luce/releases/tags/android-latest"
-    private const val FALLBACK_ANDROID_TEST_URL =
-        "https://api.github.com/repos/MuriloX06/project-luce/releases/tags/android-test"
 
     fun extractVersion(tagName: String, body: String): String {
         val regex = Regex("""Vers[ãa]o:\s*([^\s\r\n]+)""", RegexOption.IGNORE_CASE)
@@ -77,7 +72,7 @@ object Updater {
 
     suspend fun checkForUpdate(currentVersionName: String): UpdateInfo? = withContext(Dispatchers.IO) {
         try {
-            // 1. Tenta checar a tag android-latest (Codestage-pro com fallback MuriloX06)
+            // Tenta checar a tag oficial android-latest (Codestage-pro com fallback MuriloX06)
             var latestJson = fetchReleaseJson(ANDROID_LATEST_URL)
             if (latestJson == null) {
                 latestJson = fetchReleaseJson(FALLBACK_ANDROID_LATEST_URL)
@@ -96,35 +91,26 @@ object Updater {
                     )
                 }
             }
-
-            // 2. Se android-latest não tiver versão mais nova, checa releases/tags/android-test
-            var testJson = fetchReleaseJson(ANDROID_TEST_URL)
-            if (testJson == null) {
-                testJson = fetchReleaseJson(FALLBACK_ANDROID_TEST_URL)
-            }
-            if (testJson != null) {
-                val tagName = testJson.optString("tag_name", "").trim()
-                val body = testJson.optString("body", "")
-                val ver = extractVersion(tagName, body)
-                val apkUrl = findApkUrl(testJson.optJSONArray("assets"))
-
-                if (apkUrl != null && ver.isNotBlank() && isNewerVersion(ver, currentVersionName)) {
-                    return@withContext UpdateInfo(
-                        tagName = ver,
-                        downloadUrl = apkUrl,
-                        releaseNotes = body
-                    )
-                }
-            }
         } catch (_: Exception) {}
 
         null
     }
 
     fun isNewerVersion(remoteVer: String, currentVer: String): Boolean {
-        if (remoteVer == currentVer) return false
-        val rParts = remoteVer.split("-")[0].split(".").mapNotNull { it.toIntOrNull() }
-        val cParts = currentVer.split("-")[0].split(".").mapNotNull { it.toIntOrNull() }
+        if (remoteVer.contains("probe", ignoreCase = true) ||
+            remoteVer.contains("test", ignoreCase = true) ||
+            currentVer.contains("probe", ignoreCase = true) ||
+            currentVer.contains("test", ignoreCase = true)) {
+            return false
+        }
+        val rClean = remoteVer.trim().removePrefix("v").removePrefix("android-v")
+        val cClean = currentVer.trim().removePrefix("v").removePrefix("android-v")
+        if (rClean == cClean) return false
+
+        val rParts = rClean.split("-")[0].split(".").mapNotNull { it.toIntOrNull() }
+        val cParts = cClean.split("-")[0].split(".").mapNotNull { it.toIntOrNull() }
+        if (rParts.isEmpty() || cParts.isEmpty()) return false
+
         val maxLen = maxOf(rParts.size, cParts.size)
         for (i in 0 until maxLen) {
             val r = rParts.getOrElse(i) { 0 }
@@ -132,13 +118,7 @@ object Updater {
             if (r > c) return true
             if (r < c) return false
         }
-        // Versões base iguais, verifica probe/tag
-        if (remoteVer.contains("probe") && currentVer.contains("probe")) {
-            val rProbe = remoteVer.substringAfterLast(".").toIntOrNull() ?: 0
-            val cProbe = currentVer.substringAfterLast(".").toIntOrNull() ?: 0
-            return rProbe > cProbe
-        }
-        return remoteVer != currentVer
+        return false
     }
 
     suspend fun downloadAndInstall(
@@ -156,6 +136,15 @@ object Updater {
             val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
             if (dm != null) {
                 try {
+                    // Apaga qualquer arquivo antigo Luce-Android.apk em Downloads para evitar cópias duplicadas
+                    try {
+                        val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                        val targetFile = java.io.File(downloadsDir, "Luce-Android.apk")
+                        if (targetFile.exists()) {
+                            targetFile.delete()
+                        }
+                    } catch (_: Exception) {}
+
                     val request = DownloadManager.Request(Uri.parse(downloadUrl)).apply {
                         setTitle("Project LUCE")
                         setDescription("Baixando atualização Luce-Android.apk...")

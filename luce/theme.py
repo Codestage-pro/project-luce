@@ -144,6 +144,11 @@ switch:checked { background-image: linear-gradient(135deg, @ciano, @violeta); }
 .update-title { font-size: 18px; font-weight: 800; color: @texto; }
 .update-version { font-size: 14px; font-weight: 700; color: @ciano; }
 .update-desc { font-size: 13px; color: @mudo; }
+.online-pill { background: @painel; border: 1px solid alpha(#22c55e, 0.4); border-radius: 999px; padding: 4px 10px; }
+.online-pill:hover { border-color: #22c55e; background: alpha(#22c55e, 0.12); }
+.online-dot { min-width: 7px; min-height: 7px; border-radius: 999px; background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+.online-label { font-size: 11px; font-weight: 700; color: #22c55e; }
+
 progressbar trough { background: @linha; border-radius: 6px; min-height: 8px; }
 progressbar progress { background-image: linear-gradient(to right, @ciano, @violeta); border-radius: 6px; }
 """

@@ -13,6 +13,7 @@ data class UserSettings(
     val resolutionHeight: Int = 720,
     val fps: Int = 30,
     val bitrateKbps: Int = 4000,
+    val audioBitrateKbps: Int = 128,
     val audioSource: String = AUDIO_SOURCE_SYSTEM,
     val theme: String = THEME_LUCE,
     val discordToken: String = "",
@@ -47,6 +48,7 @@ object LuceConfig {
     private const val KEY_RES_HEIGHT = "res_height"
     private const val KEY_FPS = "fps"
     private const val KEY_BITRATE_KBPS = "bitrate_kbps"
+    private const val KEY_AUDIO_BITRATE_KBPS = "audio_bitrate_kbps"
     private const val KEY_AUDIO_SOURCE = "audio_source"
     private const val KEY_THEME = "theme"
     private const val KEY_DISCORD_TOKEN = "discord_token"
@@ -91,6 +93,7 @@ object LuceConfig {
             resolutionHeight = prefs.getInt(KEY_RES_HEIGHT, 720),
             fps = prefs.getInt(KEY_FPS, 30),
             bitrateKbps = prefs.getInt(KEY_BITRATE_KBPS, 4000),
+            audioBitrateKbps = prefs.getInt(KEY_AUDIO_BITRATE_KBPS, 128),
             audioSource = audio,
             theme = theme,
             discordToken = prefs.getString(KEY_DISCORD_TOKEN, "")?.trim() ?: "",
@@ -110,6 +113,7 @@ object LuceConfig {
             .putInt(KEY_RES_HEIGHT, settings.resolutionHeight)
             .putInt(KEY_FPS, settings.fps)
             .putInt(KEY_BITRATE_KBPS, settings.bitrateKbps)
+            .putInt(KEY_AUDIO_BITRATE_KBPS, settings.audioBitrateKbps)
             .putString(KEY_AUDIO_SOURCE, settings.audioSource)
             .putString(KEY_THEME, settings.theme)
             .putString(KEY_DISCORD_TOKEN, settings.discordToken.trim())

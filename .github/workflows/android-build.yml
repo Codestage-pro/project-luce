@@ -48,7 +48,7 @@ jobs:
           elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             VER="${GITHUB_REF_NAME#v}"
           else
-            VER="1.0.32-probe.${GITHUB_RUN_NUMBER}"
+            VER="1.0.33"
           fi
           echo "LUCE_VERSION=$VER" >> $GITHUB_ENV
           echo "Versão definida: $VER"
@@ -115,27 +115,5 @@ jobs:
             Versão oficial do Project LUCE para Android.
             Versão: ${{ env.LUCE_VERSION }}
           prerelease: false
-          files: dist/Luce-Android.apk
-          fail_on_unmatched_files: true
-
-      # Branch push (sem tag): Anexa na Prerelease de teste do Android
-      - name: Move a tag android-test
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        run: |
-          git tag -f android-test ${{ github.sha }}
-          git push -f origin android-test
-      - name: Atualiza a Prerelease android-test
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: android-test
-          name: Android (teste)
-          body: |
-            Build de teste do app para Android, gerado a cada push em `main` ou `windows-probe`.
-            Baixe o arquivo `Luce-Android.apk` para instalar diretamente no celular.
-            Versão: ${{ env.LUCE_VERSION }}
-            Commit: ${{ github.sha }}
-          prerelease: true
-          make_latest: "false"
           files: dist/Luce-Android.apk
           fail_on_unmatched_files: true

@@ -79,6 +79,8 @@ fun MainScreen(
     onStartStreamClick: () -> Unit,
     onStopStreamClick: () -> Unit,
     rosterList: List<RosterItem>,
+    onlineCount: Int = 0,
+    onlineUsers: List<String> = emptyList(),
     isRosterLoading: Boolean,
     onRefreshRoster: () -> Unit,
     watchedSessions: List<WatchSession>,
@@ -149,6 +151,35 @@ fun MainScreen(
                     }
                 },
                 actions = {
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                color = androidx.compose.ui.graphics.Color(0xFF22C55E).copy(alpha = 0.12f),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            .border(
+                                width = 1.dp,
+                                color = androidx.compose.ui.graphics.Color(0xFF22C55E).copy(alpha = 0.4f),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .background(androidx.compose.ui.graphics.Color(0xFF22C55E), shape = CircleShape)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = "$onlineCount online",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = androidx.compose.ui.graphics.Color(0xFF22C55E)
+                            )
+                        }
+                    }
                     IconButton(onClick = { showSettingsSheet = true }) {
                         Icon(
                             Icons.Default.Settings,

@@ -14,6 +14,12 @@ data class RosterItem(
     val viewers: List<String>
 )
 
+data class RosterResponse(
+    val items: List<RosterItem>,
+    val onlineCount: Int,
+    val onlineUsers: List<String>
+)
+
 data class SdpResponse(
     val answerSdp: String,
     val location: String
@@ -51,33 +57,53 @@ object LuceApi {
         return BufferedReader(InputStreamReader(stream, StandardCharsets.UTF_8)).use { it.readText() }
     }
 
-    fun listPaths(baseUrl: String, token: String?): List<RosterItem> {
+    fun fetchRosterState(baseUrl: String, token: String?, viewer: String? = null): RosterResponse {
         val conn = openConnection("$baseUrl/v3/paths/list", "GET", token)
+        if (!viewer.isNullOrBlank()) {
+            conn.setRequestProperty("X-Luce-Viewer", viewer)
+        }
         val code = conn.responseCode
-        if (code != 200) {
+        if (code == 401) {
+            throw SecurityException("HTTP 401: Não autorizado")
+        }
+        if (code !in 200..299) {
             val err = readResponse(conn)
             throw RuntimeException("Erro ao consultar transmissões (HTTP $code): $err")
         }
         val body = readResponse(conn)
         val json = JSONObject(body)
-        val itemsArray = json.optJSONArray("items") ?: return emptyList()
+        val itemsArray = json.optJSONArray("items")
         val list = mutableListOf<RosterItem>()
-        for (i in 0 until itemsArray.length()) {
-            val item = itemsArray.getJSONObject(i)
-            val name = item.optString("name", "")
-            val ready = item.optBoolean("ready", false)
-            val viewersJson = item.optJSONArray("viewers")
-            val viewers = mutableListOf<String>()
-            if (viewersJson != null) {
-                for (j in 0 until viewersJson.length()) {
-                    viewers.add(viewersJson.getString(j))
+        if (itemsArray != null) {
+            for (i in 0 until itemsArray.length()) {
+                val item = itemsArray.getJSONObject(i)
+                val name = item.optString("name", "")
+                val ready = item.optBoolean("ready", false)
+                val viewersJson = item.optJSONArray("viewers")
+                val viewers = mutableListOf<String>()
+                if (viewersJson != null) {
+                    for (j in 0 until viewersJson.length()) {
+                        viewers.add(viewersJson.getString(j))
+                    }
+                }
+                if (name.isNotBlank()) {
+                    list.add(RosterItem(name = name, ready = ready, viewers = viewers))
                 }
             }
-            if (name.isNotBlank()) {
-                list.add(RosterItem(name = name, ready = ready, viewers = viewers))
+        }
+        val onlineCount = json.optInt("online_count", list.size)
+        val usersArray = json.optJSONArray("online_users")
+        val onlineUsers = mutableListOf<String>()
+        if (usersArray != null) {
+            for (i in 0 until usersArray.length()) {
+                onlineUsers.add(usersArray.getString(i))
             }
         }
-        return list
+        return RosterResponse(items = list, onlineCount = onlineCount, onlineUsers = onlineUsers)
+    }
+
+    fun listPaths(baseUrl: String, token: String?, viewer: String? = null): List<RosterItem> {
+        return fetchRosterState(baseUrl, token, viewer).items
     }
 
     fun pollDiscordAuth(baseUrl: String, state: String): DiscordPollResult {
@@ -123,6 +149,10 @@ object LuceApi {
         conn.doOutput = true
         conn.outputStream.use { it.write(offerSdp.toByteArray(StandardCharsets.UTF_8)) }
         val code = conn.responseCode
+        if (code == 401) {
+            val err = readResponse(conn)
+            throw SecurityException("HTTP 401: Não autorizado: $err")
+        }
         if (code != 201) {
             val err = readResponse(conn)
             throw RuntimeException("Erro ao iniciar transmissão WHIP (HTTP $code): $err")
@@ -136,7 +166,10 @@ object LuceApi {
         val sSafe = URLEncoder.encode(stream, StandardCharsets.UTF_8.name())
         val conn = openConnection("$baseUrl/$sSafe/whip", "PATCH", token)
         try {
-            conn.responseCode
+            val code = conn.responseCode
+            if (code == 401) {
+                throw SecurityException("HTTP 401: Não autorizado")
+            }
         } finally {
             conn.disconnect()
         }
@@ -158,6 +191,10 @@ object LuceApi {
         conn.doOutput = true
         conn.outputStream.use { it.write(offerSdp.toByteArray(StandardCharsets.UTF_8)) }
         val code = conn.responseCode
+        if (code == 401) {
+            val err = readResponse(conn)
+            throw SecurityException("HTTP 401: Não autorizado: $err")
+        }
         if (code != 201) {
             val err = readResponse(conn)
             throw RuntimeException("Erro ao assistir stream WHEP (HTTP $code): $err")
@@ -177,9 +214,11 @@ object LuceApi {
         }
     }
 
-    fun sanitizeSdpOffer(sdp: String, isPublish: Boolean): String {
+    fun sanitizeSdpOffer(sdp: String, isPublish: Boolean, audioBitrateKbps: Int = 128): String {
         // 1. Áudio: O SFU Cloudflare exige rtpmap opus/48000/2
         var modified = sdp.replace("(?im)^(a=rtpmap:\\d+) opus/48000\\r?$".toRegex(), "$1 opus/48000/2")
+
+        val opusPt = Regex("(?im)^a=rtpmap:(\\d+)\\s+opus/48000(?:/2)?").find(modified)?.groupValues?.get(1)
 
         // 2. Extrai e seleciona codecs de vídeo
         val rtpmapRegex = "a=rtpmap:(\\d+)\\s+([A-Za-z0-9_-]+)/90000".toRegex(RegexOption.IGNORE_CASE)
@@ -265,6 +304,22 @@ object LuceApi {
                 continue
             } else if (trimmed.startsWith("m=")) {
                 inVideoSection = false
+            }
+
+            if (opusPt != null) {
+                if (trimmed.startsWith("a=fmtp:$opusPt")) {
+                    var fmtpLine = trimmed.replace(";?maxaveragebitrate=\\d+".toRegex(), "")
+                    if (!fmtpLine.contains("stereo=1")) {
+                        fmtpLine += ";stereo=1;sprop-stereo=1"
+                    }
+                    fmtpLine += ";maxaveragebitrate=${audioBitrateKbps * 1000}"
+                    result.add(fmtpLine)
+                    continue
+                } else if (trimmed.startsWith("a=rtpmap:$opusPt") && !modified.contains("a=fmtp:$opusPt")) {
+                    result.add(trimmed)
+                    result.add("a=fmtp:$opusPt minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=${audioBitrateKbps * 1000}")
+                    continue
+                }
             }
 
             if (inVideoSection) {

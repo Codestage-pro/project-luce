@@ -182,6 +182,11 @@ if sys.platform == "win32":
                 ]
                 cls._lib.luce_wgc_grab_frame.restype = ctypes.c_int
                 cls._lib.luce_wgc_destroy.argtypes = [ctypes.c_void_p]
+                try:
+                    cls._lib.luce_wgc_is_borderless.argtypes = [ctypes.c_void_p]
+                    cls._lib.luce_wgc_is_borderless.restype = ctypes.c_int
+                except Exception:
+                    pass
                 cls._supported = bool(cls._lib.luce_wgc_is_supported())
             except Exception:
                 cls._supported = False
@@ -227,6 +232,14 @@ if sys.platform == "win32":
                 return None
             self.reason = "janela fechada ou WGC falhou"
             return None
+
+        def is_borderless(self) -> bool:
+            if not self._handle or not self._lib:
+                return False
+            try:
+                return bool(self._lib.luce_wgc_is_borderless(self._handle))
+            except Exception:
+                return False
 
         def close(self) -> None:
             if self._handle:
@@ -326,15 +339,43 @@ if sys.platform == "win32":
             self.is_wgc = False
             self.reason = ""
             self.black = False
+
+            # 1. Testa primeiro o _GdiWindowGrabber (PrintWindow com PW_RENDERFULLCONTENT):
+            # O DWM DirectComposition nunca desenha borda amarela em nenhuma versão do Windows!
+            gdi = _GdiWindowGrabber(hwnd)
+            gdi_frame = None
+            try:
+                gdi_frame = gdi.grab()
+            except Exception:
+                gdi_frame = None
+
+            # Se o GDI capturou com sucesso e o quadro não é preto (aplicativo DWM padrão, navegador, etc):
+            if gdi_frame is not None and not gdi.black:
+                self._backend = gdi
+                self.is_wgc = False
+                self.reason = "gdi (render full content, sem borda)"
+                return
+
+            # 2. Se o GDI falhou ou retornou quadro preto (ex: jogo DirectX exclusivo), recorre ao WGC:
             if WgcGrabber.is_available():
                 try:
-                    self._backend = WgcGrabber(hwnd, cursor=True)
+                    wgc = WgcGrabber(hwnd, cursor=True)
+                    # Se WGC não for borderless e o GDI pelo menos devolveu algum frame, prefere GDI para evitar a borda amarela:
+                    if not wgc.is_borderless() and gdi_frame is not None:
+                        wgc.close()
+                        self._backend = gdi
+                        self.is_wgc = False
+                        self.reason = "gdi (evita borda amarela do wgc)"
+                        return
+                    self._backend = wgc
                     self.is_wgc = True
-                    self.reason = "wgc"
+                    self.reason = "wgc (borderless)" if wgc.is_borderless() else "wgc"
+                    gdi.close()
                     return
                 except Exception as exc:
-                    self.reason = f"wgc falhou ({exc}), usando PrintWindow"
-            self._backend = _GdiWindowGrabber(hwnd)
+                    self.reason = f"wgc falhou ({exc}), fallback gdi"
+
+            self._backend = gdi
             self.is_wgc = False
 
         def grab(self, timeout_ms: int = 50) -> tuple[int, int, bytes] | None:

@@ -25,6 +25,24 @@ def _request(url: str, token: str | None, method: str = "GET") -> urllib.request
     return urllib.request.Request(url, method=method, headers=headers)
 
 
+def fetch_state(
+    base_url: str, token: str | None, viewer_name: str = "", timeout: float = 2.0
+) -> tuple[dict[str, list[str]], int, list[str]]:
+    """Consulta o roster completo: (paths_dict, online_count, online_users)."""
+    headers = {"User-Agent": _USER_AGENT}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if viewer_name:
+        headers["X-Luce-Viewer"] = viewer_name
+    req = urllib.request.Request(f"{base_url}/v3/paths/list", method="GET", headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.load(resp)
+    paths = {item["name"]: item.get("viewers", []) for item in data.get("items", []) if item.get("ready")}
+    online_count = int(data.get("online_count", len(paths)))
+    online_users = [str(u) for u in data.get("online_users", list(paths.keys()))]
+    return paths, online_count, online_users
+
+
 def list_paths(base_url: str, token: str | None, timeout: float = 2.0) -> dict[str, list[str]]:
     """Quem está transmitindo agora: nome -> nomes de quem assiste.
 
@@ -32,9 +50,8 @@ def list_paths(base_url: str, token: str | None, timeout: float = 2.0) -> dict[s
     no ar" e "não falei com o servidor" são coisas diferentes, e confundir as
     duas foi o que escondeu o 403 acima. Quem chama decide o que mostrar.
     """
-    with urllib.request.urlopen(_request(f"{base_url}/v3/paths/list", token), timeout=timeout) as resp:
-        data = json.load(resp)
-    return {item["name"]: item.get("viewers", []) for item in data.get("items", []) if item.get("ready")}
+    paths, _count, _users = fetch_state(base_url, token, timeout=timeout)
+    return paths
 
 
 def heartbeat(whip_endpoint: str, token: str | None, timeout: float = 5.0) -> None:

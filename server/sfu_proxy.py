@@ -25,6 +25,7 @@ import hmac
 import json
 import os
 import re
+import secrets
 import threading
 import time
 import urllib.error
@@ -35,6 +36,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 TTL = 30  # segundos sem heartbeat até tirar do roster (o cliente manda a cada 10)
+ONLINE_TTL = 15.0  # segundos de inatividade para expirar usuário online
 WHEP_TRIES = 6  # o ICE do publisher pode estar subindo: o SFU responde not_found_track_error
 WHEP_DELAY = 1.5
 MAX_BODY = 64 * 1024
@@ -58,6 +60,12 @@ publishers: dict[str, dict] = {}  # nome -> {session, tracks: [{trackName, mid}]
 viewers: dict[str, dict[str, float]] = {}  # transmissão -> {quem assiste: último heartbeat}
 lock = threading.Lock()
 
+online_users: dict[str, float] = {}  # username -> último ping (para contador de online)
+online_users_lock = threading.Lock()
+
+discord_sessions: dict[str, dict] = {}  # user_id -> {access_token, last_checked, is_member}
+discord_sessions_lock = threading.Lock()
+
 STATE_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 pending_logins: dict[str, dict] = {}
 pending_lock = threading.Lock()
@@ -72,11 +80,131 @@ def clean_username(raw: str) -> str:
     return clean[:64] or "user"
 
 
-def issue_discord_token(user_id: str, username: str, ttl_days: int = 30) -> str:
-    """Gera discord:<user_id>:<username>:<exp_unix>:<hmac_hex> válido por 30 dias (ou ttl_days)."""
+def _encrypt_discord_token(plaintext: str) -> str:
+    if not plaintext:
+        return ""
+    secret = (cfg.get("secret") or cfg.get("password") or "luce_secret").encode("utf-8")
+    k = hmac.new(secret, b"discord_token_enc", "sha256").digest()
+    salt = secrets.token_bytes(8)
+    data = plaintext.encode("utf-8")
+    keystream = bytearray()
+    block_idx = 0
+    while len(keystream) < len(data):
+        block = hmac.new(k, salt + block_idx.to_bytes(4, "big"), "sha256").digest()
+        keystream.extend(block)
+        block_idx += 1
+    cipher = bytes(d ^ k_b for d, k_b in zip(data, keystream[:len(data)]))
+    return (salt + cipher).hex()
+
+
+def _decrypt_discord_token(hex_str: str) -> str:
+    if not hex_str:
+        return ""
+    try:
+        raw = bytes.fromhex(hex_str)
+        if len(raw) <= 8:
+            return ""
+        salt, cipher = raw[:8], raw[8:]
+        secret = (cfg.get("secret") or cfg.get("password") or "luce_secret").encode("utf-8")
+        k = hmac.new(secret, b"discord_token_enc", "sha256").digest()
+        keystream = bytearray()
+        block_idx = 0
+        while len(keystream) < len(cipher):
+            block = hmac.new(k, salt + block_idx.to_bytes(4, "big"), "sha256").digest()
+            keystream.extend(block)
+            block_idx += 1
+        plain = bytes(c ^ k_b for c, k_b in zip(cipher, keystream[:len(cipher)]))
+        return plain.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _cleanup_revoked(user_id: str, username: str) -> None:
+    if username:
+        clean_name = clean_username(username)
+        with online_users_lock:
+            online_users.pop(clean_name, None)
+        with lock:
+            if clean_name in publishers:
+                del publishers[clean_name]
+        try:
+            sfu("DELETE", f"/v3/paths/delete/{clean_name}")
+        except Exception:
+            pass
+
+
+def check_bdk_membership_live(user_id: str, access_token: str = "", username: str = "") -> bool:
+    """Verifica com cache de 15s se o usuário ainda pertence à guild BDK no Discord."""
+    if not access_token:
+        with discord_sessions_lock:
+            if user_id in discord_sessions:
+                access_token = discord_sessions[user_id].get("access_token", "")
+    if not access_token:
+        return True
+
+    now = time.time()
+    with discord_sessions_lock:
+        session = discord_sessions.get(user_id)
+        if session and (now - session.get("last_checked", 0) < 15):
+            is_mem = session.get("is_member", True)
+            if not is_mem:
+                _cleanup_revoked(user_id, username)
+            return is_mem
+
+    guild_id = cfg.get("discord_guild_id", "").strip()
+    if not guild_id:
+        return True
+
+    headers = {"Authorization": f"Bearer {access_token}", "User-Agent": USER_AGENT}
+    is_member = True
+    try:
+        req = urllib.request.Request("https://discord.com/api/v10/users/@me/guilds", headers=headers)
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            guilds = json.loads(resp.read().decode("utf-8"))
+        is_member = any(str(g.get("id")) == guild_id for g in guilds) if isinstance(guilds, list) else False
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            is_member = False
+        elif exc.code == 429 or exc.code >= 500:
+            with discord_sessions_lock:
+                return discord_sessions.get(user_id, {}).get("is_member", True)
+        else:
+            is_member = False
+    except Exception:
+        with discord_sessions_lock:
+            return discord_sessions.get(user_id, {}).get("is_member", True)
+
+    with discord_sessions_lock:
+        discord_sessions[user_id] = {
+            "access_token": access_token,
+            "last_checked": now,
+            "is_member": is_member,
+        }
+
+    if not is_member:
+        log(f"acesso revogado: user_id {user_id} (@{username}) não está na guild BDK")
+        _cleanup_revoked(user_id, username)
+        return False
+
+    return True
+
+
+def issue_discord_token(user_id: str, username: str, ttl_days: int = 30, access_token: str = "") -> str:
+    """Gera token discord assinado: discord:<user_id>:<username>:<exp>:<enc_token>:<sig>."""
     secret = (cfg.get("secret") or cfg.get("password") or "luce_secret").encode("utf-8")
     exp = int(time.time() + ttl_days * 86400)
-    payload = f"discord:{user_id}:{username}:{exp}"
+    enc_token = _encrypt_discord_token(access_token) if access_token else ""
+    if access_token:
+        with discord_sessions_lock:
+            discord_sessions[user_id] = {
+                "access_token": access_token,
+                "last_checked": time.time(),
+                "is_member": True,
+            }
+    if enc_token:
+        payload = f"discord:{user_id}:{username}:{exp}:{enc_token}"
+    else:
+        payload = f"discord:{user_id}:{username}:{exp}"
     sig = hmac.new(secret, payload.encode("utf-8"), "sha256").hexdigest()
     return f"{payload}:{sig}"
 
@@ -85,19 +213,42 @@ def _verify_discord_part(raw_discord: str) -> bool:
     if not raw_discord.startswith("discord:"):
         return False
     parts = raw_discord.split(":")
-    if len(parts) != 5:
-        return False
-    _, user_id, username, exp_str, sig = parts
-    try:
-        exp = int(exp_str)
-    except ValueError:
-        return False
-    if exp < time.time():
-        return False
     secret = (cfg.get("secret") or cfg.get("password") or "luce_secret").encode("utf-8")
-    payload = f"discord:{user_id}:{username}:{exp_str}"
-    expected_sig = hmac.new(secret, payload.encode("utf-8"), "sha256").hexdigest()
-    return hmac.compare_digest(sig, expected_sig)
+
+    if len(parts) == 6:
+        _, user_id, username, exp_str, enc_token, sig = parts
+        try:
+            exp = int(exp_str)
+        except ValueError:
+            return False
+        if exp < time.time():
+            return False
+        payload = f"discord:{user_id}:{username}:{exp_str}:{enc_token}"
+        expected_sig = hmac.new(secret, payload.encode("utf-8"), "sha256").hexdigest()
+        if not hmac.compare_digest(sig, expected_sig):
+            return False
+        access_token = _decrypt_discord_token(enc_token)
+        return check_bdk_membership_live(user_id, access_token, username)
+
+    elif len(parts) == 5:
+        _, user_id, username, exp_str, sig = parts
+        try:
+            exp = int(exp_str)
+        except ValueError:
+            return False
+        if exp < time.time():
+            return False
+        payload = f"discord:{user_id}:{username}:{exp_str}"
+        expected_sig = hmac.new(secret, payload.encode("utf-8"), "sha256").hexdigest()
+        if not hmac.compare_digest(sig, expected_sig):
+            return False
+        access_token = ""
+        with discord_sessions_lock:
+            if user_id in discord_sessions:
+                access_token = discord_sessions[user_id].get("access_token", "")
+        return check_bdk_membership_live(user_id, access_token, username)
+
+    return False
 
 
 def _verify_password_part(raw_bdk: str) -> bool:
@@ -265,7 +416,7 @@ def handle_discord_callback(code: str, state: str) -> tuple[int, bytes, str]:
     raw_name = user_info.get("global_name") or user_info.get("username") or "user"
     clean_name = clean_username(raw_name)
     user_id = str(user_info.get("id", "0"))
-    token = issue_discord_token(user_id, clean_name)
+    token = issue_discord_token(user_id, clean_name, access_token=access_token)
 
     with pending_lock:
         pending_logins[state] = {
@@ -460,8 +611,29 @@ def subscribe(stream: str, offer: str) -> tuple[str, str]:
     raise AssertionError("unreachable")
 
 
+def _record_online_user(auth_header: str, headers) -> None:
+    viewer = headers.get("X-Luce-Viewer", "").strip() if headers else ""
+    username = ""
+    if auth_header:
+        raw = auth_header.strip()
+        if raw.startswith("Bearer "):
+            raw = raw[7:].strip()
+        for p in raw.split("|"):
+            if p.startswith("discord:"):
+                d_parts = p.split(":")
+                if len(d_parts) >= 3 and d_parts[2]:
+                    username = clean_username(d_parts[2])
+                    break
+    user = viewer or username
+    if user:
+        clean = clean_username(user)
+        with online_users_lock:
+            online_users[clean] = time.time()
+
+
 def expire() -> None:
     now = time.monotonic()
+    now_wall = time.time()
     with lock:
         stale = [name for name, pub in publishers.items() if now - pub["seen"] > TTL]
     for name in stale:
@@ -477,6 +649,10 @@ def expire() -> None:
         expired_states = [s for s, data in pending_logins.items() if now - data.get("created", 0) > 300]
         for s in expired_states:
             del pending_logins[s]
+    with online_users_lock:
+        expired_online = [u for u, seen in online_users.items() if now_wall - seen > ONLINE_TTL]
+        for u in expired_online:
+            del online_users[u]
 
 
 def reap() -> None:
@@ -515,10 +691,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle(self, fn, auth_required: bool = True) -> None:
         try:
+            token = self.headers.get("Authorization", "")
             if auth_required:
-                token = self.headers.get("Authorization", "")
                 if not verify_token(token):
                     raise HttpError(401, "não autorizado")
+                _record_online_user(token, self.headers)
+            else:
+                if token and verify_token(token):
+                    _record_online_user(token, self.headers)
+                elif self.headers.get("X-Luce-Viewer"):
+                    _record_online_user("", self.headers)
             fn([p for p in self.path.split("?")[0].split("/") if p])
         except HttpError as exc:
             self._reply(exc.code, str(exc).encode())
@@ -586,9 +768,22 @@ class Handler(BaseHTTPRequestHandler):
 
             if p_parts != ["v3", "paths", "list"]:
                 raise HttpError(404, "rota desconhecida")
+            now_wall = time.time()
             with lock:
                 items = [{"name": name, "ready": True, "viewers": sorted(viewers.get(name, {}))} for name in publishers]
-            self._reply(200, json.dumps({"items": items}).encode(), "application/json")
+                with online_users_lock:
+                    for name in publishers:
+                        online_users[name] = now_wall
+                    for who in viewers.values():
+                        for v in who:
+                            online_users[v] = now_wall
+                    active_users = sorted([u for u, seen in online_users.items() if now_wall - seen <= ONLINE_TTL])
+            data = {
+                "items": items,
+                "online_count": len(active_users),
+                "online_users": active_users,
+            }
+            self._reply(200, json.dumps(data).encode(), "application/json")
 
         self._handle(run, auth_required=not is_auth_route)
 

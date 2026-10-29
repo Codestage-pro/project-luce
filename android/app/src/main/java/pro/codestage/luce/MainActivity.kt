@@ -40,6 +40,8 @@ class MainActivity : ComponentActivity() {
     private var streamStatsText by mutableStateOf("")
 
     private val rosterList = mutableStateListOf<RosterItem>()
+    private var onlineCount by mutableStateOf(0)
+    private val onlineUsers = mutableStateListOf<String>()
     private var isRosterLoading by mutableStateOf(false)
 
     private val watchedSessions = mutableStateListOf<WatchSession>()
@@ -102,6 +104,8 @@ class MainActivity : ComponentActivity() {
                     onStartStreamClick = { handleStartStream() },
                     onStopStreamClick = { handleStopStream() },
                     rosterList = rosterList,
+                    onlineCount = onlineCount,
+                    onlineUsers = onlineUsers,
                     isRosterLoading = isRosterLoading,
                     onRefreshRoster = { fetchRoster() },
                     watchedSessions = watchedSessions,
@@ -246,6 +250,9 @@ class MainActivity : ComponentActivity() {
                     isStreaming = session.isLive.value
                     streamStatusText = session.statusText.value
                     streamStatsText = session.statsText.value
+                    if (session.statusText.value.contains("401") || session.statusText.value.contains("revogada")) {
+                        handleUnauthorized()
+                    }
                 } else if (isStreaming) {
                     isStreaming = false
                     streamStatusText = "pronto para transmitir"
@@ -268,17 +275,45 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch(Dispatchers.IO) {
             isRosterLoading = true
             try {
-                val items = LuceApi.listPaths(settings.serverUrl, settings.authToken)
+                val state = LuceApi.fetchRosterState(settings.serverUrl, settings.authToken, userName)
                 withContext(Dispatchers.Main) {
                     rosterList.clear()
-                    rosterList.addAll(items.filter { it.ready })
+                    rosterList.addAll(state.items.filter { it.ready })
+                    onlineCount = state.onlineCount
+                    onlineUsers.clear()
+                    onlineUsers.addAll(state.onlineUsers)
                     isRosterLoading = false
+                }
+            } catch (e: SecurityException) {
+                withContext(Dispatchers.Main) {
+                    isRosterLoading = false
+                    handleUnauthorized()
                 }
             } catch (_: Exception) {
                 withContext(Dispatchers.Main) {
                     isRosterLoading = false
                 }
             }
+        }
+    }
+
+    private fun handleUnauthorized() {
+        if (isStreaming) {
+            handleStopStream()
+        }
+        watchedSessions.forEach { it.stop() }
+        watchedSessions.clear()
+        fullscreenStream = null
+        val hadDiscord = settings.discordToken.isNotBlank()
+        if (hadDiscord) {
+            val updated = settings.copy(
+                discordToken = "",
+                discordUser = ""
+            )
+            settings = updated
+            LuceConfig.save(this, updated)
+            Toast.makeText(this, "Permissão revogada: conta não pertence mais ao servidor BDK.", Toast.LENGTH_LONG).show()
+            openSettingsTrigger = true
         }
     }
 
