@@ -25,6 +25,8 @@ class FakeSfu:
     def __init__(self):
         self.calls = []
         self.not_found = 0  # quantas vezes o tracks/new remoto falha antes de dar certo
+        self.audio_empty = False  # publisher sem RTP de áudio: o SFU recusa a track remota de áudio
+        self.answer = "ANSWER"
 
     def __call__(self, method, path, body=None):
         self.calls.append((method, path, body))
@@ -34,7 +36,9 @@ class FakeSfu:
             if body["tracks"][0]["location"] == "remote" and self.not_found:
                 self.not_found -= 1
                 raise p.SfuError("SFU 400: not_found_track_error")
-            return {"sessionDescription": {"type": "answer", "sdp": "ANSWER"}, "tracks": []}
+            if self.audio_empty and any(t["location"] == "remote" and t["trackName"] == "audio" for t in body["tracks"]):
+                raise p.SfuError("track audio: empty_track_error No track data from remote peer")
+            return {"sessionDescription": {"type": "answer", "sdp": self.answer}, "tracks": []}
         return {}
 
 
@@ -168,6 +172,21 @@ class ProxyTest(unittest.TestCase):
         self.sfu.not_found = 99
         self.assertEqual(self.call("POST", "/ana/whep", OFFER.encode())[0], 502)
         self.assertEqual(self.call("POST", "/ninguem/whep", OFFER.encode())[0], 404)
+
+    def test_whep_falls_back_to_video_only_when_publisher_audio_is_empty(self):
+        self.call("POST", "/ana/whip", OFFER.encode())
+        self.sfu.audio_empty = True
+        self.sfu.answer = "v=0\r\na=group:BUNDLE video0\r\nm=video 9 UDP/TLS/RTP/SAVPF 97\r\na=mid:video0\r\n"
+        offer = OFFER.replace("v=0\r\n", "v=0\r\na=group:BUNDLE audio1 video0\r\n", 1)
+        code, body, _ = self.call("POST", "/ana/whep", offer.encode())
+        self.assertEqual(code, 201)
+        sent = [c for c in self.sfu.calls if c[1].endswith("/tracks/new")][-1][2]
+        self.assertEqual([t["trackName"] for t in sent["tracks"]], ["video"])
+        self.assertNotIn("m=audio", sent["sessionDescription"]["sdp"])
+        self.assertIn("BUNDLE video0", sent["sessionDescription"]["sdp"].replace("\r", ""))
+        # a resposta ao viewer mantém as m-lines do offer: o áudio vem recusado (porta 0) na posição original
+        self.assertLess(body.index("m=audio 0 "), body.index("m=video"))
+        self.assertIn("a=mid:audio1", body)
 
     def test_bad_routes(self):
         self.assertEqual(self.call("POST", "/ana/foo", OFFER.encode())[0], 404)

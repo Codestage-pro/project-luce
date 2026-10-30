@@ -232,9 +232,26 @@ object WebRtcEngine {
                 .setUseStereoOutput(true)
                 .setAudioRecordStateCallback(object : JavaAudioDeviceModule.AudioRecordStateCallback {
                     override fun onWebRtcAudioRecordStart() {
+                        LuceLog.i("Audio", "ADM começou a gravar; trocando para captura do áudio do sistema")
                         attachSystemAudioCapture()
                     }
-                    override fun onWebRtcAudioRecordStop() {}
+                    override fun onWebRtcAudioRecordStop() {
+                        LuceLog.i("Audio", "ADM parou de gravar")
+                    }
+                })
+                .setAudioRecordErrorCallback(object : JavaAudioDeviceModule.AudioRecordErrorCallback {
+                    override fun onWebRtcAudioRecordInitError(errorMessage: String?) {
+                        LuceLog.e("Audio", "Falha ao iniciar o AudioRecord: $errorMessage")
+                    }
+                    override fun onWebRtcAudioRecordStartError(
+                        errorCode: JavaAudioDeviceModule.AudioRecordStartErrorCode?,
+                        errorMessage: String?
+                    ) {
+                        LuceLog.e("Audio", "Falha ao começar a gravar ($errorCode): $errorMessage")
+                    }
+                    override fun onWebRtcAudioRecordError(errorMessage: String?) {
+                        LuceLog.e("Audio", "Erro do AudioRecord: $errorMessage")
+                    }
                 })
                 .createAudioDeviceModule()
             adm = audioDeviceModule
@@ -254,21 +271,22 @@ object WebRtcEngine {
     }
 
     fun attachSystemAudioCapture() {
-        val projection = activeMediaProjection ?: return
+        val projection = activeMediaProjection ?: return LuceLog.w("Audio", "Sem MediaProjection ativa; áudio do sistema não anexado")
         val currentAdm = adm ?: return
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
         try {
             val audioInputField = currentAdm.javaClass.declaredFields.firstOrNull {
                 it.type.name.endsWith("WebRtcAudioRecord")
-            } ?: return
+            } ?: return LuceLog.w("Audio", "Campo WebRtcAudioRecord não encontrado no ADM")
             audioInputField.isAccessible = true
-            val audioInput = audioInputField.get(currentAdm) ?: return
+            val audioInput = audioInputField.get(currentAdm) ?: return LuceLog.w("Audio", "WebRtcAudioRecord nulo")
 
             val audioRecordField = audioInput.javaClass.declaredFields.firstOrNull {
                 it.type == AudioRecord::class.java
-            } ?: return
+            } ?: return LuceLog.w("Audio", "Campo AudioRecord não encontrado no WebRtcAudioRecord")
             audioRecordField.isAccessible = true
-            val oldRecord = audioRecordField.get(audioInput) as? AudioRecord ?: return
+            val oldRecord = audioRecordField.get(audioInput) as? AudioRecord
+                ?: return LuceLog.w("Audio", "AudioRecord do ADM ainda nulo")
 
             val sampleRate = oldRecord.sampleRate
             val channelConfig = oldRecord.channelConfiguration
@@ -301,6 +319,11 @@ object WebRtcEngine {
 
             if (sysRecord.state == AudioRecord.STATE_INITIALIZED) {
                 sysRecord.startRecording()
+                LuceLog.i(
+                    "Audio",
+                    "Áudio do sistema anexado: ${sampleRate}Hz, $channelCount canal(is), " +
+                        "estado=${sysRecord.recordingState} (antigo=${oldRecord.recordingState})"
+                )
                 audioRecordField.set(audioInput, sysRecord)
                 CoroutineScope(Dispatchers.IO).launch {
                     delay(60)
@@ -308,9 +331,12 @@ object WebRtcEngine {
                     try { oldRecord.release() } catch (_: Exception) {}
                 }
             } else {
+                LuceLog.w("Audio", "AudioRecord de captura do sistema não inicializou (state=${sysRecord.state})")
                 sysRecord.release()
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            LuceLog.e("Audio", "Falha ao anexar o áudio do sistema", e)
+        }
     }
 
     fun createRtcConfig(): PeerConnection.RTCConfiguration {

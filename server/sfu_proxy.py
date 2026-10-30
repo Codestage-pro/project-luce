@@ -721,11 +721,22 @@ def subscribe(stream: str, offer: str) -> tuple[str, str]:
     if not remote_tracks:
         remote_tracks = [{"location": "remote", "sessionId": pub["session"], "trackName": t["trackName"]}
                          for t in pub["tracks"]]
+    try:
+        return _subscribe_tracks(stream, whep_offer(offer), remote_tracks)
+    except SfuError as exc:
+        video = [t for t in remote_tracks if t["trackName"] == "video"]
+        if not str(exc).startswith("track audio:") or not video or len(video) == len(remote_tracks):
+            raise
+        # publisher com áudio sem RTP (ex.: captura de áudio do Android falhou): sem isso nenhum espectador vê o vídeo
+        log(f"{stream}: áudio sem dados no SFU ({exc}); assistindo só o vídeo")
+        video_offer, restore = _drop_audio(whep_offer(offer))
+        sub, answer = _subscribe_tracks(stream, video_offer, video)
+        return sub, restore(answer)
+
+
+def _subscribe_tracks(stream: str, sdp: str, remote_tracks: list[dict]) -> tuple[str, str]:
     sub = sfu("POST", "/sessions/new")["sessionId"]
-    body = {
-        "sessionDescription": {"type": "offer", "sdp": whep_offer(offer)},
-        "tracks": remote_tracks,
-    }
+    body = {"sessionDescription": {"type": "offer", "sdp": sdp}, "tracks": remote_tracks}
     for attempt in range(1, WHEP_TRIES + 1):
         try:
             res = tracks_new(sub, body)
@@ -736,6 +747,26 @@ def subscribe(stream: str, offer: str) -> tuple[str, str]:
             log(f"{stream}: publisher ainda subindo, tentativa {attempt}/{WHEP_TRIES}")
             time.sleep(WHEP_DELAY)
     raise AssertionError("unreachable")
+
+
+def _drop_audio(sdp: str):
+    """Tira a m-line de áudio do offer; restore(answer) a devolve recusada (porta 0) na posição original."""
+    blocks = re.split(r"(?m)^(?=m=)", sdp)
+    idx = next(i for i, b in enumerate(blocks) if b.startswith("m=audio"))
+    removed = blocks.pop(idx)
+    mid = re.search(r"(?m)^a=mid:(.*?)\r?$", removed).group(1).strip()
+    blocks[0] = re.sub(rf"(?m)^(a=group:BUNDLE[^\r\n]*?) {re.escape(mid)}\b", r"\1", blocks[0])
+    head = removed.split("\n", 1)[0].rstrip("\r").split(" ", 2)
+    rejected = f"m=audio 0 {head[2]}\r\nc=IN IP4 0.0.0.0\r\na=inactive\r\na=mid:{mid}\r\n"
+
+    def restore(answer: str) -> str:
+        parts = re.split(r"(?m)^(?=m=)", answer)
+        if idx < len(parts) and idx > 0 and not parts[idx - 1].endswith("\n"):
+            parts[idx - 1] += "\r\n"
+        parts.insert(idx, rejected)
+        return "".join(parts)
+
+    return "".join(blocks), restore
 
 
 def _resolve_online_name(discord_uid: str, viewer: str, token_name: str, path_user: str) -> str:
