@@ -91,10 +91,10 @@ class LuceVideoEncoderFactory(
     override fun getSupportedCodecs(): Array<VideoCodecInfo> {
         findH264Encoder() ?: return emptyArray()
         return arrayOf(
-            VideoCodecInfo("H264", PARAMS_42E01F, emptyList<String>()),
-            VideoCodecInfo("H264", PARAMS_42001F, emptyList<String>()),
             VideoCodecInfo("H264", PARAMS_42E029, emptyList<String>()),
-            VideoCodecInfo("H264", PARAMS_420029, emptyList<String>())
+            VideoCodecInfo("H264", PARAMS_420029, emptyList<String>()),
+            VideoCodecInfo("H264", PARAMS_42E01F, emptyList<String>()),
+            VideoCodecInfo("H264", PARAMS_42001F, emptyList<String>())
         )
     }
 
@@ -153,8 +153,8 @@ class LuceVideoEncoderFactory(
             surfaceColorFormat,
             yuvColorFormat,
             emptyMap(), // evita CodecException em MediaCodec.configure() por perfil forçado
-            2,          // keyFrameIntervalSec = 2s (GOP menor estoura o bitrate em tela quase estática)
-            0,          // forceKeyFrameIntervalMs = 0 (evita engasgos por PARAMETER_KEY_REQUEST_SYNC_FRAME)
+            1,          // keyFrameIntervalSec = 1s (recupera de perda de pacote sem esperar 2s de imagem quebrada)
+            2000,       // forceKeyFrameIntervalMs = 2s (garante keyframe mesmo se o encoder ignorar o intervalo)
             BaseBitrateAdjuster(),
             sharedContext
         )

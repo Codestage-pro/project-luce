@@ -47,6 +47,13 @@ WINDOWS_DECODERS = (
 )
 
 
+def _make_queue(name: str, **props) -> Gst.Element:
+    queue = Gst.ElementFactory.make("queue", name)
+    for key, value in props.items():
+        queue.set_property(key.replace("_", "-"), value)
+    return queue
+
+
 def _make_decoder() -> Gst.Element | None:
     """NVDEC, senão VAAPI (AMD/Intel), senão software.
 
@@ -185,14 +192,21 @@ class WatchPipeline:
         if sink is None:
             self._fail("nenhum sink de vídeo disponível (falta gst-plugins-base)")
             return
-        _try_set(sink, "sync", True)
+        # sync=False: mostra o quadro assim que decodifica, sem esperar o relógio do pipeline (zero atraso extra)
+        _try_set(sink, "sync", False)
 
         convert = Gst.ElementFactory.make("videoconvert", "convert-video")
         if convert is None:
             self._fail("falta o elemento videoconvert (gst-plugins-base)")
             return
 
-        chain: list[Gst.Element] = [dec]
+        # fila antes do decoder desacopla a rede (thread do webrtcbin) da decodificação
+        queue_dec = _make_queue("queue-video-dec", max_size_buffers=4, max_size_time=0, max_size_bytes=0)
+        # fila que descarta o MAIS ANTIGO (leaky=2): se a GPU/GTK atrasar, mostra o quadro novo em vez de acumular atraso
+        queue_sink = _make_queue(
+            "queue-video-sink", leaky=2, max_size_buffers=2, max_size_time=0, max_size_bytes=0
+        )
+        chain: list[Gst.Element] = [queue_dec, dec]
         if dec.get_factory().get_name().startswith("d3d11"):
             # memory:D3D11Memory não entra no videoconvert nem no gtk4paintablesink: converte
             # na GPU e baixa pra RAM, senão a abertura da transmissão dá not-negotiated.
@@ -202,7 +216,7 @@ class WatchPipeline:
                 self._fail("falta d3d11convert/d3d11download (gst-plugins-bad)")
                 return
             chain += [gpu_convert, download]
-        chain.append(convert)
+        chain += [queue_sink, convert]
         if is_gtk:
             # O GSK Vulkan do GTK tem um bug grave ao subir buffers planares
             # YUV crus (I420/Y444 que o avdec_h264 produz): o driver Vulkan
@@ -222,7 +236,7 @@ class WatchPipeline:
             if not left.link(right):
                 self._fail(f"não liguei {left.get_name()} em {right.get_name()}")
                 return
-        if pad.link(dec.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
+        if pad.link(queue_dec.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
             self._fail("o vídeo recebido não encaixou no decoder")
             return
         for element in chain:
@@ -230,6 +244,8 @@ class WatchPipeline:
         print("recebendo vídeo", flush=True)
 
     def _wire_audio(self, pad) -> None:
+        # fila curta e "leaky": se o áudio atrasar, descarta o antigo em vez de crescer o atraso
+        queue = _make_queue("queue-audio", leaky=2, max_size_time=150_000_000, max_size_buffers=0, max_size_bytes=0)
         dec = Gst.ElementFactory.make("opusdec", "dec-audio")
         convert = Gst.ElementFactory.make("audioconvert", "convert-audio")
         resample = Gst.ElementFactory.make("audioresample", "resample-audio")
@@ -244,20 +260,27 @@ class WatchPipeline:
         volume.set_property("volume", self._wanted_volume)
         volume.set_property("mute", self._wanted_muted)
         sink = Gst.ElementFactory.make("autoaudiosink", "sink-audio")
-        _try_set(sink, "sync", True)
+        _try_set(sink, "sync", False)
         # autoaudiosink é um bin: client-name não existe nele, só no sink real
         # (pulsesink/pipewiresink) que ele cria sozinho ao ir pra PLAYING —
         # daí aparecer "python" em vez de "Project LUCE" no qpwgraph/pavucontrol.
-        sink.connect("child-added", lambda _bin, child, _name: _try_set(child, "client-name", "Project LUCE"))
+        def _tune_sink(_bin, child, _name) -> None:
+            _try_set(child, "client-name", "Project LUCE")
+            # buffer do dispositivo pequeno (60 ms / fatias de 15 ms) e sem esperar o relógio
+            _try_set(child, "sync", False)
+            _try_set(child, "buffer-time", 60000)
+            _try_set(child, "latency-time", 15000)
+
+        sink.connect("child-added", _tune_sink)
         self._volume = volume
-        chain = (dec, convert, resample, stereo_caps, volume, sink)
+        chain = (queue, dec, convert, resample, stereo_caps, volume, sink)
         for element in chain:
             self.pipeline.add(element)
         for left, right in zip(chain, chain[1:]):
             if not left.link(right):
                 print(f"não liguei {left.get_name()} em {right.get_name()}", flush=True)
                 return
-        if pad.link(dec.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
+        if pad.link(queue.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
             print("o áudio não encaixou no decode", flush=True)
             return
         for element in chain:

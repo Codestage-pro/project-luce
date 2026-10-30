@@ -22,7 +22,7 @@ API_URLS = [
     "https://api.github.com/repos/MuriloX06/project-luce/releases?per_page=15",
 ]
 ROOT = Path(__file__).resolve().parents[1]  # no bundle: a pasta com version.txt e luce.ico
-BUILTIN_VERSION = "1.0.42"
+BUILTIN_VERSION = "1.0.43"
 
 
 def is_flatpak() -> bool:

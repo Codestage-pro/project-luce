@@ -250,7 +250,12 @@ object LuceApi {
         }
     }
 
-    fun sanitizeSdpOffer(sdp: String, isPublish: Boolean, audioBitrateKbps: Int = 128): String {
+    fun sanitizeSdpOffer(
+        sdp: String,
+        isPublish: Boolean,
+        audioBitrateKbps: Int = 128,
+        videoBitrateKbps: Int = 4000
+    ): String {
         // 1. Áudio: O SFU Cloudflare exige rtpmap opus/48000/2
         var modified = sdp.replace("(?im)^(a=rtpmap:\\d+) opus/48000\\r?$".toRegex(), "$1 opus/48000/2")
 
@@ -274,15 +279,12 @@ object LuceApi {
             fmtpMap[pt] = params
         }
 
-        // Escolhe o H264 ideal: preferência por 42e01f ou 42001f (baseline/constrained-baseline)
+        // Escolhe o H264 ideal: Level 4.1 (42e029/420029) primeiro, depois 3.1 (42e01f/42001f)
         val h264Pts = rtpMap.filter { it.value == "H264" }.keys
         var chosenH264Pt: String? = null
-        for (pt in h264Pts) {
-            val fmtp = fmtpMap[pt] ?: ""
-            if (fmtp.contains("42e01f", ignoreCase = true) || fmtp.contains("42001f", ignoreCase = true)) {
-                chosenH264Pt = pt
-                break
-            }
+        for (profile in H264_PROFILE_PREFERENCE) {
+            chosenH264Pt = h264Pts.firstOrNull { (fmtpMap[it] ?: "").contains(profile, ignoreCase = true) }
+            if (chosenH264Pt != null) break
         }
         if (chosenH264Pt == null) {
             chosenH264Pt = h264Pts.firstOrNull()
@@ -332,13 +334,9 @@ object LuceApi {
                 val parts = trimmed.split(" ")
                 val header = parts.take(3).joinToString(" ") // m=video <port> <proto>
                 val keptPayloads = mutableListOf<String>()
-                if (isPublish) {
-                    if (chosenH264Pt != null) keptPayloads.add(chosenH264Pt)
-                    if (chosenRtxPt != null) keptPayloads.add(chosenRtxPt)
-                } else {
-                    if (chosenRtxPt != null) keptPayloads.add(chosenRtxPt)
-                    if (chosenH264Pt != null) keptPayloads.add(chosenH264Pt)
-                }
+                // o SFU usa o ÚLTIMO payload da m-line: RTX primeiro, H264 por último (publicar e assistir)
+                if (chosenRtxPt != null) keptPayloads.add(chosenRtxPt)
+                if (chosenH264Pt != null) keptPayloads.add(chosenH264Pt)
                 if (keptPayloads.isEmpty()) {
                     // fallback caso não tenha encontrado H264
                     for (pt in parts.drop(3)) {
@@ -371,17 +369,12 @@ object LuceApi {
             }
 
             if (opusPt != null && isPublish) {
-                if (trimmed.startsWith("a=fmtp:$opusPt")) {
-                    var fmtpLine = trimmed.replace(";?maxaveragebitrate=\\d+".toRegex(), "")
-                    if (!fmtpLine.contains("stereo=1")) {
-                        fmtpLine += ";stereo=1;sprop-stereo=1"
-                    }
-                    fmtpLine += ";maxaveragebitrate=${audioBitrateKbps * 1000}"
-                    result.add(fmtpLine)
+                if (trimmed.startsWith("a=fmtp:$opusPt ")) {
+                    result.add(opusFmtp(trimmed, audioBitrateKbps))
                     continue
-                } else if (trimmed.startsWith("a=rtpmap:$opusPt") && !modified.contains("a=fmtp:$opusPt")) {
+                } else if (trimmed.startsWith("a=rtpmap:$opusPt") && !modified.contains("a=fmtp:$opusPt ")) {
                     result.add(trimmed)
-                    result.add("a=fmtp:$opusPt minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=${audioBitrateKbps * 1000}")
+                    result.add(opusFmtp("a=fmtp:$opusPt minptime=10", audioBitrateKbps))
                     continue
                 }
             }
@@ -398,7 +391,7 @@ object LuceApi {
                         if (!fmtpLine.contains("packetization-mode=1")) {
                             fmtpLine += ";packetization-mode=1"
                         }
-                        result.add(fmtpLine)
+                        result.add(if (isPublish) h264BitrateFmtp(fmtpLine, videoBitrateKbps) else fmtpLine)
                         continue
                     }
                 }
@@ -408,4 +401,65 @@ object LuceApi {
 
         return result.joinToString("\r\n") + "\r\n"
     }
+
+    /**
+     * O libwebrtc configura o encoder (Opus stereo/CBR/sem DTX, teto de bitrate do vídeo) a partir da
+     * SDP de RESPOSTA do SFU, não da oferta: reescreve os fmtp da resposta antes do setRemoteDescription.
+     */
+    fun tuneWhipAnswerSdp(answerSdp: String, audioBitrateKbps: Int, videoBitrateKbps: Int): String {
+        val opusPt = Regex("(?im)^a=rtpmap:(\\d+)\\s+opus/48000").find(answerSdp)?.groupValues?.get(1)
+        val h264Pts = Regex("(?im)^a=rtpmap:(\\d+)\\s+H264/90000").findAll(answerSdp).map { it.groupValues[1] }.toSet()
+        val fmtpPts = Regex("(?im)^a=fmtp:(\\d+)\\s").findAll(answerSdp).map { it.groupValues[1] }.toSet()
+
+        val result = mutableListOf<String>()
+        for (line in answerSdp.lines()) {
+            val trimmed = line.trimEnd('\r', '\n')
+            if (trimmed.isEmpty()) continue
+            val fmtpPt = Regex("^a=fmtp:(\\d+)\\s").find(trimmed)?.groupValues?.get(1)
+            val rtpmapPt = Regex("^a=rtpmap:(\\d+)\\s").find(trimmed)?.groupValues?.get(1)
+            when {
+                fmtpPt != null && fmtpPt == opusPt -> result.add(opusFmtp(trimmed, audioBitrateKbps))
+                fmtpPt != null && fmtpPt in h264Pts -> result.add(h264BitrateFmtp(trimmed, videoBitrateKbps))
+                else -> result.add(trimmed)
+            }
+            // Opus sem fmtp na resposta: o libwebrtc cairia nos padrões (mono, DTX)
+            if (rtpmapPt != null && rtpmapPt == opusPt && opusPt !in fmtpPts) {
+                result.add(opusFmtp("a=fmtp:$opusPt minptime=10", audioBitrateKbps))
+            }
+        }
+        return result.joinToString("\r\n") + "\r\n"
+    }
+
+    private val H264_PROFILE_PREFERENCE = listOf("42e029", "420029", "42e01f", "42001f")
+    private val OPUS_MANAGED_KEYS = setOf(
+        "minptime", "useinbandfec", "stereo", "sprop-stereo", "cbr", "usedtx", "maxaveragebitrate"
+    )
+
+    /** Reescreve um `a=fmtp:` trocando os parâmetros em [dropKey] pelos de [add]; os demais são mantidos. */
+    private fun rewriteFmtp(line: String, dropKey: (String) -> Boolean, add: List<String>): String {
+        val sp = line.indexOf(' ')
+        val head = line.substring(0, sp)
+        val kept = line.substring(sp + 1).split(';').map { it.trim() }
+            .filter { it.isNotEmpty() && !dropKey(it.substringBefore('=').lowercase()) }
+        return "$head ${(kept + add).joinToString(";")}"
+    }
+
+    private fun opusFmtp(line: String, audioBitrateKbps: Int): String = rewriteFmtp(
+        line,
+        { it in OPUS_MANAGED_KEYS },
+        listOf(
+            "minptime=10", "useinbandfec=1", "stereo=1", "sprop-stereo=1", "cbr=1", "usedtx=0",
+            "maxaveragebitrate=${audioBitrateKbps * 1000}"
+        )
+    )
+
+    private fun h264BitrateFmtp(line: String, videoBitrateKbps: Int): String = rewriteFmtp(
+        line,
+        { it.startsWith("x-google-") },
+        listOf(
+            "x-google-min-bitrate=${videoBitrateKbps * 60 / 100}",
+            "x-google-start-bitrate=${videoBitrateKbps * 85 / 100}",
+            "x-google-max-bitrate=$videoBitrateKbps"
+        )
+    )
 }

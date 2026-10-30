@@ -9,6 +9,7 @@ data class UserSettings(
     val serverUrl: String = "https://luce.codestage.pro",
     val authPassword: String = "",
     val userName: String = "",
+    val resolutionMaxEdge: Int = 1280,
     val fps: Int = 30,
     val bitrateKbps: Int = 4000,
     val audioBitrateKbps: Int = 128,
@@ -43,6 +44,7 @@ object LuceConfig {
     private const val KEY_SERVER_URL = "server_url"
     private const val KEY_AUTH_PASSWORD = "auth_password"
     private const val KEY_USER_NAME = "user_name"
+    private const val KEY_RES_MAX_EDGE = "res_max_edge"
     private const val KEY_FPS = "fps"
     private const val KEY_BITRATE_KBPS = "bitrate_kbps"
     private const val KEY_AUDIO_BITRATE_KBPS = "audio_bitrate_kbps"
@@ -87,7 +89,8 @@ object LuceConfig {
             serverUrl = prefs.getString(KEY_SERVER_URL, "https://luce.codestage.pro")?.trim() ?: "https://luce.codestage.pro",
             authPassword = prefs.getString(KEY_AUTH_PASSWORD, "")?.trim() ?: "",
             userName = cleanName(prefs.getString(KEY_USER_NAME, "") ?: ""),
-            fps = 30, // 60 fps saturava o encoder do celular ("encoder queue full"): fixo em 30
+            resolutionMaxEdge = if (prefs.getInt(KEY_RES_MAX_EDGE, 1280) >= 1600) 1600 else 1280,
+            fps = if (prefs.getInt(KEY_FPS, 30) >= 60) 60 else 30,
             bitrateKbps = prefs.getInt(KEY_BITRATE_KBPS, 4000),
             audioBitrateKbps = prefs.getInt(KEY_AUDIO_BITRATE_KBPS, 128),
             audioSource = audio,
@@ -106,6 +109,7 @@ object LuceConfig {
             .putString(KEY_SERVER_URL, cleanUrl)
             .putString(KEY_AUTH_PASSWORD, settings.authPassword.trim())
             .putString(KEY_USER_NAME, cleanUser)
+            .putInt(KEY_RES_MAX_EDGE, settings.resolutionMaxEdge)
             .putInt(KEY_FPS, settings.fps)
             .putInt(KEY_BITRATE_KBPS, settings.bitrateKbps)
             .putInt(KEY_AUDIO_BITRATE_KBPS, settings.audioBitrateKbps)

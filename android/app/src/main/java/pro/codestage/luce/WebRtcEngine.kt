@@ -63,6 +63,8 @@ class LuceScreenCapturer(
     @Volatile private var lastFrameTimeNs: Long = 0L
     @Volatile private var lastPtsNs: Long = 0L
     @Volatile private var isCapturing: Boolean = false
+    @Volatile private var targetFps: Int = 30
+    @Volatile private var lastDeliveredNs: Long = 0L
 
     /** Frames que saíram do VirtualDisplay (lidos pelo log de 5s do PublishSession). */
     val capturedFramesCount = AtomicLong(0)
@@ -91,6 +93,8 @@ class LuceScreenCapturer(
         val observer = capturerObserver ?: return
 
         isCapturing = true
+        targetFps = framerate
+        lastDeliveredNs = 0L
         capturedFramesCount.set(0)
         mediaProjection.registerCallback(projectionCallback, helper.handler)
 
@@ -103,6 +107,10 @@ class LuceScreenCapturer(
                 helper.startListening { frame ->
                     if (!isCapturing) return@startListening
                     val nowNs = System.nanoTime()
+                    // pacer: telas de 90/120 Hz despejariam o dobro do fps no encoder; descarta o excesso aqui (88% do intervalo tolera jitter)
+                    val minIntervalNs = (1_000_000_000L / targetFps.coerceAtLeast(15)) * 88 / 100
+                    if (nowNs - lastDeliveredNs < minIntervalNs) return@startListening
+                    lastDeliveredNs = nowNs
                     val safePtsNs = if (nowNs <= lastPtsNs) lastPtsNs + 1_000_000L else nowNs
                     lastPtsNs = safePtsNs
                     lastFrameTimeNs = nowNs
@@ -198,7 +206,7 @@ class LuceScreenCapturer(
     override fun isScreencast(): Boolean = false
 
     private companion object {
-        const val IDLE_REPEAT_MS = 100L // piso de ~10 fps com a tela parada
+        const val IDLE_REPEAT_MS = 200L // piso de ~5 fps com a tela parada
     }
 }
 
@@ -316,25 +324,33 @@ object WebRtcEngine {
                 sampleRate,
                 channelConfig,
                 AudioFormat.ENCODING_PCM_16BIT
-            ).coerceAtLeast(oldRecord.bufferSizeInFrames * channelCount * 2)
+            ).coerceAtLeast(4096)
+            // buffer folgado (4x) evita overrun do AudioRecord de playback capture e os "estalos" no áudio
+            val targetBuf = maxOf(minBuf * 4, oldRecord.bufferSizeInFrames * channelCount * 4)
 
             val sysRecord = AudioRecord.Builder()
                 .setAudioPlaybackCaptureConfig(playbackConfig)
                 .setAudioFormat(audioFormat)
-                .setBufferSizeInBytes(minBuf)
+                .setBufferSizeInBytes(targetBuf)
                 .build()
 
             if (sysRecord.state == AudioRecord.STATE_INITIALIZED) {
                 sysRecord.startRecording()
+                if (sysRecord.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                    LuceLog.w("Audio", "Captura do sistema não entrou em RECORDING (estado=${sysRecord.recordingState}); mantendo o microfone")
+                    sysRecord.release()
+                    return
+                }
                 LuceLog.i(
                     "Audio",
                     "Áudio do sistema anexado: ${sampleRate}Hz, $channelCount canal(is), " +
                         "estado=${sysRecord.recordingState} (antigo=${oldRecord.recordingState})"
                 )
                 audioRecordField.set(audioInput, sysRecord)
+                // para o microfone já (não disputa o áudio com o sistema); release só depois que a thread do ADM largou a referência
+                try { oldRecord.stop() } catch (_: Exception) {}
                 CoroutineScope(Dispatchers.IO).launch {
-                    delay(60)
-                    try { oldRecord.stop() } catch (_: Exception) {}
+                    delay(100)
                     try { oldRecord.release() } catch (_: Exception) {}
                 }
             } else {
@@ -666,14 +682,20 @@ class PublishSession(
     private var displayListener: DisplayManager.DisplayListener? = null
     private var capturePortrait = false
 
-    /** Resolução "Fonte": a da tela do aparelho, em múltiplos de 16, reduzida só se o encoder não aceitar. */
+    /** Lado maior = resolutionMaxEdge (múltiplo de 64), lado menor na proporção da tela e alinhado a 64 (stride do Adreno); reduzida só se o encoder não aceitar. */
     private fun computeCaptureDimensions(): Pair<Int, Int> {
         val wm = context.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager
         val real = android.util.DisplayMetrics()
         @Suppress("DEPRECATION")
         wm.defaultDisplay.getRealMetrics(real)
-        val w = (real.widthPixels / 16 * 16).coerceAtLeast(16)
-        val h = (real.heightPixels / 16 * 16).coerceAtLeast(16)
+        val minPhys = minOf(real.widthPixels, real.heightPixels).coerceAtLeast(1)
+        val maxPhys = maxOf(real.widthPixels, real.heightPixels).coerceAtLeast(1)
+        val maxEdge = settings.resolutionMaxEdge.coerceIn(720, 1920)
+        val longSide = (maxEdge / 64) * 64
+        val rawShort = (longSide.toLong() * minPhys / maxPhys).toInt()
+        val shortSide = ((rawShort + 31) / 64 * 64).coerceAtLeast(384)
+        val portrait = real.heightPixels >= real.widthPixels
+        val (w, h) = if (portrait) Pair(shortSide, longSide) else Pair(longSide, shortSide)
         val (cw, ch) = LuceVideoEncoderFactory.clampToEncoderCapabilities(w, h)
         LuceLog.i("Publish", "Dimensões físicas: ${real.widthPixels}x${real.heightPixels} -> Captura: ${cw}x$ch")
         return Pair(cw, ch)
@@ -736,10 +758,13 @@ class PublishSession(
                 videoTrack = vTrack
 
                 val audioConstraints = MediaConstraints().apply {
-                    mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "false"))
-                    mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "false"))
-                    mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "false"))
-                    mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "false"))
+                    // áudio de sistema/música: nenhum processamento de voz (AEC/AGC/NS/HPF) pode tocar nas amostras
+                    listOf(
+                        "googEchoCancellation", "googExperimentalEchoCancellation",
+                        "googAutoGainControl", "googExperimentalAutoGainControl",
+                        "googHighpassFilter", "googNoiseSuppression", "googExperimentalNoiseSuppression",
+                        "googTypingNoiseDetection", "googAudioMirroring"
+                    ).forEach { mandatory.add(MediaConstraints.KeyValuePair(it, "false")) }
                 }
                 val aSource = factory.createAudioSource(audioConstraints)
                 audioSource = aSource
@@ -852,14 +877,31 @@ class PublishSession(
                 }, MediaConstraints())
 
                 val offer = offerDeferred.await()
-                val setLocalDeferred = CompletableDeferred<Unit>()
-                pc.setLocalDescription(object : SdpObserver {
-                    override fun onCreateSuccess(desc: SessionDescription?) {}
-                    override fun onSetSuccess() { setLocalDeferred.complete(Unit) }
-                    override fun onCreateFailure(error: String?) {}
-                    override fun onSetFailure(error: String?) { setLocalDeferred.completeExceptionally(RuntimeException(error)) }
-                }, offer)
-                setLocalDeferred.await()
+                // oferta enxuta (só H264+RTX, Opus estéreo CBR, x-google-*) aplicada ANTES do setLocalDescription,
+                // para o libwebrtc negociar o mesmo que o SFU receberá; se recusar, cai na oferta original
+                val sanitizedOffer = SessionDescription(
+                    SessionDescription.Type.OFFER,
+                    LuceApi.sanitizeSdpOffer(
+                        offer.description, isPublish = true,
+                        audioBitrateKbps = settings.audioBitrateKbps, videoBitrateKbps = settings.bitrateKbps
+                    )
+                )
+                suspend fun setLocal(desc: SessionDescription) {
+                    val done = CompletableDeferred<Unit>()
+                    pc.setLocalDescription(object : SdpObserver {
+                        override fun onCreateSuccess(d: SessionDescription?) {}
+                        override fun onSetSuccess() { done.complete(Unit) }
+                        override fun onCreateFailure(error: String?) {}
+                        override fun onSetFailure(error: String?) { done.completeExceptionally(RuntimeException(error)) }
+                    }, desc)
+                    done.await()
+                }
+                try {
+                    setLocal(sanitizedOffer)
+                } catch (e: Exception) {
+                    LuceLog.w("Publish", "Oferta enxuta recusada (${e.message}); usando a oferta original")
+                    setLocal(offer)
+                }
 
                 // Aguarda gathering completo (ou timeout 2500ms)
                 withTimeoutOrNull(2500) {
@@ -868,7 +910,10 @@ class PublishSession(
 
                 val localSdp = pc.localDescription?.description
                     ?: throw RuntimeException("SDP local vazia")
-                val sanitizedSdp = LuceApi.sanitizeSdpOffer(localSdp, isPublish = true, audioBitrateKbps = settings.audioBitrateKbps)
+                val sanitizedSdp = LuceApi.sanitizeSdpOffer(
+                    localSdp, isPublish = true,
+                    audioBitrateKbps = settings.audioBitrateKbps, videoBitrateKbps = settings.bitrateKbps
+                )
 
                 // Envia para o WHIP
                 LuceLog.i("Publish", "Enviando oferta WHIP de '$streamName' (SDP ${sanitizedSdp.length} bytes)")
@@ -878,7 +923,9 @@ class PublishSession(
 
                 // Define Answer remota
                 val setRemoteDeferred = CompletableDeferred<Unit>()
-                val answer = SessionDescription(SessionDescription.Type.ANSWER, whipResponse.answerSdp)
+                // libwebrtc lê Opus (stereo/cbr/usedtx) e x-google-*-bitrate da resposta: reescreve antes de aplicar
+                val tunedAnswer = LuceApi.tuneWhipAnswerSdp(whipResponse.answerSdp, settings.audioBitrateKbps, settings.bitrateKbps)
+                val answer = SessionDescription(SessionDescription.Type.ANSWER, tunedAnswer)
                 pc.setRemoteDescription(object : SdpObserver {
                     override fun onCreateSuccess(desc: SessionDescription?) {}
                     override fun onSetSuccess() { setRemoteDeferred.complete(Unit) }

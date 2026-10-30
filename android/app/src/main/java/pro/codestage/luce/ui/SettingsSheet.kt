@@ -91,6 +91,8 @@ fun SettingsSheet(
     var serverUrl by remember { mutableStateOf(initialSettings.serverUrl) }
     var password by remember { mutableStateOf(initialSettings.authPassword) }
     var showPassword by remember { mutableStateOf(false) }
+    var selectedMaxEdge by remember { mutableIntStateOf(initialSettings.resolutionMaxEdge) }
+    var selectedFps by remember { mutableIntStateOf(initialSettings.fps) }
     var selectedBitrate by remember { mutableIntStateOf(initialSettings.bitrateKbps) }
     var selectedAudioBitrate by remember { mutableIntStateOf(initialSettings.audioBitrateKbps) }
     var selectedAudio by remember { mutableStateOf(initialSettings.audioSource) }
@@ -366,12 +368,33 @@ fun SettingsSheet(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Resolução: sempre a da tela do aparelho (Fonte), sem opções
-            Text("Resolução: Fonte (a da tela do celular)", color = LuceMuted, fontSize = 13.sp)
+            // Resolução (lado maior da captura; o menor segue a proporção da tela)
+            Text("Resolução", color = LuceCyan, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(1280 to "720p (Fluido)", 1600 to "1080p (HD)").forEach { (edge, label) ->
+                    ChoiceButton(
+                        label = label,
+                        isSelected = selectedMaxEdge == edge,
+                        modifier = Modifier.weight(1f)
+                    ) { selectedMaxEdge = edge }
+                }
+            }
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            Text("Taxa de quadros: 30 FPS", color = LuceMuted, fontSize = 13.sp)
+            // Taxa de Quadros (FPS)
+            Text("Taxa de Quadros (FPS)", color = LuceCyan, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(30 to "30 FPS", 60 to "60 FPS").forEach { (fps, label) ->
+                    ChoiceButton(
+                        label = label,
+                        isSelected = selectedFps == fps,
+                        modifier = Modifier.weight(1f)
+                    ) { selectedFps = fps }
+                }
+            }
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -452,6 +475,8 @@ fun SettingsSheet(
                         initialSettings.copy(
                             serverUrl = serverUrl.trim(),
                             authPassword = password.trim(),
+                            resolutionMaxEdge = selectedMaxEdge,
+                            fps = selectedFps,
                             bitrateKbps = selectedBitrate,
                             audioBitrateKbps = selectedAudioBitrate,
                             audioSource = selectedAudio,
