@@ -921,8 +921,17 @@ class PublishSession(
                     var framesSent: Long = 0
                     var audioBytes: Long = 0
                     var audioPackets: Long = 0
+                    var limitation = ""
+                    var encodeMsPerFrame = 0.0
+                    var encoderName = ""
+                    var rttMs = 0.0
+                    var lost = 0L
 
                     for (stat in report.statsMap.values) {
+                        if (stat.type == "remote-inbound-rtp" && (stat.members["kind"] as? String) == "video") {
+                            rttMs = ((stat.members["roundTripTime"] as? Number)?.toDouble() ?: 0.0) * 1000
+                            lost = (stat.members["packetsLost"] as? Number)?.toLong() ?: 0L
+                        }
                         if (stat.type == "outbound-rtp") {
                             val members = stat.members
                             val mediaType = members["mediaType"] as? String ?: members["kind"] as? String
@@ -932,6 +941,11 @@ class PublishSession(
                                 currentBytes += bytes
                                 currentPackets += packets
                                 framesSent += ((members["framesSent"] ?: members["framesEncoded"]) as? Number)?.toLong() ?: 0L
+                                limitation = members["qualityLimitationReason"] as? String ?: ""
+                                encoderName = members["encoderImplementation"] as? String ?: ""
+                                val enc = (members["framesEncoded"] as? Number)?.toLong() ?: 0L
+                                val encTime = (members["totalEncodeTime"] as? Number)?.toDouble() ?: 0.0
+                                if (enc > 0) encodeMsPerFrame = encTime * 1000 / enc
                             } else if (mediaType == "audio") {
                                 audioBytes += bytes
                                 audioPackets += packets
@@ -952,7 +966,9 @@ class PublishSession(
                             "Stats",
                             "framesCapturados=$captured framesEnviados=$framesSent | " +
                                 "video: $currentPackets pkts / $currentBytes bytes (${"%.2f".format(mbps)} Mbps) | " +
-                                "audio: $audioPackets pkts / $audioBytes bytes"
+                                "audio: $audioPackets pkts / $audioBytes bytes | " +
+                                "encoder=$encoderName ${"%.1f".format(encodeMsPerFrame)}ms/quadro limite=$limitation " +
+                                "rtt=${"%.0f".format(rttMs)}ms perdidos=$lost"
                         )
                         if (captured > 0 && currentPackets == 0L) {
                             LuceLog.w("Stats", "Frames capturados mas nenhum pacote de vídeo enviado (encoder/ICE?)")
