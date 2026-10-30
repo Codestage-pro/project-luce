@@ -91,7 +91,6 @@ fun SettingsSheet(
     var serverUrl by remember { mutableStateOf(initialSettings.serverUrl) }
     var password by remember { mutableStateOf(initialSettings.authPassword) }
     var showPassword by remember { mutableStateOf(false) }
-    var selectedRes by remember { mutableStateOf(Pair(initialSettings.resolutionWidth, initialSettings.resolutionHeight)) }
     var selectedFps by remember { mutableIntStateOf(initialSettings.fps) }
     var selectedBitrate by remember { mutableIntStateOf(initialSettings.bitrateKbps) }
     var selectedAudioBitrate by remember { mutableIntStateOf(initialSettings.audioBitrateKbps) }
@@ -368,22 +367,8 @@ fun SettingsSheet(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Resolução
-            Text("Resolução", color = LuceCyan, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(modifier = Modifier.height(8.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(
-                    Pair(1280, 720) to "720p",
-                    Pair(1920, 1080) to "1080p",
-                    Pair(2560, 1440) to "1440p"
-                ).forEach { (res, label) ->
-                    ChoiceButton(
-                        label = label,
-                        isSelected = selectedRes == res,
-                        modifier = Modifier.weight(1f)
-                    ) { selectedRes = res }
-                }
-            }
+            // Resolução: sempre a da tela do aparelho (Fonte), sem opções
+            Text("Resolução: Fonte (a da tela do celular)", color = LuceMuted, fontSize = 13.sp)
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -479,8 +464,6 @@ fun SettingsSheet(
                         initialSettings.copy(
                             serverUrl = serverUrl.trim(),
                             authPassword = password.trim(),
-                            resolutionWidth = selectedRes.first,
-                            resolutionHeight = selectedRes.second,
                             fps = selectedFps,
                             bitrateKbps = selectedBitrate,
                             audioBitrateKbps = selectedAudioBitrate,

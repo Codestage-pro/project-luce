@@ -207,6 +207,9 @@ object WebRtcEngine {
 
     var activeMediaProjection: MediaProjection? = null
 
+    /** Falso no modo Mudo: o ADM segue enviando pacotes (silêncio) e o SFU aceita a track sem depender da captura do sistema. */
+    @Volatile var systemAudioWanted = true
+
     private var factory: PeerConnectionFactory? = null
     private var adm: JavaAudioDeviceModule? = null
 
@@ -232,8 +235,12 @@ object WebRtcEngine {
                 .setUseStereoOutput(true)
                 .setAudioRecordStateCallback(object : JavaAudioDeviceModule.AudioRecordStateCallback {
                     override fun onWebRtcAudioRecordStart() {
-                        LuceLog.i("Audio", "ADM começou a gravar; trocando para captura do áudio do sistema")
-                        attachSystemAudioCapture()
+                        if (systemAudioWanted) {
+                            LuceLog.i("Audio", "ADM começou a gravar; trocando para captura do áudio do sistema")
+                            attachSystemAudioCapture()
+                        } else {
+                            LuceLog.i("Audio", "ADM começou a gravar em modo Mudo: envia silêncio, sem captura do sistema")
+                        }
                     }
                     override fun onWebRtcAudioRecordStop() {
                         LuceLog.i("Audio", "ADM parou de gravar")
@@ -659,19 +666,14 @@ class PublishSession(
     private var displayListener: DisplayManager.DisplayListener? = null
     private var capturePortrait = false
 
-    /** Lado maior = maior das configurações (640..1920); lado menor na proporção real da tela; múltiplos de 16 e dentro do que o encoder aceita. */
+    /** Resolução "Fonte": a da tela do aparelho, em múltiplos de 16, reduzida só se o encoder não aceitar. */
     private fun computeCaptureDimensions(): Pair<Int, Int> {
         val wm = context.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager
         val real = android.util.DisplayMetrics()
         @Suppress("DEPRECATION")
         wm.defaultDisplay.getRealMetrics(real)
-        val minPhysical = minOf(real.widthPixels, real.heightPixels).coerceAtLeast(1)
-        val maxPhysical = maxOf(real.widthPixels, real.heightPixels).coerceAtLeast(1)
-        val maxTarget = maxOf(settings.resolutionWidth, settings.resolutionHeight).coerceIn(640, 1920)
-        val longSide = (maxTarget / 16) * 16
-        val shortSide = (((longSide.toLong() * minPhysical / maxPhysical).toInt()) / 16 * 16).coerceAtLeast(320)
-        val portrait = real.heightPixels >= real.widthPixels
-        val (w, h) = if (portrait) Pair(shortSide, longSide) else Pair(longSide, shortSide)
+        val w = (real.widthPixels / 16 * 16).coerceAtLeast(16)
+        val h = (real.heightPixels / 16 * 16).coerceAtLeast(16)
         val (cw, ch) = LuceVideoEncoderFactory.clampToEncoderCapabilities(w, h)
         LuceLog.i("Publish", "Dimensões físicas: ${real.widthPixels}x${real.heightPixels} -> Captura: ${cw}x$ch")
         return Pair(cw, ch)
@@ -709,7 +711,8 @@ class PublishSession(
                     ?: throw RuntimeException("Falha ao obter MediaProjection")
 
                 WebRtcEngine.activeMediaProjection = projection
-                WebRtcEngine.setMicrophoneMute(settings.audioSource == UserSettings.AUDIO_SOURCE_MUTED)
+                WebRtcEngine.systemAudioWanted = settings.audioSource != UserSettings.AUDIO_SOURCE_MUTED
+                WebRtcEngine.setMicrophoneMute(!WebRtcEngine.systemAudioWanted)
 
                 val (targetWidth, targetHeight) = computeCaptureDimensions()
                 capturePortrait = targetHeight > targetWidth
@@ -742,7 +745,8 @@ class PublishSession(
                 audioSource = aSource
                 val aTrack = factory.createAudioTrack("ARDAMSa0", aSource)
                 audioTrack = aTrack
-                aTrack.setEnabled(settings.audioSource != UserSettings.AUDIO_SOURCE_MUTED)
+                // Mudo: a track fica habilitada e o ADM zera as amostras; track desabilitada pode não gerar pacotes e o SFU rejeita
+                aTrack.setEnabled(true)
 
                 statusText.value = "conectando ao servidor…"
 
