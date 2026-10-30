@@ -129,8 +129,9 @@ row { border-radius: 12px; }
 row:hover { background: alpha(@violeta, 0.10); }
 .avatar { min-width: 34px; min-height: 34px; border-radius: 999px; font-weight: 800; color: @noite;
           background-image: linear-gradient(135deg, @ciano, @violeta); }
-.avatar-box { min-width: 34px; min-height: 34px; max-width: 34px; max-height: 34px; border-radius: 999px; }
-.avatar-img { min-width: 34px; min-height: 34px; max-width: 34px; max-height: 34px; border-radius: 999px; }
+.avatar-box { min-width: 34px; min-height: 34px; border-radius: 999px; }
+.avatar-img { border-radius: 999px; }
+.header-avatar { min-width: 22px; min-height: 22px; border-radius: 999px; }
 .on-air { min-width: 7px; min-height: 7px; border-radius: 999px; background: @magenta; }
 
 scale trough { background: @linha; border-radius: 4px; min-height: 4px; }

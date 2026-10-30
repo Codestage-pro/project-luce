@@ -270,6 +270,7 @@ class CapturePipeline:
         audio_device: str | None = None,
         mute_app: str = "",
         auth_token: str | None = None,
+        viewer_name: str = "",
         on_pipeline_error=None,
         on_unauthorized=None,
         gl_display: GstGL.GLDisplay | None = None,
@@ -278,6 +279,7 @@ class CapturePipeline:
         self._on_unauthorized = on_unauthorized
         self._whip_endpoint = whip_endpoint
         self._auth_token = auth_token
+        self._viewer_name = viewer_name
         self._stop_heartbeat = threading.Event()
         self._gl_display = gl_display
         self._preview_pipeline: Gst.Pipeline | None = None
@@ -742,7 +744,7 @@ class CapturePipeline:
     def _heartbeat_loop(self) -> None:
         while not self._stop_heartbeat.wait(HEARTBEAT_SECONDS):
             try:
-                roster.heartbeat(self._whip_endpoint, self._auth_token)
+                roster.heartbeat(self._whip_endpoint, self._auth_token, viewer=self._viewer_name)
             except urllib.error.HTTPError as exc:
                 if exc.code == 401:
                     log.warning("heartbeat retornou 401 Unauthorized (permissão revogada)")

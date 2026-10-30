@@ -21,10 +21,12 @@ _USER_AGENT = (
 LAST_AVATARS: dict[str, str] = {}
 
 
-def _request(url: str, token: str | None, method: str = "GET") -> urllib.request.Request:
+def _request(url: str, token: str | None, method: str = "GET", viewer: str = "") -> urllib.request.Request:
     headers = {"User-Agent": _USER_AGENT}
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    if viewer:  # o token pode carregar o nome genérico "user": o servidor usa este para identificar a conta
+        headers["X-Luce-Viewer"] = viewer
     return urllib.request.Request(url, method=method, headers=headers)
 
 
@@ -71,9 +73,9 @@ def list_paths(base_url: str, token: str | None, timeout: float = 2.0) -> dict[s
     return paths
 
 
-def heartbeat(whip_endpoint: str, token: str | None, timeout: float = 5.0) -> None:
+def heartbeat(whip_endpoint: str, token: str | None, timeout: float = 5.0, viewer: str = "") -> None:
     """Avisa o servidor que o publisher segue vivo (sem isso ele some do roster em ~30s)."""
-    urllib.request.urlopen(_request(whip_endpoint, token, "PATCH"), timeout=timeout).close()
+    urllib.request.urlopen(_request(whip_endpoint, token, "PATCH", viewer), timeout=timeout).close()
 
 
 def watching(base_url: str, stream: str, viewer: str, token: str | None, on: bool = True, timeout: float = 5.0) -> None:
@@ -85,4 +87,4 @@ def watching(base_url: str, stream: str, viewer: str, token: str | None, on: boo
     s_safe = urllib.parse.quote(stream, safe="._-")
     v_safe = urllib.parse.quote(viewer, safe="._-")
     url = f"{base_url}/{s_safe}/watch?viewer={v_safe}"
-    urllib.request.urlopen(_request(url, token, "PATCH" if on else "DELETE"), timeout=timeout).close()
+    urllib.request.urlopen(_request(url, token, "PATCH" if on else "DELETE", viewer), timeout=timeout).close()

@@ -39,6 +39,7 @@ import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.SheetState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -50,6 +51,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -59,6 +63,8 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import pro.codestage.luce.LuceApi
 import pro.codestage.luce.LuceConfig
@@ -85,11 +91,62 @@ fun SettingsSheet(
     var selectedTheme by remember { mutableStateOf(initialSettings.theme) }
     var discordToken by remember { mutableStateOf(initialSettings.discordToken) }
     var discordUser by remember { mutableStateOf(initialSettings.discordUser) }
+    var discordAvatar by remember { mutableStateOf(initialSettings.discordAvatar) }
+    var currentUserName by remember { mutableStateOf(initialSettings.userName) }
     var isDiscordPolling by remember { mutableStateOf(false) }
+    var pollTarget by remember { mutableStateOf<Pair<String, String>?>(null) } // (url do servidor, state) do login em andamento
+    val pollMutex = remember { Mutex() }
     var discordStatusMsg by remember { mutableStateOf("") }
 
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+
+    // Uma consulta ao /auth/discord/poll. O servidor entrega o resultado uma única vez, então o Mutex impede
+    // que o loop de 2s e o ON_RESUME disputem a resposta. Retorna true quando o login terminou (ok ou negado).
+    suspend fun pollDiscordOnce(): Boolean = pollMutex.withLock {
+        val (cleanUrl, state) = pollTarget ?: return@withLock true
+        val res = withContext(Dispatchers.IO) { LuceApi.pollDiscordAuth(cleanUrl, state) }
+        when (res.status) {
+            "ok" -> {
+                pollTarget = null
+                discordToken = res.token
+                discordUser = res.discordUser
+                discordAvatar = res.avatar
+                if (res.user.isNotBlank()) currentUserName = LuceConfig.cleanName(res.user)
+                isDiscordPolling = false
+                discordStatusMsg = "✓ Conectado como @${res.discordUser}"
+                LuceConfig.saveDiscordAuth(context, res.token, res.discordUser, res.user, res.avatar)
+                // a MainActivity já fica autenticada, mesmo que o sheet seja fechado sem "Salvar"
+                onSave(initialSettings.copy(
+                    userName = currentUserName,
+                    discordToken = discordToken,
+                    discordUser = discordUser,
+                    discordAvatar = discordAvatar
+                ))
+                true
+            }
+            "denied" -> {
+                pollTarget = null
+                isDiscordPolling = false
+                discordStatusMsg = "Acesso negado: conta não pertence ao BDK."
+                Toast.makeText(context, "Acesso negado: conta não pertence ao BDK.", Toast.LENGTH_LONG).show()
+                true
+            }
+            else -> false
+        }
+    }
+
+    // Voltando do navegador: consulta na hora, sem esperar o próximo ciclo de 2s
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && isDiscordPolling) {
+                coroutineScope.launch { pollDiscordOnce() }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -185,6 +242,7 @@ fun SettingsSheet(
                             LuceConfig.clearDiscordAuth(context)
                             discordToken = ""
                             discordUser = ""
+                            discordAvatar = ""
                             discordStatusMsg = ""
                             Toast.makeText(context, "Desconectado do Discord", Toast.LENGTH_SHORT).show()
                         },
@@ -214,32 +272,16 @@ fun SettingsSheet(
                             return@Button
                         }
 
-                        coroutineScope.launch(Dispatchers.IO) {
+                        pollTarget = cleanUrl to state
+                        coroutineScope.launch {
                             var elapsed = 0
-                            while (elapsed < 120) {
+                            while (elapsed < 120 && pollTarget != null) {
                                 delay(2000)
                                 elapsed += 2
-                                val res = LuceApi.pollDiscordAuth(cleanUrl, state)
-                                if (res.status == "ok") {
-                                    withContext(Dispatchers.Main) {
-                                        discordToken = res.token
-                                        discordUser = res.discordUser
-                                        isDiscordPolling = false
-                                        discordStatusMsg = "✓ Conectado como @${res.discordUser}"
-                                        LuceConfig.saveDiscordAuth(context, res.token, res.discordUser, res.user, res.avatar)
-                                        Toast.makeText(context, "Autenticado como @${res.discordUser}!", Toast.LENGTH_SHORT).show()
-                                    }
-                                    return@launch
-                                } else if (res.status == "denied") {
-                                    withContext(Dispatchers.Main) {
-                                        isDiscordPolling = false
-                                        discordStatusMsg = "Acesso negado: conta não pertence ao BDK."
-                                        Toast.makeText(context, "Acesso negado: conta não pertence ao BDK.", Toast.LENGTH_LONG).show()
-                                    }
-                                    return@launch
-                                }
+                                if (pollDiscordOnce()) return@launch
                             }
-                            withContext(Dispatchers.Main) {
+                            if (pollTarget != null) {
+                                pollTarget = null
                                 isDiscordPolling = false
                                 discordStatusMsg = "Tempo limite de login esgotado."
                             }
@@ -418,8 +460,10 @@ fun SettingsSheet(
                             audioBitrateKbps = selectedAudioBitrate,
                             audioSource = selectedAudio,
                             theme = selectedTheme,
+                            userName = currentUserName,
                             discordToken = discordToken,
-                            discordUser = discordUser
+                            discordUser = discordUser,
+                            discordAvatar = discordAvatar
                         )
                     )
                     onDismiss()

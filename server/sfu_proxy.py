@@ -63,6 +63,10 @@ lock = threading.Lock()
 online_users: dict[str, float] = {}  # username -> último ping (para contador de online)
 online_users_lock = threading.Lock()
 
+uid_names: dict[str, str] = {}  # discord_uid -> nome exibido (uma conta = um usuário online)
+stream_owner: dict[str, str] = {}  # transmissão -> discord_uid de quem publica
+uid_lock = threading.Lock()
+
 discord_sessions: dict[str, dict] = {}  # user_id -> {access_token, last_checked, is_member}
 discord_sessions_lock = threading.Lock()
 
@@ -104,6 +108,15 @@ def clean_username(raw: str) -> str:
     clean = re.sub(r"\s+", "_", ascii_str)
     clean = re.sub(r"[^A-Za-z0-9._-]", "", clean).strip("._-")
     return clean[:64] or "user"
+
+
+def _extract_clean_discord_name(user_info: dict) -> str:
+    """global_name só com emoji/Unicode limpa para "user": cai para o username ASCII do Discord."""
+    for key in ("global_name", "username"):
+        name = clean_username(user_info.get(key) or "")
+        if name != "user":
+            return name
+    return "user"
 
 
 def _encrypt_discord_token(plaintext: str) -> str:
@@ -410,6 +423,12 @@ def handle_discord_callback(code: str, state: str) -> tuple[int, bytes, str]:
             "text/html",
         )
 
+    # só conclui um login iniciado por /auth/discord/login e ainda pendente (impede state forjado ou repetido)
+    with pending_lock:
+        started = pending_logins.get(state, {}).get("created", time.monotonic())
+        if pending_logins.get(state, {}).get("status") != "pending":
+            return 400, _render_auth_page("Login Inválido", "Este login expirou ou já foi concluído. Inicie novamente pelo aplicativo.", True), "text/html"
+
     # 1. Troca code por access_token
     token_url = "https://discord.com/api/v10/oauth2/token"
     data = urllib.parse.urlencode({
@@ -458,6 +477,7 @@ def handle_discord_callback(code: str, state: str) -> tuple[int, bytes, str]:
             pending_logins[state] = {
                 "status": "denied",
                 "error": "Sua conta do Discord não faz parte do servidor BDK.",
+                "created": started,  # sem isso o expire() (now - 0 > 300) apagava o login antes do app ler
             }
         return 403, _render_auth_page(
             "Acesso Exclusivo BDK",
@@ -465,8 +485,7 @@ def handle_discord_callback(code: str, state: str) -> tuple[int, bytes, str]:
             True,
         ), "text/html"
 
-    raw_name = user_info.get("global_name") or user_info.get("username") or "user"
-    clean_name = clean_username(raw_name)
+    clean_name = _extract_clean_discord_name(user_info)
     user_id = str(user_info.get("id", "0"))
     avatar_url = _build_discord_avatar_url(user_info)
     if avatar_url:
@@ -484,6 +503,8 @@ def handle_discord_callback(code: str, state: str) -> tuple[int, bytes, str]:
             "discord_tag": discord_username,
             "discord_user": discord_username,
             "avatar_url": avatar_url,
+            "avatar": avatar_url,
+            "created": started,
         }
 
     if user_id:
@@ -674,6 +695,23 @@ def subscribe(stream: str, offer: str) -> tuple[str, str]:
     raise AssertionError("unreachable")
 
 
+def _resolve_online_name(discord_uid: str, viewer: str, token_name: str, path_user: str) -> str:
+    """Nome único por conta Discord: X-Luce-Viewer/nome válido do token atualizam o nome do uid; "user" nunca vale."""
+    viewer = clean_username(viewer) if NAME.fullmatch(viewer) else ""
+    if not discord_uid:
+        return viewer or token_name or path_user
+    with uid_lock:
+        # X-Luce-Viewer é controlado pelo cliente: não pode tomar o nome de outra conta
+        def free(n):
+            return n and n != "user" and not any(u != discord_uid and v.lower() == n.lower() for u, v in uid_names.items())
+        cand = next((n for n in (viewer, token_name) if free(n)), "")
+        if cand:
+            uid_names[discord_uid] = cand
+        if path_user:
+            stream_owner[path_user] = discord_uid
+        return uid_names.get(discord_uid) or path_user
+
+
 def _record_online_user(auth_header: str, headers, path_user: str = "") -> None:
     viewer = headers.get("X-Luce-Viewer", "").strip() if headers else ""
     username = ""
@@ -690,7 +728,7 @@ def _record_online_user(auth_header: str, headers, path_user: str = "") -> None:
                 if len(d_parts) >= 3 and d_parts[2]:
                     username = clean_username(d_parts[2])
                     break
-    user = viewer or username or path_user
+    user = _resolve_online_name(discord_uid, viewer, username, path_user)
     if user:
         clean = clean_username(user)
         with online_users_lock:
@@ -728,6 +766,9 @@ def expire() -> None:
         expired_states = [s for s, data in pending_logins.items() if now - data.get("created", 0) > 300]
         for s in expired_states:
             del pending_logins[s]
+    with lock, uid_lock:
+        for stream in [x for x in stream_owner if x not in publishers]:
+            del stream_owner[stream]
     with online_users_lock:
         expired_online = [u for u, seen in online_users.items() if now_wall - seen > ONLINE_TTL]
         for u in expired_online:
@@ -816,6 +857,8 @@ class Handler(BaseHTTPRequestHandler):
                     if not cfg.get("discord_client_id") or not cfg.get("discord_redirect_uri"):
                         raise HttpError(503, "OAuth2 do Discord não configurado no servidor")
                     with pending_lock:
+                        if len(pending_logins) >= 1000 and state not in pending_logins:
+                            raise HttpError(429, "muitos logins em andamento")
                         pending_logins[state] = {"status": "pending", "created": time.monotonic()}
                     scope = "identify+guilds"
                     target = (
@@ -858,16 +901,21 @@ class Handler(BaseHTTPRequestHandler):
                         "name": name,
                         "ready": True,
                         "viewers": sorted(viewers.get(name, {})),
-                        "avatar": avatars_snapshot.get(name, ""),
+                        "avatar": avatars_snapshot.get(name) or avatars_snapshot.get(uid_names.get(stream_owner.get(name, ""), ""), ""),
                     }
                     for name in publishers
                 ]
+                with uid_lock:
+                    owned = set(stream_owner)
                 with online_users_lock:
+                    # publisher com dono Discord já conta pelo nome da conta (não pelo nome técnico da stream)
                     for name in publishers:
-                        online_users[name] = now_wall
+                        if name not in owned:
+                            online_users[name] = now_wall
                     for who in viewers.values():
                         for v in who:
-                            online_users[v] = now_wall
+                            if v != "user":
+                                online_users[v] = now_wall
                     active_users = sorted([u for u, seen in online_users.items() if now_wall - seen <= ONLINE_TTL])
             data = {
                 "items": items,

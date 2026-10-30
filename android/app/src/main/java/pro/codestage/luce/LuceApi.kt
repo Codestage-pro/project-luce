@@ -143,7 +143,7 @@ object LuceApi {
                     token = json.optString("token", ""),
                     discordUser = json.optString("discord_user", ""),
                     user = json.optString("user", ""),
-                    avatar = json.optString("avatar", ""),
+                    avatar = json.optString("avatar_url", "").ifBlank { json.optString("avatar", "") },
                     message = json.optString("message", "")
                 )
             }

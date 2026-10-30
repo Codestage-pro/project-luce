@@ -16,6 +16,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
@@ -42,6 +43,7 @@ class MainActivity : ComponentActivity() {
     private val rosterList = mutableStateListOf<RosterItem>()
     private var onlineCount by mutableStateOf(0)
     private val onlineUsers = mutableStateListOf<String>()
+    private val rosterAvatars = mutableStateMapOf<String, String>()
     private var isRosterLoading by mutableStateOf(false)
 
     private val watchedSessions = mutableStateListOf<WatchSession>()
@@ -106,6 +108,7 @@ class MainActivity : ComponentActivity() {
                     rosterList = rosterList,
                     onlineCount = onlineCount,
                     onlineUsers = onlineUsers,
+                    avatars = rosterAvatars,
                     isRosterLoading = isRosterLoading,
                     onRefreshRoster = { fetchRoster() },
                     watchedSessions = watchedSessions,
@@ -282,6 +285,8 @@ class MainActivity : ComponentActivity() {
                     onlineCount = state.onlineCount
                     onlineUsers.clear()
                     onlineUsers.addAll(state.onlineUsers)
+                    rosterAvatars.clear()
+                    rosterAvatars.putAll(state.avatars)
                     isRosterLoading = false
                 }
             } catch (e: SecurityException) {

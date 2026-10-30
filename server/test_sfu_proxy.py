@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -47,6 +48,9 @@ class ProxyTest(unittest.TestCase):
         p.online_users.clear()
         p.discord_sessions.clear()
         p.user_avatars.clear()
+        p.uid_names.clear()
+        p.pending_logins.clear()
+        p.stream_owner.clear()
         p.WHEP_DELAY = 0
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), p.Handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -341,6 +345,109 @@ class ProxyTest(unittest.TestCase):
         # Ao detectar is_member=False, check_bdk_membership_live fecha a stream e remove de publishers
         p.check_bdk_membership_live(user_id, access_token, "alice")
         self.assertNotIn("alice", p.publishers)
+
+    def test_oauth_callback_emoji_global_name_falls_back_to_username(self):
+        class Resp:
+            def __init__(self, payload):
+                self.payload = payload
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def read(self):
+                return json.dumps(self.payload).encode()
+
+        def fake_urlopen(req, timeout=10):
+            url = req.full_url if hasattr(req, "full_url") else req
+            if url.endswith("/oauth2/token"):
+                return Resp({"access_token": "tok"})
+            if url.endswith("/users/@me"):
+                return Resp({"id": "42", "global_name": "\U0001F525\U0001F525", "username": "murilox06"})
+            return Resp([{"id": "12345"}])
+
+        saved = {k: p.cfg.get(k) for k in ("discord_client_id", "discord_client_secret")}
+        p.cfg.update(discord_client_id="cid", discord_client_secret="csecret")
+        p.pending_logins["st_emoji_1"] = {"status": "pending", "created": time.monotonic()}
+        try:
+            with unittest.mock.patch.object(p.urllib.request, "urlopen", fake_urlopen):
+                code, _, _ = p.handle_discord_callback("code", "st_emoji_1")
+        finally:
+            p.cfg.update(saved)
+        self.assertEqual(code, 200)
+        res = p.pending_logins["st_emoji_1"]
+        self.assertEqual(res["user"], "murilox06")
+        self.assertEqual(res["token"].split(":")[2], "murilox06")
+        self.assertEqual(p._extract_clean_discord_name({"global_name": "\U0001F525", "username": ""}), "user")
+
+    def test_online_user_not_duplicated_when_streaming(self):
+        token = p.issue_discord_token("42", "user") + "|bdk:segredo"
+        auth = f"Bearer {token}"
+        roster = lambda: json.loads(self.call("GET", "/v3/paths/list", auth=auth,
+                                              headers={"X-Luce-Viewer": "MuriloX06"})[1])
+        self.assertEqual(roster()["online_users"], ["MuriloX06"])
+        for stream in ("MuriloX06", "windows-test"):
+            # WHIP e heartbeat do cliente antigo: sem X-Luce-Viewer, token com :user:
+            self.assertEqual(self.call("POST", f"/{stream}/whip", OFFER.encode(), auth=auth)[0], 201)
+            self.assertEqual(self.call("PATCH", f"/{stream}/whip", auth=auth)[0], 204)
+        data = json.loads(self.call("GET", "/v3/paths/list", auth=auth)[1])
+        self.assertEqual(data["online_users"], ["MuriloX06"])
+        self.assertEqual(data["online_count"], 1)
+        self.assertNotIn("user", data["online_users"])
+
+    def test_online_user_viewer_header_cannot_take_another_uid_name(self):
+        a = f"Bearer {p.issue_discord_token('1', 'ana')}|bdk:segredo"
+        b = f"Bearer {p.issue_discord_token('2', 'bia')}|bdk:segredo"
+        self.call("GET", "/v3/paths/list", auth=a, headers={"X-Luce-Viewer": "ana"})
+        self.call("GET", "/v3/paths/list", auth=b, headers={"X-Luce-Viewer": "ana"})
+        data = json.loads(self.call("GET", "/v3/paths/list", auth=b)[1])
+        self.assertEqual(sorted(data["online_users"]), ["ana", "bia"])
+
+    def _discord_callback(self, state, guilds, pre_state=True):
+        class Resp:
+            def __init__(self, payload):
+                self.payload = payload
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def read(self):
+                return json.dumps(self.payload).encode()
+
+        def fake_urlopen(req, timeout=10):
+            url = req.full_url if hasattr(req, "full_url") else req
+            if url.endswith("/oauth2/token"):
+                return Resp({"access_token": "tok"})
+            if url.endswith("/users/@me"):
+                return Resp({"id": "42", "global_name": "Murilo", "username": "murilox06", "avatar": "abc"})
+            return Resp(guilds)
+
+        saved = {k: p.cfg.get(k) for k in ("discord_client_id", "discord_client_secret")}
+        p.cfg.update(discord_client_id="cid", discord_client_secret="csecret")
+        if pre_state:
+            p.pending_logins[state] = {"status": "pending", "created": time.monotonic()}
+        try:
+            with unittest.mock.patch.object(p.urllib.request, "urlopen", fake_urlopen):
+                return p.handle_discord_callback("code", state)[0]
+        finally:
+            p.cfg.update(saved)
+
+    def test_expire_keeps_authorized_pending_login_until_ttl(self):
+        for state, guilds, status in (("st_ok_12345", [{"id": "12345"}], "ok"), ("st_den_12345", [], "denied")):
+            self._discord_callback(state, guilds)
+            self.assertEqual(p.pending_logins[state]["status"], status)
+            p.expire()
+            self.assertIn(state, p.pending_logins, f"{status} sumiu antes dos 300s")
+            p.pending_logins[state]["created"] = time.monotonic() - 301
+            p.expire()
+            self.assertNotIn(state, p.pending_logins)
+        self._discord_callback("st_ok_67890", [{"id": "12345"}])
+        res = p.pending_logins["st_ok_67890"]
+        self.assertTrue(res["avatar"])
+        self.assertEqual(res["avatar"], res["avatar_url"])
+
+    def test_callback_ignores_state_not_started_by_login(self):
+        self._discord_callback("st_forged_123", [{"id": "12345"}], pre_state=False)
+        self.assertNotIn("st_forged_123", p.pending_logins)
 
     def test_online_users_tracking(self):
         # Transmissão gera publisher e viewer

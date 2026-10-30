@@ -94,6 +94,7 @@ fun MainScreen(
     rosterList: List<RosterItem>,
     onlineCount: Int = 0,
     onlineUsers: List<String> = emptyList(),
+    avatars: Map<String, String> = emptyMap(),
     isRosterLoading: Boolean,
     onRefreshRoster: () -> Unit,
     watchedSessions: List<WatchSession>,
@@ -264,12 +265,19 @@ fun MainScreen(
                                     .clickable { showSettingsSheet = true }
                                     .padding(horizontal = 8.dp, vertical = 3.dp)
                             ) {
-                                Text(
-                                    text = "@$user (BDK) · Senha OK",
-                                    color = LuceCyan,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    val badgeAvatar = settings.discordAvatar.ifBlank { avatars[userName] ?: avatars[user] ?: "" }
+                                    if (badgeAvatar.isNotBlank()) {
+                                        DiscordAvatar(name = user, avatarUrl = badgeAvatar, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                    }
+                                    Text(
+                                        text = "@$user (BDK) · Senha OK",
+                                        color = LuceCyan,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
                         } else {
                             Box(
