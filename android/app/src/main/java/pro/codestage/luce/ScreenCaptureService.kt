@@ -39,6 +39,8 @@ class ScreenCaptureService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        LuceLog.init(this)
+        LuceLog.i("Service", "ScreenCaptureService criado")
         createNotificationChannel()
     }
 
@@ -46,6 +48,7 @@ class ScreenCaptureService : Service() {
         val action = intent?.action ?: ACTION_START
 
         if (action == ACTION_STOP) {
+            LuceLog.i("Service", "Parando transmissão (ACTION_STOP)")
             stopStreaming()
             stopSelf()
             return START_NOT_STICKY
@@ -59,6 +62,7 @@ class ScreenCaptureService : Service() {
         }
 
         if (resultData == null) {
+            LuceLog.w("Service", "Início sem resultData da MediaProjection; encerrando serviço")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -84,6 +88,7 @@ class ScreenCaptureService : Service() {
             settings = settings
         )
         currentSession = session
+        LuceLog.i("Service", "Sessão de publicação criada para '$sessionName'")
         session.start(resultData)
 
         return START_STICKY
@@ -101,6 +106,7 @@ class ScreenCaptureService : Service() {
     }
 
     override fun onDestroy() {
+        LuceLog.i("Service", "ScreenCaptureService destruído")
         stopStreaming()
         super.onDestroy()
     }

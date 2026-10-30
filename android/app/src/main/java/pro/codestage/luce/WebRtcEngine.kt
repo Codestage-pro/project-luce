@@ -31,6 +31,7 @@ import org.webrtc.DataChannel
 import org.webrtc.DefaultVideoDecoderFactory
 import org.webrtc.EglBase
 import org.webrtc.IceCandidate
+import org.webrtc.LuceVideoEncoderFactory
 import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
 import org.webrtc.MediaStreamTrack
@@ -46,6 +47,9 @@ import org.webrtc.VideoFrame
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
 import org.webrtc.audio.JavaAudioDeviceModule
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 class LuceScreenCapturer(
     private val mediaProjection: MediaProjection,
@@ -60,11 +64,15 @@ class LuceScreenCapturer(
     @Volatile private var lastPtsNs: Long = 0L
     @Volatile private var isCapturing: Boolean = false
 
+    /** Frames que saíram do VirtualDisplay (lidos pelo log de 5s do PublishSession). */
+    val capturedFramesCount = AtomicLong(0)
+
     private val keepaliveScope = CoroutineScope(Dispatchers.Default + Job())
     private var keepaliveJob: Job? = null
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
+            LuceLog.w("Capturer", "MediaProjection encerrada pelo sistema")
             onProjectionStopped()
         }
     }
@@ -83,34 +91,54 @@ class LuceScreenCapturer(
         val observer = capturerObserver ?: return
 
         isCapturing = true
+        capturedFramesCount.set(0)
         mediaProjection.registerCallback(projectionCallback, helper.handler)
-        helper.setTextureSize(width, height)
 
-        virtualDisplay = mediaProjection.createVirtualDisplay(
-            "LuceScreenCapture",
-            width,
-            height,
-            320,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            Surface(helper.surfaceTexture),
-            null,
-            helper.handler
-        )
+        // Toda a inicialização roda na thread do helper e o listener é registrado ANTES do VirtualDisplay,
+        // como no ScreenCapturerAndroid oficial: assim o primeiro frame nunca é perdido (tela preta / 0 pacotes).
+        val latch = CountDownLatch(1)
+        helper.handler.post {
+            try {
+                helper.setTextureSize(width, height)
+                helper.startListening { frame ->
+                    if (!isCapturing) return@startListening
+                    val nowNs = System.nanoTime()
+                    val safePtsNs = if (nowNs <= lastPtsNs) lastPtsNs + 1_000_000L else nowNs
+                    lastPtsNs = safePtsNs
+                    lastFrameTimeNs = nowNs
+
+                    val count = capturedFramesCount.incrementAndGet()
+                    if (count == 1L || count % 150L == 0L) {
+                        LuceLog.i("Capturer", "Frame #$count capturado (${frame.buffer.width}x${frame.buffer.height})")
+                    }
+
+                    frame.buffer.retain()
+                    val outFrame = VideoFrame(frame.buffer, frame.rotation, safePtsNs)
+                    observer.onFrameCaptured(outFrame)
+                    outFrame.release()
+                }
+                virtualDisplay = mediaProjection.createVirtualDisplay(
+                    "LuceScreenCapture",
+                    width,
+                    height,
+                    320,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    Surface(helper.surfaceTexture),
+                    null,
+                    helper.handler
+                )
+                LuceLog.i("Capturer", "VirtualDisplay criado ${width}x$height @${framerate}fps (dpi 320)")
+            } catch (e: Exception) {
+                LuceLog.e("Capturer", "Erro ao criar VirtualDisplay", e)
+            } finally {
+                latch.countDown()
+            }
+        }
+        if (!latch.await(2000, TimeUnit.MILLISECONDS)) {
+            LuceLog.w("Capturer", "Timeout aguardando a criação do VirtualDisplay (2s)")
+        }
 
         observer.onCapturerStarted(true)
-
-        helper.startListening { frame ->
-            if (!isCapturing) return@startListening
-            val nowNs = System.nanoTime()
-            val safePtsNs = if (nowNs <= lastPtsNs) lastPtsNs + 1_000_000L else nowNs
-            lastPtsNs = safePtsNs
-            lastFrameTimeNs = nowNs
-
-            frame.buffer.retain()
-            val outFrame = VideoFrame(frame.buffer, frame.rotation, safePtsNs)
-            observer.onFrameCaptured(outFrame)
-            outFrame.release()
-        }
 
         // Tela parada não gera frames: reentrega a textura atual pelo próprio helper (mesmo TextureBuffer, com controle
         // de isTextureInUse), em vez de montar um TextureBufferImpl na mão que o codec lia enquanto o helper trocava a textura.
@@ -119,9 +147,17 @@ class LuceScreenCapturer(
             while (isActive && isCapturing) {
                 delay(IDLE_REPEAT_MS)
                 if (lastFrameTimeNs > 0L && System.nanoTime() - lastFrameTimeNs >= IDLE_REPEAT_MS * 1_000_000L) {
-                    helper.forceFrame()
+                    helper.handler.post { if (isCapturing) helper.forceFrame() }
                 }
             }
+        }
+    }
+
+    /** Pede frames extras logo após o SDP remoto fechar, para o primeiro keyframe sair sem esperar a tela mudar. */
+    fun requestRefreshFrame() {
+        val helper = surfaceTextureHelper ?: return
+        for (delayMs in longArrayOf(100L, 500L)) {
+            helper.handler.postDelayed({ if (isCapturing) helper.forceFrame() }, delayMs)
         }
     }
 
@@ -131,12 +167,12 @@ class LuceScreenCapturer(
         keepaliveJob = null
         val helper = surfaceTextureHelper
         if (helper != null) {
-            val done = java.util.concurrent.CountDownLatch(1)
+            val done = CountDownLatch(1)
             helper.handler.post {
                 try { helper.stopListening() } catch (_: Exception) {}
                 done.countDown()
             }
-            runCatching { done.await(1000, java.util.concurrent.TimeUnit.MILLISECONDS) }
+            runCatching { done.await(1000, TimeUnit.MILLISECONDS) }
         }
         try { capturerObserver?.onCapturerStopped() } catch (_: Exception) {}
         try { virtualDisplay?.release() } catch (_: Exception) {}
@@ -151,6 +187,7 @@ class LuceScreenCapturer(
             if (!isCapturing) return@post
             helper.setTextureSize(width, height)
             virtualDisplay?.resize(width, height, 320)
+            LuceLog.i("Capturer", "Formato de captura alterado para ${width}x$height")
         }
     }
 
@@ -158,10 +195,10 @@ class LuceScreenCapturer(
         stopCapture()
     }
 
-    override fun isScreencast(): Boolean = true
+    override fun isScreencast(): Boolean = false
 
     private companion object {
-        const val IDLE_REPEAT_MS = 66L // piso de ~15 fps com a tela parada
+        const val IDLE_REPEAT_MS = 100L // piso de ~10 fps com a tela parada
     }
 }
 
@@ -348,8 +385,12 @@ class WatchSession(
                 val iceGatheringDone = CompletableDeferred<Unit>()
 
                 val pcObserver = object : PeerConnection.Observer {
-                    override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
-                    override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {}
+                    override fun onSignalingChange(state: PeerConnection.SignalingState?) {
+                        LuceLog.i("Watch", "SignalingState: $state")
+                    }
+                    override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
+                        LuceLog.i("Watch", "IceConnectionState: $state")
+                    }
                     override fun onIceConnectionReceivingChange(receiving: Boolean) {}
                     override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
                         if (state == PeerConnection.IceGatheringState.COMPLETE) {
@@ -423,8 +464,10 @@ class WatchSession(
                 val sanitizedSdp = LuceApi.sanitizeSdpOffer(localSdp, isPublish = false)
 
                 // Envia para o WHEP
+                LuceLog.i("Watch", "Enviando oferta WHEP para '$streamName' (SDP ${sanitizedSdp.length} bytes)")
                 val whepResponse = LuceApi.sendWhepOffer(baseUrl, streamName, sanitizedSdp, authToken, myViewerName)
                 whepLocation = whepResponse.location
+                LuceLog.i("Watch", "Resposta WHEP recebida: answer SDP ${whepResponse.answerSdp.length} bytes")
 
                 // Define Answer remota
                 val setRemoteDeferred = CompletableDeferred<Unit>()
@@ -448,6 +491,7 @@ class WatchSession(
                 startStatsLoop()
                 startWatchHeartbeatLoop()
             } catch (e: Exception) {
+                LuceLog.e("Watch", "Falha ao conectar em '$streamName'", e)
                 isReconnecting.value = false
                 statsText.value = "falha ao conectar: ${e.message}"
             }
@@ -589,19 +633,22 @@ class PublishSession(
     private var displayListener: DisplayManager.DisplayListener? = null
     private var capturePortrait = false
 
-    /** Lado menor = menor entre largura/altura das configurações; lado maior na proporção real da tela; ambos múltiplos de 16. */
+    /** Lado maior = maior das configurações (640..1920); lado menor na proporção real da tela; múltiplos de 16 e dentro do que o encoder aceita. */
     private fun computeCaptureDimensions(): Pair<Int, Int> {
         val wm = context.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager
         val real = android.util.DisplayMetrics()
         @Suppress("DEPRECATION")
         wm.defaultDisplay.getRealMetrics(real)
         val minPhysical = minOf(real.widthPixels, real.heightPixels).coerceAtLeast(1)
-        val maxPhysical = maxOf(real.widthPixels, real.heightPixels)
-        val shortSide = minOf(settings.resolutionWidth, settings.resolutionHeight)
-        val longSide = (shortSide.toLong() * maxPhysical / minPhysical).toInt()
-        val s = (shortSide / 16) * 16
-        val l = (longSide / 16) * 16
-        return if (real.heightPixels > real.widthPixels) Pair(s, l) else Pair(l, s)
+        val maxPhysical = maxOf(real.widthPixels, real.heightPixels).coerceAtLeast(1)
+        val maxTarget = maxOf(settings.resolutionWidth, settings.resolutionHeight).coerceIn(640, 1920)
+        val longSide = (maxTarget / 16) * 16
+        val shortSide = (((longSide.toLong() * minPhysical / maxPhysical).toInt()) / 16 * 16).coerceAtLeast(320)
+        val portrait = real.heightPixels >= real.widthPixels
+        val (w, h) = if (portrait) Pair(shortSide, longSide) else Pair(longSide, shortSide)
+        val (cw, ch) = LuceVideoEncoderFactory.clampToEncoderCapabilities(w, h)
+        LuceLog.i("Publish", "Dimensões físicas: ${real.widthPixels}x${real.heightPixels} -> Captura: ${cw}x$ch")
+        return Pair(cw, ch)
     }
 
     /** Girou o celular: refaz a captura com os lados trocados (o encoder reinicia sozinho ao ver o novo tamanho). */
@@ -616,7 +663,7 @@ class PublishSession(
                 val portrait = h > w
                 if (portrait == capturePortrait) return
                 capturePortrait = portrait
-                videoSource?.adaptOutputFormat(w, h, settings.fps)
+                LuceLog.i("Publish", "Rotação detectada: ${if (portrait) "retrato" else "paisagem"} ${w}x$h")
                 capturer.changeCaptureFormat(w, h, settings.fps)
             }
         }
@@ -627,6 +674,7 @@ class PublishSession(
     fun start(mediaProjectionIntent: Intent) {
         scope.launch {
             try {
+                LuceLog.i("Publish", "Iniciando sessão de publicação de '$streamName' (${settings.fps}fps, ${settings.bitrateKbps}kbps)")
                 statusText.value = "preparando captura…"
                 val factory = WebRtcEngine.getFactory(context)
 
@@ -648,8 +696,8 @@ class PublishSession(
                 val surfaceHelper = SurfaceTextureHelper.create("LuceScreenCaptureThread", WebRtcEngine.eglBase.eglBaseContext)
                 surfaceTextureHelper = surfaceHelper
 
-                val vSource = factory.createVideoSource(true)
-                vSource.adaptOutputFormat(targetWidth, targetHeight, settings.fps)
+                // isScreencast=false e sem adaptOutputFormat: o adaptador antes do 1º frame deixava o encoder sem entrada
+                val vSource = factory.createVideoSource(false)
                 videoSource = vSource
                 capturer.initialize(surfaceHelper, context.applicationContext, vSource.capturerObserver)
                 capturer.startCapture(targetWidth, targetHeight, settings.fps)
@@ -676,8 +724,12 @@ class PublishSession(
                 val iceGatheringDone = CompletableDeferred<Unit>()
 
                 val pcObserver = object : PeerConnection.Observer {
-                    override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
-                    override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {}
+                    override fun onSignalingChange(state: PeerConnection.SignalingState?) {
+                        LuceLog.i("Publish", "SignalingState: $state")
+                    }
+                    override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
+                        LuceLog.i("Publish", "IceConnectionState: $state")
+                    }
                     override fun onIceConnectionReceivingChange(receiving: Boolean) {}
                     override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
                         if (state == PeerConnection.IceGatheringState.COMPLETE) {
@@ -708,13 +760,19 @@ class PublishSession(
                     if (videoTransceiver != null) {
                         val caps = factory.getRtpSenderCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO)
                         val h264Codecs = caps.codecs.filter {
-                            it.name.equals("H264", ignoreCase = true) || it.mimeType.contains("h264", ignoreCase = true)
+                            it.name.equals("H264", ignoreCase = true) || it.name.equals("rtx", ignoreCase = true) ||
+                                it.mimeType.contains("h264", ignoreCase = true) || it.mimeType.contains("rtx", ignoreCase = true)
                         }
                         if (h264Codecs.isNotEmpty()) {
                             videoTransceiver.setCodecPreferences(h264Codecs)
+                            LuceLog.i("Publish", "Preferências de codec de vídeo: ${h264Codecs.joinToString { it.mimeType }}")
+                        } else {
+                            LuceLog.w("Publish", "Nenhum codec H264 nas capabilities do sender")
                         }
                     }
-                } catch (_: Exception) {}
+                } catch (e: Exception) {
+                    LuceLog.w("Publish", "Falha ao definir codec preferences de vídeo: ${e.message}")
+                }
 
                 // Áudio só Opus, como no espectador
                 try {
@@ -736,12 +794,14 @@ class PublishSession(
                     // tela compartilhada: perde fps antes de perder nitidez do texto
                     params.degradationPreference = org.webrtc.RtpParameters.DegradationPreference.MAINTAIN_RESOLUTION
                     if (params.encodings.isNotEmpty()) {
+                        params.encodings[0].minBitrateBps = 300_000
                         params.encodings[0].maxBitrateBps = settings.bitrateKbps * 1000
-                        params.encodings[0].minBitrateBps = (settings.bitrateKbps * 1000 * 2) / 3
                         params.encodings[0].maxFramerate = settings.fps
                         vSender.parameters = params
                     }
-                } catch (_: Exception) {}
+                } catch (e: Exception) {
+                    LuceLog.w("Publish", "Falha ao configurar parâmetros do sender de vídeo: ${e.message}")
+                }
 
                 // Configura bitrate de áudio no RtpSender
                 try {
@@ -781,8 +841,10 @@ class PublishSession(
                 val sanitizedSdp = LuceApi.sanitizeSdpOffer(localSdp, isPublish = true, audioBitrateKbps = settings.audioBitrateKbps)
 
                 // Envia para o WHIP
+                LuceLog.i("Publish", "Enviando oferta WHIP de '$streamName' (SDP ${sanitizedSdp.length} bytes)")
                 val whipResponse = LuceApi.sendWhipOffer(baseUrl, streamName, sanitizedSdp, authToken, streamName)
                 whipLocation = whipResponse.location
+                LuceLog.i("Publish", "Resposta WHIP recebida: answer SDP ${whipResponse.answerSdp.length} bytes")
 
                 // Define Answer remota
                 val setRemoteDeferred = CompletableDeferred<Unit>()
@@ -794,6 +856,8 @@ class PublishSession(
                     override fun onSetFailure(error: String?) { setRemoteDeferred.completeExceptionally(RuntimeException(error)) }
                 }, answer)
                 setRemoteDeferred.await()
+                LuceLog.i("Publish", "Answer remota aplicada; pedindo frames de refresh para sair o keyframe")
+                (videoCapturer as? LuceScreenCapturer)?.requestRefreshFrame()
 
                 isLive.value = true
                 statusText.value = "transmitindo ao vivo"
@@ -801,6 +865,7 @@ class PublishSession(
                 startStatsLoop()
                 startWhipHeartbeatLoop()
             } catch (e: Exception) {
+                LuceLog.e("Publish", "Falha ao iniciar a transmissão", e)
                 isLive.value = false
                 statusText.value = "falha ao iniciar: ${e.message}"
                 stop()
@@ -812,22 +877,34 @@ class PublishSession(
         scope.launch {
             var lastBytes: Long = 0
             var lastTimeMs: Long = System.currentTimeMillis()
+            var tick = 0
 
             while (isActive) {
                 delay(1000)
                 val pc = peerConnection ?: break
+                tick++
+                val logNow = tick % 5 == 0
 
                 pc.getStats { report ->
                     var currentBytes: Long = 0
                     var currentPackets: Long = 0
+                    var framesSent: Long = 0
+                    var audioBytes: Long = 0
+                    var audioPackets: Long = 0
 
                     for (stat in report.statsMap.values) {
                         if (stat.type == "outbound-rtp") {
                             val members = stat.members
                             val mediaType = members["mediaType"] as? String ?: members["kind"] as? String
+                            val bytes = (members["bytesSent"] as? Number)?.toLong() ?: 0L
+                            val packets = (members["packetsSent"] as? Number)?.toLong() ?: 0L
                             if (mediaType == "video") {
-                                currentBytes += (members["bytesSent"] as? Number)?.toLong() ?: 0L
-                                currentPackets += (members["packetsSent"] as? Number)?.toLong() ?: 0L
+                                currentBytes += bytes
+                                currentPackets += packets
+                                framesSent += ((members["framesSent"] ?: members["framesEncoded"]) as? Number)?.toLong() ?: 0L
+                            } else if (mediaType == "audio") {
+                                audioBytes += bytes
+                                audioPackets += packets
                             }
                         }
                     }
@@ -838,6 +915,19 @@ class PublishSession(
 
                     val mbps = (deltaBytes * 8.0) / (deltaSec * 1_000_000.0)
                     statsText.value = "↑ ${"%.1f".format(mbps)} Mbps · $currentPackets pkts"
+
+                    if (logNow) {
+                        val captured = (videoCapturer as? LuceScreenCapturer)?.capturedFramesCount?.get() ?: 0L
+                        LuceLog.i(
+                            "Stats",
+                            "framesCapturados=$captured framesEnviados=$framesSent | " +
+                                "video: $currentPackets pkts / $currentBytes bytes (${"%.2f".format(mbps)} Mbps) | " +
+                                "audio: $audioPackets pkts / $audioBytes bytes"
+                        )
+                        if (captured > 0 && currentPackets == 0L) {
+                            LuceLog.w("Stats", "Frames capturados mas nenhum pacote de vídeo enviado (encoder/ICE?)")
+                        }
+                    }
 
                     lastBytes = currentBytes
                     lastTimeMs = now

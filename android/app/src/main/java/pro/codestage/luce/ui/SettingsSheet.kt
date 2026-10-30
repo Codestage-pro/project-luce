@@ -1,5 +1,8 @@
 package pro.codestage.luce.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
@@ -11,6 +14,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -54,12 +58,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -68,6 +75,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import pro.codestage.luce.LuceApi
 import pro.codestage.luce.LuceConfig
+import pro.codestage.luce.LuceLog
 import pro.codestage.luce.UserSettings
 import java.util.UUID
 
@@ -97,6 +105,7 @@ fun SettingsSheet(
     var pollTarget by remember { mutableStateOf<Pair<String, String>?>(null) } // (url do servidor, state) do login em andamento
     val pollMutex = remember { Mutex() }
     var discordStatusMsg by remember { mutableStateOf("") }
+    var showLogs by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -444,6 +453,23 @@ fun SettingsSheet(
                 }
             }
 
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Diagnóstico
+            Text("Diagnóstico", color = LuceCyan, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(
+                onClick = { showLogs = true },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(44.dp)
+                    .border(1.dp, LuceBorder, RoundedCornerShape(8.dp)),
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = LuceCard, contentColor = LuceText)
+            ) {
+                Text("Abrir / Copiar Logs do App", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            }
+
             Spacer(modifier = Modifier.height(24.dp))
 
             // Salvar
@@ -475,6 +501,84 @@ fun SettingsSheet(
                 colors = ButtonDefaults.buttonColors(containerColor = LuceCyan, contentColor = LuceNight)
             ) {
                 Text("Salvar Configurações", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            }
+        }
+        if (showLogs) LogViewerDialog(onDismiss = { showLogs = false })
+    }
+}
+
+@Composable
+private fun LogViewerDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    var logText by remember { mutableStateOf(LuceLog.readLogs()) }
+    val scroll = rememberScrollState()
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(12.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(LuceCard)
+                .border(1.dp, LuceBorder, RoundedCornerShape(12.dp))
+                .padding(12.dp)
+        ) {
+            Text("Logs do App", color = LuceCyan, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(8.dp))
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(LuceNight)
+                    .border(1.dp, LuceBorder, RoundedCornerShape(8.dp))
+                    .verticalScroll(scroll)
+                    .padding(8.dp)
+            ) {
+                Text(logText, color = LuceText, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                val buttonColors = ButtonDefaults.buttonColors(containerColor = LuceCardElevated, contentColor = LuceText)
+                val pad = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp)
+                Button(
+                    onClick = { logText = LuceLog.readLogs() },
+                    modifier = Modifier.weight(1f),
+                    contentPadding = pad,
+                    shape = RoundedCornerShape(8.dp),
+                    colors = buttonColors
+                ) { Text("Atualizar", fontSize = 12.sp, maxLines = 1) }
+                Button(
+                    onClick = {
+                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        cm.setPrimaryClip(ClipData.newPlainText("Logs do LUCE", logText))
+                        Toast.makeText(context, "Logs copiados para a área de transferência!", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.weight(1f),
+                    contentPadding = pad,
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = LuceCyan, contentColor = LuceNight)
+                ) { Text("Copiar Logs", fontSize = 12.sp, maxLines = 1) }
+                Button(
+                    onClick = {
+                        LuceLog.clearLogs()
+                        logText = LuceLog.readLogs()
+                    },
+                    modifier = Modifier.weight(1f),
+                    contentPadding = pad,
+                    shape = RoundedCornerShape(8.dp),
+                    colors = buttonColors
+                ) { Text("Limpar", fontSize = 12.sp, maxLines = 1) }
+                Button(
+                    onClick = onDismiss,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = pad,
+                    shape = RoundedCornerShape(8.dp),
+                    colors = buttonColors
+                ) { Text("Fechar", fontSize = 12.sp, maxLines = 1) }
             }
         }
     }
