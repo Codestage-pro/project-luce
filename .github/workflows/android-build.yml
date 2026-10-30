@@ -48,7 +48,7 @@ jobs:
           elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             VER="${GITHUB_REF_NAME#v}"
           else
-            VER="1.0.43"
+            VER="1.0.44"
           fi
           echo "LUCE_VERSION=$VER" >> $GITHUB_ENV
           echo "Versão definida: $VER"

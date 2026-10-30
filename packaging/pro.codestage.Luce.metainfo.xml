@@ -16,6 +16,7 @@
   <content_rating type="oars-1.1"/>
   <provides><binary>luce</binary></provides>
   <releases>
+    <release version="1.0.44" date="2026-10-30"/>
     <release version="1.0.43" date="2026-10-30"/>
     <release version="1.0.42" date="2026-10-30"/>
     <release version="1.0.41" date="2026-10-30"/>

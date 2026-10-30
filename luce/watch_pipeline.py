@@ -192,8 +192,8 @@ class WatchPipeline:
         if sink is None:
             self._fail("nenhum sink de vídeo disponível (falta gst-plugins-base)")
             return
-        # sync=False: mostra o quadro assim que decodifica, sem esperar o relógio do pipeline (zero atraso extra)
-        _try_set(sink, "sync", False)
+        # sync=True: áudio e vídeo seguem o mesmo relógio (sincronia labial); o atraso é contido pelo jitterbuffer curto e pelas filas leaky
+        _try_set(sink, "sync", True)
 
         convert = Gst.ElementFactory.make("videoconvert", "convert-video")
         if convert is None:
@@ -260,14 +260,14 @@ class WatchPipeline:
         volume.set_property("volume", self._wanted_volume)
         volume.set_property("mute", self._wanted_muted)
         sink = Gst.ElementFactory.make("autoaudiosink", "sink-audio")
-        _try_set(sink, "sync", False)
+        _try_set(sink, "sync", True)
         # autoaudiosink é um bin: client-name não existe nele, só no sink real
         # (pulsesink/pipewiresink) que ele cria sozinho ao ir pra PLAYING —
         # daí aparecer "python" em vez de "Project LUCE" no qpwgraph/pavucontrol.
         def _tune_sink(_bin, child, _name) -> None:
             _try_set(child, "client-name", "Project LUCE")
-            # buffer do dispositivo pequeno (60 ms / fatias de 15 ms) e sem esperar o relógio
-            _try_set(child, "sync", False)
+            # buffer do dispositivo pequeno (60 ms / fatias de 15 ms); o sync fica ligado para manter áudio e vídeo juntos
+            _try_set(child, "sync", True)
             _try_set(child, "buffer-time", 60000)
             _try_set(child, "latency-time", 15000)
 
