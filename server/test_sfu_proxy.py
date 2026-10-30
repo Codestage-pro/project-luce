@@ -84,21 +84,37 @@ class ProxyTest(unittest.TestCase):
         self.assertIn("m=video 9 UDP/TLS/RTP/SAVPF 100 97\r\n", out)
 
     def test_subscribe_follows_viewer_mline_order_and_forces_recvonly(self):
-        # publisher (GStreamer) = [audio, video]; Android = [video, audio] com sendrecv + ssrc/msid
+        # publisher (GStreamer) = [audio, video]; o viewer é um SDP real do libwebrtc/Android
         self.call("POST", "/ana/whip", OFFER.encode())
-        viewer = ("v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 97\r\na=mid:0\r\na=sendrecv\r\na=rtpmap:97 H264/90000\r\n"
-                  "a=msid:x y\r\na=ssrc:123 cname:a\r\na=ssrc-group:FID 123 456\r\n"
-                  "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:1\r\na=sendonly\r\na=rtpmap:111 opus/48000/2\r\n")
+        viewer = ("v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111 63 9 0 8 13 110 126\r\na=mid:0\r\na=sendrecv\r\n"
+                  "a=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\n"
+                  "a=fmtp:111 minptime=10;useinbandfec=1;stereo=1;maxaveragebitrate=128000\r\n"
+                  "a=rtpmap:63 red/48000/2\r\na=fmtp:63 111/111\r\na=rtpmap:9 G722/8000\r\na=rtpmap:0 PCMU/8000\r\n"
+                  "a=rtpmap:8 PCMA/8000\r\na=rtpmap:13 CN/8000\r\na=rtpmap:110 telephone-event/48000\r\n"
+                  "a=rtpmap:126 telephone-event/8000\r\na=msid:x y\r\na=ssrc:123 cname:a\r\n"
+                  "m=video 9 UDP/TLS/RTP/SAVPF 96 97 98 99 100 101\r\na=mid:1\r\na=sendonly\r\n"
+                  "a=rtpmap:96 VP8/90000\r\na=rtpmap:97 H264/90000\r\n"
+                  "a=fmtp:97 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=640c1f\r\n"
+                  "a=rtpmap:98 H264/90000\r\n"
+                  "a=fmtp:98 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\n"
+                  "a=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=97\r\na=rtpmap:100 rtx/90000\r\na=fmtp:100 apt=98\r\n"
+                  "a=rtpmap:101 ulpfec/90000\r\na=ssrc-group:FID 123 456\r\n")
         code, body, _ = self.call("POST", "/ana/whep", viewer.encode(), headers={"X-Luce-Viewer": "bia"})
         self.assertEqual((code, body), (201, "ANSWER"))
         tracks_new = [c for c in self.sfu.calls if c[1].endswith("/tracks/new") and c[2]["tracks"][0]["location"] == "remote"]
         sent = tracks_new[-1][2]
-        self.assertEqual([(t["trackName"], t["mid"]) for t in sent["tracks"]], [("video", "0"), ("audio", "1")])
+        sess = sent["tracks"][0]["sessionId"]
+        self.assertEqual(sent["tracks"], [
+            {"location": "remote", "sessionId": sess, "trackName": "audio"},
+            {"location": "remote", "sessionId": sess, "trackName": "video"},
+        ])  # sem "mid"
         sdp = sent["sessionDescription"]["sdp"]
-        self.assertNotIn("sendrecv", sdp)
-        self.assertNotIn("sendonly", sdp)
-        self.assertNotIn("a=ssrc", sdp)
-        self.assertNotIn("a=msid", sdp)
+        self.assertIn("m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n", sdp)
+        self.assertIn("m=video 9 UDP/TLS/RTP/SAVPF 100 98\r\n", sdp)
+        for gone in ("G722", "PCMU", "PCMA", "CN/", "telephone-event", "red/", "VP8", "ulpfec", "640c1f",
+                     "sendrecv", "sendonly", "a=ssrc", "a=msid", "stereo", "maxaveragebitrate"):
+            self.assertNotIn(gone, sdp)
+        self.assertIn("a=fmtp:111 minptime=10;useinbandfec=1\r\n", sdp)
         self.assertEqual(sdp.count("a=recvonly"), 2)
 
     def test_chunked_body_is_read(self):

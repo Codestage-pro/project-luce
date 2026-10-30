@@ -312,10 +312,19 @@ object LuceApi {
         val result = mutableListOf<String>()
 
         var inVideoSection = false
+        var inAudioSection = false
         for (line in lines) {
             val trimmed = line.trimEnd('\r', '\n')
+            if (trimmed.startsWith("m=audio")) {
+                inAudioSection = true
+                inVideoSection = false
+                // o SFU usa o ÚLTIMO payload da m-line: só o Opus fica
+                result.add(if (opusPt != null) trimmed.split(" ").take(3).joinToString(" ") + " $opusPt" else trimmed)
+                continue
+            }
             if (trimmed.startsWith("m=video")) {
                 inVideoSection = true
+                inAudioSection = false
                 val parts = trimmed.split(" ")
                 val header = parts.take(3).joinToString(" ") // m=video <port> <proto>
                 val keptPayloads = mutableListOf<String>()
@@ -336,6 +345,14 @@ object LuceApi {
                 continue
             } else if (trimmed.startsWith("m=")) {
                 inVideoSection = false
+                inAudioSection = false
+            }
+
+            if (inAudioSection && opusPt != null) {
+                val audioAttr = Regex("^a=(?:rtpmap|fmtp|rtcp-fb):(\\d+)").find(trimmed)
+                if (audioAttr != null && audioAttr.groupValues[1] != opusPt) {
+                    continue // red, G722, PCMU, PCMA, CN, telephone-event
+                }
             }
 
             if (!isPublish) {
@@ -349,7 +366,7 @@ object LuceApi {
                 }
             }
 
-            if (opusPt != null) {
+            if (opusPt != null && isPublish) {
                 if (trimmed.startsWith("a=fmtp:$opusPt")) {
                     var fmtpLine = trimmed.replace(";?maxaveragebitrate=\\d+".toRegex(), "")
                     if (!fmtpLine.contains("stereo=1")) {

@@ -391,7 +391,13 @@ class WatchSession(
 
                 // Só recebe, e na mesma ordem do GStreamer (m=audio, m=video): o SFU casa as tracks por posição
                 val recvOnlyInit = RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY)
-                pc.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO, recvOnlyInit)
+                val audioTransceiver = pc.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO, recvOnlyInit)
+                // só Opus: com G722/PCMU/CN/telephone-event na m=audio o SFU escolhe o último payload e falha
+                val opusCodecs = factory.getRtpReceiverCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO)
+                    .codecs.filter { it.name.equals("opus", ignoreCase = true) }
+                if (opusCodecs.isNotEmpty()) {
+                    audioTransceiver.setCodecPreferences(opusCodecs)
+                }
                 val videoTransceiver = pc.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO, recvOnlyInit)
                 val h264Codecs = factory.getRtpReceiverCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO)
                     .codecs.filter { it.name.equals("H264", ignoreCase = true) || it.name.equals("rtx", ignoreCase = true) }
@@ -697,6 +703,20 @@ class PublishSession(
                         }
                         if (h264Codecs.isNotEmpty()) {
                             videoTransceiver.setCodecPreferences(h264Codecs)
+                        }
+                    }
+                } catch (_: Exception) {}
+
+                // Áudio só Opus, como no espectador
+                try {
+                    val audioTransceiver = pc.transceivers.firstOrNull {
+                        it.mediaType == MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO
+                    }
+                    if (audioTransceiver != null) {
+                        val opusCodecs = factory.getRtpSenderCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO)
+                            .codecs.filter { it.name.equals("opus", ignoreCase = true) }
+                        if (opusCodecs.isNotEmpty()) {
+                            audioTransceiver.setCodecPreferences(opusCodecs)
                         }
                     }
                 } catch (_: Exception) {}

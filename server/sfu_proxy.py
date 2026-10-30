@@ -583,36 +583,65 @@ def offer_tracks(sdp: str) -> list[dict]:
     return tracks
 
 
+def _keep_payloads(kind: str, block: str) -> list[str] | None:
+    """Payloads que o viewer pode oferecer numa m-line (lista branca); None = não mexe na seção."""
+    rtpmap = re.findall(r"(?im)^a=rtpmap:(\d+)\s+([A-Za-z0-9_-]+)/", block)
+    codec = {pt: name.upper() for pt, name in rtpmap}
+    if kind == "audio":
+        opus = [pt for pt, name in codec.items() if name == "OPUS"]
+        return opus[:1] or None
+    fmtp = dict(re.findall(r"(?im)^a=fmtp:(\d+)\s+(.*?)\r?$", block))
+    h264 = [pt for pt, name in codec.items() if name == "H264"]
+    if not h264:
+        return None
+    chosen = next((pt for pt in h264 if re.search(r"42e01f|42001f", fmtp.get(pt, ""), re.I)), h264[0])
+    # medido: o SFU responde só com o ÚLTIMO payload da m-line; com o rtx por último
+    # a resposta perde o H264 e não vem vídeo. Por isso rtx primeiro, H264 por último.
+    rtx = [pt for pt, params in fmtp.items() if codec.get(pt) == "RTX" and re.search(rf"apt={chosen}\b", params)]
+    return rtx[:1] + [chosen]
+
+
 def whep_offer(sdp: str) -> str:
-    """Ajusta o offer do `whepsrc` pro que o SFU aceita.
+    """Ajusta o offer do espectador (whepsrc ou Android) pro que o SFU aceita.
 
     O whepsrc oferece "OPUS/48000" sem os canais (o SFU só reconhece
-    opus/48000/2) e VP8/VP9/H265/AV1 junto com o H264; com qualquer um deles o
-    SFU recusa tudo com "missing the published track's codec". O RTX do H264
-    (retransmissão por NACK) fica, mas o publisher com RTX exige que o viewer
-    ofereça o seu (senão 500) e o SFU só aceita um payload por m-line.
+    opus/48000/2) e o libwebrtc do Android oferece G722/PCMU/PCMA/CN/telephone-event
+    e vários perfis de vídeo. O SFU escolhe o ÚLTIMO payload da m-line, então
+    cada m-line fica só com o que foi publicado: Opus no áudio e, no vídeo, um H264
+    com o seu RTX (o publisher com RTX exige que o viewer ofereça o seu, senão 500).
     """
     sdp = re.sub(r"(?im)^(a=rtpmap:\d+) opus/48000\r?$", r"\1 opus/48000/2", sdp)
     # o espectador só recebe: sendrecv/sendonly viram recvonly e a=ssrc/a=msid (identidade de quem envia) saem
     sdp = re.sub(r"(?m)^a=(?:sendrecv|sendonly)\r?$", "a=recvonly", sdp)
     sdp = re.sub(r"(?m)^a=(?:ssrc|ssrc-group|msid):[^\r\n]*\r?\n?", "", sdp)
-    drop = {pt for pt, codec in re.findall(r"a=rtpmap:(\d+) ([A-Za-z0-9_-]+)/", sdp)
-            if codec.upper() in ("VP8", "VP9", "H265", "AV1", "RED", "ULPFEC", "FLEXFEC-03")}
-    rtx = {pt for pt, _ in re.findall(r"a=fmtp:(\d+) apt=(\d+)", sdp)}
-    # o RTX de um codec descartado ficaria apontando (apt=) pra um payload que não existe mais
-    drop |= {pt for pt, apt in re.findall(r"a=fmtp:(\d+) apt=(\d+)", sdp) if apt in drop}
-    lines = []
-    for line in sdp.splitlines():
-        if line.startswith(("m=video", "m=audio")):
-            head = line.split(" ")
-            # medido: o SFU responde só com o ÚLTIMO payload da m-line; com o rtx por último
-            # a resposta perde o H264 e não vem vídeo. Sort estável: rtx primeiro.
+    out = []
+    for block in re.split(r"(?m)^(?=m=)", sdp):
+        kind = block.split(" ", 1)[0][2:] if block.startswith("m=") else ""
+        keep = _keep_payloads(kind, block) if kind in ("audio", "video") else None
+        if keep is None and kind == "video":
+            # sem H264 na oferta: só tira o que o SFU recusa
+            drop = {pt for pt, name in re.findall(r"a=rtpmap:(\d+) ([A-Za-z0-9_-]+)/", block)
+                    if name.upper() in ("VP8", "VP9", "H265", "AV1", "RED", "ULPFEC", "FLEXFEC-03")}
+            drop |= {pt for pt, apt in re.findall(r"a=fmtp:(\d+) apt=(\d+)", block) if apt in drop}
+            rtx = {pt for pt, _ in re.findall(r"a=fmtp:(\d+) apt=(\d+)", block)}
+            head = block.split("\n", 1)[0].rstrip("\r").split(" ")
             keep = sorted((pt for pt in head[3:] if pt not in drop), key=lambda pt: pt not in rtx)
-            line = " ".join(head[:3] + keep)
-        attr = re.match(r"a=(rtpmap|fmtp|rtcp-fb):(\d+) ", line)
-        if not (attr and attr.group(2) in drop):
+        if keep is None:
+            out.append(block)
+            continue
+        opus_pt = keep[0] if kind == "audio" else None
+        lines = []
+        for line in block.splitlines():
+            if line.startswith("m="):
+                line = " ".join(line.split(" ")[:3] + keep)
+            attr = re.match(r"a=(rtpmap|fmtp|rtcp-fb):(\d+) ", line)
+            if attr and attr.group(2) not in keep:
+                continue
+            if opus_pt and attr and attr.group(1) == "fmtp":
+                line = f"a=fmtp:{opus_pt} minptime=10;useinbandfec=1"
             lines.append(line)
-    return "\r\n".join(lines) + "\r\n"
+        out.append("\r\n".join(lines) + "\r\n")
+    return "".join(out)
 
 
 def close_tracks(pub: dict) -> None:
@@ -681,11 +710,11 @@ def subscribe(stream: str, offer: str) -> tuple[str, str]:
         pub = publishers.get(stream)
     if pub is None:
         raise HttpError(404, f"{stream} não está transmitindo")
-    # as tracks seguem a ordem das m-lines do ESPECTADOR (o Android oferece video+audio, o GStreamer audio+video):
-    # fora dessa ordem o SFU casa a track de áudio com a m=video e responde erro (vira 502)
+    # o SFU casa as tracks remotas com as m-lines pela POSIÇÃO no array: segue a ordem do ESPECTADOR.
+    # Sem "mid": numa sessão nova ele faz o SFU procurar um transceiver existente e dá internal_error
     pub_by_kind = {t["trackName"]: t for t in pub["tracks"]}
     remote_tracks = [
-        {"location": "remote", "sessionId": pub["session"], "trackName": st["trackName"], "mid": st["mid"]}
+        {"location": "remote", "sessionId": pub["session"], "trackName": st["trackName"]}
         for st in offer_tracks(offer) if st["trackName"] in pub_by_kind
     ]
     if not remote_tracks:
