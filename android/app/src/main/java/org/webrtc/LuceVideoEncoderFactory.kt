@@ -2,7 +2,10 @@ package org.webrtc
 
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
+import android.media.MediaCrypto
+import android.media.MediaFormat
 import android.os.Build
+import android.view.Surface
 
 class LuceVideoEncoderFactory(
     private val eglContext: EglBase.Context?
@@ -91,16 +94,48 @@ class LuceVideoEncoderFactory(
         val sharedContext: EglBase14.Context? = if (eglContext is EglBase14.Context) eglContext else null
 
         return HardwareVideoEncoder(
-            MediaCodecWrapperFactoryImpl(),
+            LuceCodecWrapperFactory(MediaCodecWrapperFactoryImpl()),
             codecName,
             VideoCodecMimeType.H264,
             surfaceColorFormat,
             yuvColorFormat,
             emptyMap(), // evita CodecException em MediaCodec.configure() por perfil forçado
-            1,      // keyFrameIntervalSec = 1s
+            2,      // keyFrameIntervalSec = 2s (GOP menor que isso estoura o bitrate em tela quase estática)
             0,      // forceKeyFrameIntervalMs = 0 (evita engasgos por PARAMETER_KEY_REQUEST_SYNC_FRAME a cada 2s)
-            BaseBitrateAdjuster(),
+            FramerateBitrateAdjuster(),
             sharedContext
         )
+    }
+}
+
+/**
+ * Ajusta o MediaFormat antes do configure() para SoCs de entrada (Redmi Note 13 etc.).
+ * Não usa KEY_REPEAT_PREVIOUS_FRAME_AFTER: o HardwareVideoEncoder faz outputBuilders.poll() sem checar null,
+ * então um frame repetido pelo codec derrubaria o app com NPE na thread de saída (a repetição é do SurfaceTextureHelper.forceFrame).
+ */
+private class LuceCodecWrapperFactory(private val inner: MediaCodecWrapperFactory) : MediaCodecWrapperFactory {
+    override fun createByCodecName(name: String): MediaCodecWrapper = LuceCodecWrapper(inner.createByCodecName(name))
+}
+
+private class LuceCodecWrapper(private val codec: MediaCodecWrapper) : MediaCodecWrapper by codec {
+    override fun configure(format: MediaFormat, surface: Surface?, crypto: MediaCrypto?, flags: Int) {
+        if (flags and android.media.MediaCodec.CONFIGURE_FLAG_ENCODE != 0) {
+            tune(format)
+        }
+        codec.configure(format, surface, crypto, flags)
+    }
+
+    private fun tune(format: MediaFormat) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try { format.setInteger(MediaFormat.KEY_PRIORITY, 0) } catch (_: Exception) {}
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try { format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1) } catch (_: Exception) {}
+        }
+        try {
+            if (format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
+                format.setInteger(MediaFormat.KEY_OPERATING_RATE, format.getInteger(MediaFormat.KEY_FRAME_RATE))
+            }
+        } catch (_: Exception) {}
     }
 }

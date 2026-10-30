@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -43,6 +44,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -82,7 +84,8 @@ fun WatchGrid(
     if (fullscreenStreamName != null) {
         val focused = sessions.find { it.streamName == fullscreenStreamName }
         if (focused != null) {
-            FullscreenWindowEffect()
+            val focusedPortrait by focused.isPortraitVideo.collectAsState()
+            FullscreenWindowEffect(focusedPortrait)
             BackHandler(enabled = true) { onToggleFullscreen(null) }
             WatchTile(
                 session = focused,
@@ -103,16 +106,24 @@ fun WatchGrid(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         sessions.forEach { session ->
-            WatchTile(
-                session = session,
-                isFullscreen = false,
-                onToggleFullscreen = { onToggleFullscreen(session.streamName) },
-                onClose = { onCloseStream(session) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
-                    .clip(RoundedCornerShape(12.dp))
-            )
+            key(session.streamName) {
+                val videoRatio by session.videoAspectRatio.collectAsState()
+                val portrait by session.isPortraitVideo.collectAsState()
+                // vertical (celular girado): limita a altura e centraliza; paisagem ocupa a largura toda
+                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    WatchTile(
+                        session = session,
+                        isFullscreen = false,
+                        onToggleFullscreen = { onToggleFullscreen(session.streamName) },
+                        onClose = { onCloseStream(session) },
+                        modifier = (if (portrait) {
+                            Modifier.fillMaxWidth().heightIn(max = 520.dp).aspectRatio(videoRatio)
+                        } else {
+                            Modifier.fillMaxWidth().aspectRatio(videoRatio)
+                        }).clip(RoundedCornerShape(12.dp))
+                    )
+                }
+            }
         }
     }
 }
@@ -126,14 +137,18 @@ private fun Context.findActivity(): Activity? {
     return null
 }
 
-/** Tela cheia: gira para paisagem e esconde as barras do sistema; ao sair, devolve tudo. */
+/** Tela cheia: acompanha a orientação do vídeo (vertical/paisagem) e esconde as barras do sistema; ao sair, devolve tudo. */
 @Composable
-private fun FullscreenWindowEffect() {
+private fun FullscreenWindowEffect(isPortraitVideo: Boolean) {
     val activity = LocalContext.current.findActivity()
-    DisposableEffect(activity) {
+    DisposableEffect(activity, isPortraitVideo) {
         val window = activity?.window
         val controller = window?.let { WindowCompat.getInsetsController(it, it.decorView) }
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        activity?.requestedOrientation = if (isPortraitVideo) {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
         controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         controller?.hide(WindowInsetsCompat.Type.systemBars())
         onDispose {
@@ -144,7 +159,6 @@ private fun FullscreenWindowEffect() {
 }
 
 private const val MAX_ZOOM = 3.5f
-private const val VIDEO_RATIO = 16f / 9f
 
 @Composable
 fun WatchTile(
@@ -160,9 +174,10 @@ fun WatchTile(
     val volume by session.volume.collectAsState()
     val isStalled by session.isStalled.collectAsState()
     val isReconnecting by session.isReconnecting.collectAsState()
+    val videoRatio by session.videoAspectRatio.collectAsState()
 
     var showControls by remember { mutableStateOf(true) }
-    // zoom/pan só existem em tela cheia; 1f = vídeo 16:9 inteiro e centralizado
+    // zoom/pan só existem em tela cheia; 1f = vídeo inteiro e centralizado
     var zoomScale by remember(isFullscreen) { mutableFloatStateOf(1f) }
     var offsetX by remember(isFullscreen) { mutableFloatStateOf(0f) }
     var offsetY by remember(isFullscreen) { mutableFloatStateOf(0f) }
@@ -184,7 +199,7 @@ fun WatchTile(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null
             ) { showControls = !showControls }
-            .pointerInput(isFullscreen) {
+            .pointerInput(isFullscreen, videoRatio) {
                 if (!isFullscreen) return@pointerInput
                 detectTransformGestures { _, pan, zoom, _ ->
                     val scale = (zoomScale * zoom).coerceIn(1f, MAX_ZOOM)
@@ -193,11 +208,11 @@ fun WatchTile(
                         offsetX = 0f
                         offsetY = 0f
                     } else {
-                        // o vídeo 16:9 ocupa a tela inteira em largura ou altura; o pan não deixa a imagem sair do quadro
+                        // o vídeo ocupa a tela inteira em largura ou altura; o pan não deixa a imagem sair do quadro
                         val cw = boxSize.width.toFloat()
                         val ch = boxSize.height.toFloat()
-                        val vw = if (cw / ch > VIDEO_RATIO) ch * VIDEO_RATIO else cw
-                        val vh = if (cw / ch > VIDEO_RATIO) ch else cw / VIDEO_RATIO
+                        val vw = if (cw / ch > videoRatio) ch * videoRatio else cw
+                        val vh = if (cw / ch > videoRatio) ch else cw / videoRatio
                         val maxX = maxOf(0f, (vw * scale - cw) / 2f)
                         val maxY = maxOf(0f, (vh * scale - ch) / 2f)
                         zoomScale = scale
@@ -212,7 +227,23 @@ fun WatchTile(
         AndroidView(
             factory = { ctx ->
                 SurfaceViewRenderer(ctx).apply {
-                    init(WebRtcEngine.eglBase.eglBaseContext, null)
+                    var lastPortrait: Boolean? = null
+                    val rendererEvents = object : RendererCommon.RendererEvents {
+                        override fun onFirstFrameRendered() {}
+
+                        // roda na thread principal: reajusta a proporção e zera zoom/pan quando o vídeo gira
+                        override fun onFrameResolutionChanged(videoWidth: Int, videoHeight: Int, rotation: Int) {
+                            session.onFrameResolution(videoWidth, videoHeight, rotation)
+                            val portrait = if (rotation % 180 == 0) videoHeight > videoWidth else videoWidth > videoHeight
+                            if (lastPortrait != null && lastPortrait != portrait) {
+                                zoomScale = 1f
+                                offsetX = 0f
+                                offsetY = 0f
+                            }
+                            lastPortrait = portrait
+                        }
+                    }
+                    init(WebRtcEngine.eglBase.eglBaseContext, rendererEvents)
                     setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
                     setEnableHardwareScaler(true)
                 }
@@ -229,7 +260,7 @@ fun WatchTile(
                 renderer.translationX = offsetX
                 renderer.translationY = offsetY
             },
-            modifier = if (isFullscreen) Modifier.aspectRatio(VIDEO_RATIO) else Modifier.fillMaxSize()
+            modifier = if (isFullscreen) Modifier.aspectRatio(videoRatio) else Modifier.fillMaxSize()
         )
 
         DisposableEffect(session, videoTrack) {
@@ -300,8 +331,8 @@ fun WatchTile(
                                     .padding(horizontal = 12.dp, vertical = 8.dp)
                             ) {
                                 Text(
-                                    text = if (zoomScale == 1f) "16:9"
-                                    else "Preencher (${(zoomScale * 100).toInt()}%) · Resetar 16:9",
+                                    text = if (zoomScale == 1f) "Ajustado"
+                                    else "Preencher (${(zoomScale * 100).toInt()}%) · Resetar",
                                     color = Color.White,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold

@@ -1727,10 +1727,23 @@ class MainWindow(Gtk.ApplicationWindow):
             show(cached)
             return box
 
-        box.append(Gtk.Label(label=name[:1].upper(), css_classes=["avatar"], width_chars=2))
+        box.append(Gtk.Label(label=name[:1].upper(), css_classes=["viewer-avatar" if size <= 16 else "avatar"], width_chars=2))
         if avatar_url and _is_safe_discord_avatar_url(avatar_url):
             _fetch_avatar_texture(avatar_url, lambda tex: show(tex) if tex is not None else None, size)
         return box
+
+    def _make_viewers_row(self, viewers: list[str], avatars: dict[str, str]) -> Gtk.Widget:
+        """Contagem + um chip (avatar redondo e nome) por espectador; vazio mostra um aviso discreto."""
+        if not viewers:
+            return Gtk.Label(label="ninguém assistindo ainda", xalign=0, css_classes=["dim"])
+        row = Gtk.Box(spacing=6, css_classes=["viewers-row"])
+        row.append(Gtk.Label(label=f"👁 {len(viewers)}", css_classes=["viewer-count-badge"], valign=Gtk.Align.CENTER))
+        for v_name in viewers:
+            chip = Gtk.Box(spacing=5, css_classes=["viewer-chip"], valign=Gtk.Align.CENTER)
+            chip.append(self._make_avatar_widget(v_name, avatars.get(v_name, ""), 16, "viewer-avatar"))
+            chip.append(Gtk.Label(label=v_name))
+            row.append(chip)
+        return row
 
     def _refresh_roster(self) -> bool:
         """Pede o roster fora da thread da GUI (servidor lento travava a janela, inclusive na abertura)."""
@@ -1804,8 +1817,13 @@ class MainWindow(Gtk.ApplicationWindow):
             row = Gtk.Box(spacing=10, margin_top=6, margin_bottom=6, margin_start=6, margin_end=6, valign=Gtk.Align.CENTER)
             av_url = avatars.get(name, "")
             row.append(self._make_avatar_widget(name, av_url))
-            row.append(Gtk.Label(label=name, xalign=0, hexpand=True, valign=Gtk.Align.CENTER))
-            row.append(Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["on-air"]))
+            info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True, spacing=3)
+            title = Gtk.Box(spacing=8)
+            title.append(Gtk.Label(label=name, xalign=0, css_classes=["heading"]))
+            title.append(Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["on-air"]))
+            info.append(title)
+            info.append(self._make_viewers_row(live.get(name, []), avatars))
+            row.append(info)
             watch = self._watches.get(name)
             button = Gtk.Button(label="Parar" if watch is not None else "Assistir", valign=Gtk.Align.CENTER)
             button.connect("clicked", lambda _b, n=name, btn=button: self._toggle_watch(n, btn))

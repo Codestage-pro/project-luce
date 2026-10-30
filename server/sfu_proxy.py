@@ -60,7 +60,7 @@ publishers: dict[str, dict] = {}  # nome -> {session, tracks: [{trackName, mid}]
 viewers: dict[str, dict[str, float]] = {}  # transmissão -> {quem assiste: último heartbeat}
 lock = threading.Lock()
 
-online_users: dict[str, float] = {}  # username -> último ping (para contador de online)
+online_by_id: dict[str, tuple[str, float]] = {}  # "uid:<discord_uid>" | "name:<nome>" -> (nome exibido, último ping)
 online_users_lock = threading.Lock()
 
 uid_names: dict[str, str] = {}  # discord_uid -> nome exibido (uma conta = um usuário online)
@@ -162,7 +162,8 @@ def _cleanup_revoked(user_id: str, username: str) -> None:
     if username:
         clean_name = clean_username(username)
         with online_users_lock:
-            online_users.pop(clean_name, None)
+            for k in [k for k, (n, _) in online_by_id.items() if n.lower() == clean_name.lower()]:
+                del online_by_id[k]
         with lock:
             if clean_name in publishers:
                 del publishers[clean_name]
@@ -746,12 +747,19 @@ def _resolve_online_name(discord_uid: str, viewer: str, token_name: str, path_us
         # X-Luce-Viewer é controlado pelo cliente: não pode tomar o nome de outra conta
         def free(n):
             return n and n != "user" and not any(u != discord_uid and v.lower() == n.lower() for u, v in uid_names.items())
-        cand = next((n for n in (viewer, token_name) if free(n)), "")
+        old = uid_names.get(discord_uid, "")
+        # sem X-Luce-Viewer (WHIP/WHEP/heartbeat) o nome já conhecido da conta não é sobrescrito
+        cand = next((n for n in ((viewer,) if viewer else (() if old else (token_name,))) if free(n)), "")
         if cand:
             uid_names[discord_uid] = cand
         if path_user:
             stream_owner[path_user] = discord_uid
-        return uid_names.get(discord_uid) or path_user
+        new = uid_names.get(discord_uid) or path_user
+    if old and new != old:  # o avatar do Discord acompanha o novo apelido
+        with user_avatars_lock:
+            if old in user_avatars:
+                user_avatars[new] = user_avatars[old]
+    return new
 
 
 def _record_online_user(auth_header: str, headers, path_user: str = "") -> None:
@@ -774,7 +782,11 @@ def _record_online_user(auth_header: str, headers, path_user: str = "") -> None:
     if user:
         clean = clean_username(user)
         with online_users_lock:
-            online_users[clean] = time.time()
+            if discord_uid:
+                online_by_id[f"uid:{discord_uid}"] = (clean, time.time())
+                online_by_id.pop(f"name:{clean.lower()}", None)
+            else:
+                online_by_id[f"name:{clean.lower()}"] = (clean, time.time())
 
         avatar_hdr = ""
         if headers:
@@ -812,9 +824,8 @@ def expire() -> None:
         for stream in [x for x in stream_owner if x not in publishers]:
             del stream_owner[stream]
     with online_users_lock:
-        expired_online = [u for u, seen in online_users.items() if now_wall - seen > ONLINE_TTL]
-        for u in expired_online:
-            del online_users[u]
+        for k in [k for k, (_, seen) in online_by_id.items() if now_wall - seen > ONLINE_TTL]:
+            del online_by_id[k]
 
 
 def reap() -> None:
@@ -971,17 +982,27 @@ class Handler(BaseHTTPRequestHandler):
                     for name in publishers
                 ]
                 with uid_lock:
-                    owned = set(stream_owner)
+                    owners = dict(stream_owner)
+                    by_name = {n.lower(): u for u, n in uid_names.items()}
                 with online_users_lock:
-                    # publisher com dono Discord já conta pelo nome da conta (não pelo nome técnico da stream)
+                    def touch(name, uid):
+                        key = f"uid:{uid}" if uid else f"name:{name.lower()}"
+                        online_by_id[key] = (online_by_id.get(key, (name, 0))[0], now_wall)
+                    # publisher/viewer com conta Discord renova a entrada da conta, nunca uma avulsa
                     for name in publishers:
-                        if name not in owned:
-                            online_users[name] = now_wall
+                        touch(name, owners.get(name))
                     for who in viewers.values():
                         for v in who:
                             if v != "user":
-                                online_users[v] = now_wall
-                    active_users = sorted([u for u, seen in online_users.items() if now_wall - seen <= ONLINE_TTL])
+                                touch(v, by_name.get(v.lower()))
+                    seen_lower: set[str] = set()
+                    active_users = []
+                    for n, seen in sorted(((n, s) for n, s in online_by_id.values() if now_wall - s <= ONLINE_TTL),
+                                          key=lambda x: -x[1]):  # grafia mais recente vence
+                        if n.lower() not in seen_lower:
+                            seen_lower.add(n.lower())
+                            active_users.append(n)
+                    active_users.sort()
             data = {
                 "items": items,
                 "online_count": len(active_users),

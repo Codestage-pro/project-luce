@@ -55,13 +55,7 @@ class LuceScreenCapturer(
     private var surfaceTextureHelper: SurfaceTextureHelper? = null
     private var capturerObserver: CapturerObserver? = null
     private var virtualDisplay: VirtualDisplay? = null
-    private val yuvConverter = org.webrtc.YuvConverter()
 
-    private var lastTexId: Int = 0
-    private var lastTransform: android.graphics.Matrix = android.graphics.Matrix()
-    private var lastWidth: Int = 0
-    private var lastHeight: Int = 0
-    private var lastRotation: Int = 0
     @Volatile private var lastFrameTimeNs: Long = 0L
     @Volatile private var lastPtsNs: Long = 0L
     @Volatile private var isCapturing: Boolean = false
@@ -112,52 +106,20 @@ class LuceScreenCapturer(
             lastPtsNs = safePtsNs
             lastFrameTimeNs = nowNs
 
-            val texBuf = frame.buffer as? VideoFrame.TextureBuffer
-            if (texBuf != null) {
-                lastTexId = texBuf.textureId
-                lastTransform = android.graphics.Matrix(texBuf.transformMatrix)
-                lastWidth = texBuf.width
-                lastHeight = texBuf.height
-                lastRotation = frame.rotation
-            }
-
             frame.buffer.retain()
             val outFrame = VideoFrame(frame.buffer, frame.rotation, safePtsNs)
             observer.onFrameCaptured(outFrame)
             outFrame.release()
         }
 
-        // Frame Pacer 100% GPU: se a tela ficar parada por > 66ms (~15fps piso mínimo),
-        // re-emite a mesma textura OES na thread GL sem copiar para CPU e sem travar isTextureInUse!
+        // Tela parada não gera frames: reentrega a textura atual pelo próprio helper (mesmo TextureBuffer, com controle
+        // de isTextureInUse), em vez de montar um TextureBufferImpl na mão que o codec lia enquanto o helper trocava a textura.
         keepaliveJob?.cancel()
         keepaliveJob = keepaliveScope.launch {
             while (isActive && isCapturing) {
-                delay(66)
-                if (lastFrameTimeNs > 0L && System.nanoTime() - lastFrameTimeNs >= 66_000_000L) {
-                    helper.handler.post {
-                        if (!isCapturing || lastTexId == 0 || lastWidth <= 0 || lastHeight <= 0) return@post
-                        if (System.nanoTime() - lastFrameTimeNs < 60_000_000L) return@post
-                        val nowNs = System.nanoTime()
-                        val safePtsNs = if (nowNs <= lastPtsNs) lastPtsNs + 1_000_000L else nowNs
-                        lastPtsNs = safePtsNs
-                        lastFrameTimeNs = nowNs
-
-                        val dupBuffer = org.webrtc.TextureBufferImpl(
-                            lastWidth,
-                            lastHeight,
-                            VideoFrame.TextureBuffer.Type.OES,
-                            lastTexId,
-                            android.graphics.Matrix(lastTransform),
-                            helper.handler,
-                            yuvConverter,
-                            Runnable {}
-                        )
-                        val repeatFrame = VideoFrame(dupBuffer, lastRotation, safePtsNs)
-                        try {
-                            observer.onFrameCaptured(repeatFrame)
-                        } catch (_: Exception) {}
-                        repeatFrame.release()
-                    }
+                delay(IDLE_REPEAT_MS)
+                if (lastFrameTimeNs > 0L && System.nanoTime() - lastFrameTimeNs >= IDLE_REPEAT_MS * 1_000_000L) {
+                    helper.forceFrame()
                 }
             }
         }
@@ -172,8 +134,6 @@ class LuceScreenCapturer(
             val done = java.util.concurrent.CountDownLatch(1)
             helper.handler.post {
                 try { helper.stopListening() } catch (_: Exception) {}
-                try { yuvConverter.release() } catch (_: Exception) {}
-                lastTexId = 0
                 done.countDown()
             }
             runCatching { done.await(1000, java.util.concurrent.TimeUnit.MILLISECONDS) }
@@ -184,16 +144,25 @@ class LuceScreenCapturer(
         try { mediaProjection.unregisterCallback(projectionCallback) } catch (_: Exception) {}
     }
 
+    /** Rotação ao vivo: o buffer do helper e o VirtualDisplay só podem ser redimensionados na thread do helper. */
     override fun changeCaptureFormat(width: Int, height: Int, framerate: Int) {
-        surfaceTextureHelper?.setTextureSize(width, height)
-        virtualDisplay?.resize(width, height, 320)
+        val helper = surfaceTextureHelper ?: return
+        helper.handler.post {
+            if (!isCapturing) return@post
+            helper.setTextureSize(width, height)
+            virtualDisplay?.resize(width, height, 320)
+        }
     }
 
     override fun dispose() {
         stopCapture()
     }
 
-    override fun isScreencast(): Boolean = false
+    override fun isScreencast(): Boolean = true
+
+    private companion object {
+        const val IDLE_REPEAT_MS = 66L // piso de ~15 fps com a tela parada
+    }
 }
 
 object WebRtcEngine {
@@ -341,6 +310,25 @@ class WatchSession(
     val isStalled = MutableStateFlow(false)
     val isReconnecting = MutableStateFlow(false)
 
+    /** Proporção real do vídeo recebido: o transmissor pode estar em retrato (celular) ou girar ao vivo. */
+    val videoAspectRatio = MutableStateFlow(16f / 9f)
+    val isPortraitVideo = MutableStateFlow(false)
+
+    private val frameSizeSink = org.webrtc.VideoSink { frame ->
+        onFrameResolution(frame.rotatedWidth, frame.rotatedHeight, 0)
+    }
+
+    fun onFrameResolution(width: Int, height: Int, rotation: Int) {
+        if (width <= 0 || height <= 0) return
+        val swap = rotation % 180 != 0
+        val effectiveW = if (swap) height else width
+        val effectiveH = if (swap) width else height
+        val ratio = (effectiveW.toFloat() / effectiveH).coerceIn(0.35f, 3.0f)
+        if (videoAspectRatio.value != ratio) videoAspectRatio.value = ratio
+        val portrait = effectiveH > effectiveW
+        if (isPortraitVideo.value != portrait) isPortraitVideo.value = portrait
+    }
+
     private var lastPacketsReceived: Long = 0
     private var stallSecondsCount: Int = 0
 
@@ -377,6 +365,7 @@ class WatchSession(
                     override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
                         val track = receiver?.track() ?: return
                         if (track is VideoTrack) {
+                            track.addSink(frameSizeSink)
                             videoTrack.value = track
                         } else if (track is AudioTrack) {
                             audioTrack.value = track
@@ -434,7 +423,7 @@ class WatchSession(
                 val sanitizedSdp = LuceApi.sanitizeSdpOffer(localSdp, isPublish = false)
 
                 // Envia para o WHEP
-                val whepResponse = LuceApi.sendWhepOffer(baseUrl, streamName, sanitizedSdp, authToken)
+                val whepResponse = LuceApi.sendWhepOffer(baseUrl, streamName, sanitizedSdp, authToken, myViewerName)
                 whepLocation = whepResponse.location
 
                 // Define Answer remota
@@ -563,6 +552,7 @@ class WatchSession(
                 try { LuceApi.sendWhepDelete(baseUrl, loc, authToken) } catch (_: Exception) {}
             }
             withContext(Dispatchers.Main) {
+                try { videoTrack.value?.removeSink(frameSizeSink) } catch (_: Exception) {}
                 peerConnection?.dispose()
                 peerConnection = null
                 videoTrack.value = null
@@ -596,6 +586,44 @@ class PublishSession(
     val statusText = MutableStateFlow("iniciando transmissão…")
     val statsText = MutableStateFlow("")
 
+    private var displayListener: DisplayManager.DisplayListener? = null
+    private var capturePortrait = false
+
+    /** Lado menor = menor entre largura/altura das configurações; lado maior na proporção real da tela; ambos múltiplos de 16. */
+    private fun computeCaptureDimensions(): Pair<Int, Int> {
+        val wm = context.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager
+        val real = android.util.DisplayMetrics()
+        @Suppress("DEPRECATION")
+        wm.defaultDisplay.getRealMetrics(real)
+        val minPhysical = minOf(real.widthPixels, real.heightPixels).coerceAtLeast(1)
+        val maxPhysical = maxOf(real.widthPixels, real.heightPixels)
+        val shortSide = minOf(settings.resolutionWidth, settings.resolutionHeight)
+        val longSide = (shortSide.toLong() * maxPhysical / minPhysical).toInt()
+        val s = (shortSide / 16) * 16
+        val l = (longSide / 16) * 16
+        return if (real.heightPixels > real.widthPixels) Pair(s, l) else Pair(l, s)
+    }
+
+    /** Girou o celular: refaz a captura com os lados trocados (o encoder reinicia sozinho ao ver o novo tamanho). */
+    private fun startRotationWatcher(capturer: LuceScreenCapturer) {
+        val dm = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+        val listener = object : DisplayManager.DisplayListener {
+            override fun onDisplayAdded(displayId: Int) {}
+            override fun onDisplayRemoved(displayId: Int) {}
+            override fun onDisplayChanged(displayId: Int) {
+                if (displayId != android.view.Display.DEFAULT_DISPLAY || isStopped.get()) return
+                val (w, h) = computeCaptureDimensions()
+                val portrait = h > w
+                if (portrait == capturePortrait) return
+                capturePortrait = portrait
+                videoSource?.adaptOutputFormat(w, h, settings.fps)
+                capturer.changeCaptureFormat(w, h, settings.fps)
+            }
+        }
+        dm.registerDisplayListener(listener, android.os.Handler(android.os.Looper.getMainLooper()))
+        displayListener = listener
+    }
+
     fun start(mediaProjectionIntent: Intent) {
         scope.launch {
             try {
@@ -609,28 +637,8 @@ class PublishSession(
                 WebRtcEngine.activeMediaProjection = projection
                 WebRtcEngine.setMicrophoneMute(settings.audioSource == UserSettings.AUDIO_SOURCE_MUTED)
 
-                // Detecta orientação atual da tela e ajusta para retrato ou paisagem
-                val metrics = context.resources.displayMetrics
-                val isPortrait = metrics.heightPixels > metrics.widthPixels
-
-                var targetWidth = settings.resolutionWidth
-                var targetHeight = settings.resolutionHeight
-
-                if (isPortrait) {
-                    val minDim = minOf(targetWidth, targetHeight)
-                    val maxDim = maxOf(targetWidth, targetHeight)
-                    targetWidth = minDim
-                    targetHeight = maxDim
-                } else {
-                    val minDim = minOf(targetWidth, targetHeight)
-                    val maxDim = maxOf(targetWidth, targetHeight)
-                    targetWidth = maxDim
-                    targetHeight = minDim
-                }
-
-                // Garante que as dimensões sejam múltiplos de 16 para o encoder de vídeo
-                targetWidth = (targetWidth / 16) * 16
-                targetHeight = (targetHeight / 16) * 16
+                val (targetWidth, targetHeight) = computeCaptureDimensions()
+                capturePortrait = targetHeight > targetWidth
 
                 val capturer = LuceScreenCapturer(projection) {
                     stop()
@@ -640,11 +648,12 @@ class PublishSession(
                 val surfaceHelper = SurfaceTextureHelper.create("LuceScreenCaptureThread", WebRtcEngine.eglBase.eglBaseContext)
                 surfaceTextureHelper = surfaceHelper
 
-                val vSource = factory.createVideoSource(false)
+                val vSource = factory.createVideoSource(true)
                 vSource.adaptOutputFormat(targetWidth, targetHeight, settings.fps)
                 videoSource = vSource
                 capturer.initialize(surfaceHelper, context.applicationContext, vSource.capturerObserver)
                 capturer.startCapture(targetWidth, targetHeight, settings.fps)
+                startRotationWatcher(capturer)
 
                 val vTrack = factory.createVideoTrack("ARDAMSv0", vSource)
                 videoTrack = vTrack
@@ -724,10 +733,11 @@ class PublishSession(
                 // Configura bitrate de vídeo no RtpSender
                 try {
                     val params = vSender.parameters
-                    params.degradationPreference = org.webrtc.RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE
+                    // tela compartilhada: perde fps antes de perder nitidez do texto
+                    params.degradationPreference = org.webrtc.RtpParameters.DegradationPreference.MAINTAIN_RESOLUTION
                     if (params.encodings.isNotEmpty()) {
                         params.encodings[0].maxBitrateBps = settings.bitrateKbps * 1000
-                        params.encodings[0].minBitrateBps = (settings.bitrateKbps * 1000) / 2
+                        params.encodings[0].minBitrateBps = (settings.bitrateKbps * 1000 * 2) / 3
                         params.encodings[0].maxFramerate = settings.fps
                         vSender.parameters = params
                     }
@@ -771,7 +781,7 @@ class PublishSession(
                 val sanitizedSdp = LuceApi.sanitizeSdpOffer(localSdp, isPublish = true, audioBitrateKbps = settings.audioBitrateKbps)
 
                 // Envia para o WHIP
-                val whipResponse = LuceApi.sendWhipOffer(baseUrl, streamName, sanitizedSdp, authToken)
+                val whipResponse = LuceApi.sendWhipOffer(baseUrl, streamName, sanitizedSdp, authToken, streamName)
                 whipLocation = whipResponse.location
 
                 // Define Answer remota
@@ -841,7 +851,7 @@ class PublishSession(
             while (isActive) {
                 delay(8000)
                 try {
-                    LuceApi.sendWhipHeartbeat(baseUrl, streamName, authToken)
+                    LuceApi.sendWhipHeartbeat(baseUrl, streamName, authToken, streamName)
                 } catch (e: SecurityException) {
                     statusText.value = "permissão revogada (401)"
                     stop()
@@ -859,6 +869,10 @@ class PublishSession(
             whipLocation?.let { loc ->
                 try { LuceApi.sendWhipDelete(baseUrl, loc, authToken) } catch (_: Exception) {}
             }
+            displayListener?.let {
+                try { (context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).unregisterDisplayListener(it) } catch (_: Exception) {}
+            }
+            displayListener = null
             try { videoCapturer?.stopCapture() } catch (_: Exception) {}
 
             withContext(Dispatchers.Main) {

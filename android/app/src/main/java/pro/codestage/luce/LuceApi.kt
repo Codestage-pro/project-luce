@@ -39,7 +39,7 @@ data class DiscordPollResult(
 object LuceApi {
     const val USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
 
-    private fun openConnection(urlStr: String, method: String, token: String?, contentType: String? = null): HttpURLConnection {
+    private fun openConnection(urlStr: String, method: String, token: String?, contentType: String? = null, viewer: String? = null): HttpURLConnection {
         val url = URL(urlStr)
         val conn = url.openConnection() as HttpURLConnection
         conn.requestMethod = method
@@ -51,6 +51,10 @@ object LuceApi {
         }
         if (contentType != null) {
             conn.setRequestProperty("Content-Type", contentType)
+        }
+        // o servidor identifica a conta por este nome: sem ele o token genérico ("user") vira outro usuário online
+        if (!viewer.isNullOrBlank()) {
+            conn.setRequestProperty("X-Luce-Viewer", viewer)
         }
         return conn
     }
@@ -166,7 +170,7 @@ object LuceApi {
         val sSafe = URLEncoder.encode(stream, StandardCharsets.UTF_8.name())
         val vSafe = URLEncoder.encode(viewer, StandardCharsets.UTF_8.name())
         val url = "$baseUrl/$sSafe/watch?viewer=$vSafe"
-        val conn = openConnection(url, if (on) "PATCH" else "DELETE", token)
+        val conn = openConnection(url, if (on) "PATCH" else "DELETE", token, viewer = viewer)
         try {
             conn.responseCode
         } finally {
@@ -174,9 +178,9 @@ object LuceApi {
         }
     }
 
-    fun sendWhipOffer(baseUrl: String, stream: String, offerSdp: String, token: String?): SdpResponse {
+    fun sendWhipOffer(baseUrl: String, stream: String, offerSdp: String, token: String?, viewer: String? = null): SdpResponse {
         val sSafe = URLEncoder.encode(stream, StandardCharsets.UTF_8.name())
-        val conn = openConnection("$baseUrl/$sSafe/whip", "POST", token, "application/sdp")
+        val conn = openConnection("$baseUrl/$sSafe/whip", "POST", token, "application/sdp", viewer)
         // 20s: o servidor pode tentar até 6x (1,5s) se o publisher acabou de subir
         conn.readTimeout = 20000
         postSdp(conn, offerSdp)
@@ -194,9 +198,9 @@ object LuceApi {
         return SdpResponse(answerSdp = answer, location = loc)
     }
 
-    fun sendWhipHeartbeat(baseUrl: String, stream: String, token: String?) {
+    fun sendWhipHeartbeat(baseUrl: String, stream: String, token: String?, viewer: String? = null) {
         val sSafe = URLEncoder.encode(stream, StandardCharsets.UTF_8.name())
-        val conn = openConnection("$baseUrl/$sSafe/whip", "PATCH", token)
+        val conn = openConnection("$baseUrl/$sSafe/whip", "PATCH", token, viewer = viewer)
         try {
             val code = conn.responseCode
             if (code == 401) {
@@ -217,9 +221,9 @@ object LuceApi {
         }
     }
 
-    fun sendWhepOffer(baseUrl: String, stream: String, offerSdp: String, token: String?): SdpResponse {
+    fun sendWhepOffer(baseUrl: String, stream: String, offerSdp: String, token: String?, viewer: String? = null): SdpResponse {
         val sSafe = URLEncoder.encode(stream, StandardCharsets.UTF_8.name())
-        val conn = openConnection("$baseUrl/$sSafe/whep", "POST", token, "application/sdp")
+        val conn = openConnection("$baseUrl/$sSafe/whep", "POST", token, "application/sdp", viewer)
         conn.readTimeout = 20000
         postSdp(conn, offerSdp)
         val code = conn.responseCode

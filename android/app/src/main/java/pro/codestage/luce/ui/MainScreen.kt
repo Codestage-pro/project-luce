@@ -9,6 +9,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -436,6 +438,7 @@ fun MainScreen(
                                 RosterItemCard(
                                     item = item,
                                     isWatching = isWatchingThis,
+                                    avatars = avatars,
                                     onToggleWatch = { onToggleWatchStream(item.name) }
                                 )
                             }
@@ -552,10 +555,12 @@ fun DiscordAvatar(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun RosterItemCard(
     item: RosterItem,
     isWatching: Boolean,
+    avatars: Map<String, String> = emptyMap(),
     onToggleWatch: () -> Unit
 ) {
     Row(
@@ -602,20 +607,56 @@ fun RosterItemCard(
                 }
 
                 if (item.viewers.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Default.Visibility,
-                            contentDescription = "Espectadores",
-                            tint = LuceMuted,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "${item.viewers.size}: ${item.viewers.joinToString(", ")}",
-                            color = LuceMuted,
-                            fontSize = 11.sp
-                        )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(LuceCyan.copy(alpha = 0.14f))
+                                .border(1.dp, LuceCyan.copy(alpha = 0.35f), RoundedCornerShape(999.dp))
+                                .padding(horizontal = 8.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.Visibility,
+                                contentDescription = "Espectadores",
+                                tint = LuceCyan,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "${item.viewers.size}",
+                                color = LuceCyan,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        item.viewers.forEach { viewerName ->
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(LuceNight.copy(alpha = 0.7f))
+                                    .border(1.dp, LucePurple.copy(alpha = 0.5f), RoundedCornerShape(999.dp))
+                                    .padding(start = 4.dp, end = 8.dp, top = 2.dp, bottom = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                DiscordAvatar(
+                                    name = viewerName,
+                                    avatarUrl = avatars[viewerName] ?: "",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text(
+                                    text = viewerName,
+                                    color = LuceText,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
                     }
                 }
             }

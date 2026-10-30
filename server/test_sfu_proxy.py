@@ -45,7 +45,7 @@ class ProxyTest(unittest.TestCase):
         p.cfg.update(password="segredo", secret="test_secret", discord_guild_id="12345")
         p.publishers.clear()
         p.viewers.clear()
-        p.online_users.clear()
+        p.online_by_id.clear()
         p.discord_sessions.clear()
         p.user_avatars.clear()
         p.uid_names.clear()
@@ -441,6 +441,19 @@ class ProxyTest(unittest.TestCase):
         self.assertEqual(data["online_users"], ["MuriloX06"])
         self.assertEqual(data["online_count"], 1)
         self.assertNotIn("user", data["online_users"])
+
+    def test_same_discord_account_is_one_online_user_across_name_changes(self):
+        token = p.issue_discord_token("42", "murilox06") + "|bdk:segredo"
+        auth = f"Bearer {token}"
+        p.user_avatars["AndroidGOAT"] = "https://cdn.discordapp.com/avatars/42/a.png"
+        for hdr in ({"X-Luce-Viewer": "AndroidGOAT"}, {"X-Luce-Viewer": "MuriloX06"}, {}):
+            data = json.loads(self.call("GET", "/v3/paths/list", auth=auth, headers=hdr)[1])
+            self.assertEqual(data["online_count"], 1, hdr)
+        self.assertEqual(self.call("POST", "/MuriloX06/whip", OFFER.encode(), auth=auth)[0], 201)
+        self.assertEqual(self.call("PATCH", "/MuriloX06/whip", auth=auth)[0], 204)
+        data = json.loads(self.call("GET", "/v3/paths/list", auth=auth)[1])
+        self.assertEqual(data["online_users"], ["MuriloX06"])  # sem header não sobrescreve o nome
+        self.assertEqual(data["avatars"].get("MuriloX06"), "https://cdn.discordapp.com/avatars/42/a.png")
 
     def test_online_user_viewer_header_cannot_take_another_uid_name(self):
         a = f"Bearer {p.issue_discord_token('1', 'ana')}|bdk:segredo"

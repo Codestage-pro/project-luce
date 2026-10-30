@@ -152,6 +152,11 @@ switch:checked { background-image: linear-gradient(135deg, @ciano, @violeta); }
 .online-dot { min-width: 7px; min-height: 7px; border-radius: 999px; background: #22c55e; box-shadow: 0 0 8px #22c55e; }
 .online-label { font-size: 11px; font-weight: 700; color: #22c55e; }
 
+.viewers-row { margin-top: 4px; }
+.viewer-count-badge { background: alpha(@ciano, 0.14); color: @ciano; border: 1px solid alpha(@ciano, 0.35); border-radius: 999px; padding: 2px 8px; font-size: 10px; font-weight: 700; }
+.viewer-chip { background: alpha(@violeta, 0.16); color: @texto; border: 1px solid alpha(@violeta, 0.35); border-radius: 999px; padding: 2px 8px 2px 4px; font-size: 11px; font-weight: 600; }
+.viewer-avatar { min-width: 16px; min-height: 16px; border-radius: 999px; font-size: 9px; font-weight: 800; color: @noite; background-image: linear-gradient(135deg, @ciano, @violeta); }
+
 progressbar trough { background: @linha; border-radius: 6px; min-height: 8px; }
 progressbar progress { background-image: linear-gradient(to right, @ciano, @violeta); border-radius: 6px; }
 """
