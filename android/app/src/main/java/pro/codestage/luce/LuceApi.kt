@@ -55,6 +55,14 @@ object LuceApi {
         return conn
     }
 
+    /** Content-Length exato: sem isso o HttpURLConnection usa Transfer-Encoding: chunked e o cloudflared responde 502. */
+    private fun postSdp(conn: HttpURLConnection, sdp: String) {
+        val bytes = sdp.toByteArray(StandardCharsets.UTF_8)
+        conn.doOutput = true
+        conn.setFixedLengthStreamingMode(bytes.size)
+        conn.outputStream.use { it.write(bytes) }
+    }
+
     private fun readResponse(conn: HttpURLConnection): String {
         val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream ?: conn.inputStream
         return BufferedReader(InputStreamReader(stream, StandardCharsets.UTF_8)).use { it.readText() }
@@ -169,8 +177,9 @@ object LuceApi {
     fun sendWhipOffer(baseUrl: String, stream: String, offerSdp: String, token: String?): SdpResponse {
         val sSafe = URLEncoder.encode(stream, StandardCharsets.UTF_8.name())
         val conn = openConnection("$baseUrl/$sSafe/whip", "POST", token, "application/sdp")
-        conn.doOutput = true
-        conn.outputStream.use { it.write(offerSdp.toByteArray(StandardCharsets.UTF_8)) }
+        // 20s: o servidor pode tentar até 6x (1,5s) se o publisher acabou de subir
+        conn.readTimeout = 20000
+        postSdp(conn, offerSdp)
         val code = conn.responseCode
         if (code == 401) {
             val err = readResponse(conn)
@@ -211,8 +220,8 @@ object LuceApi {
     fun sendWhepOffer(baseUrl: String, stream: String, offerSdp: String, token: String?): SdpResponse {
         val sSafe = URLEncoder.encode(stream, StandardCharsets.UTF_8.name())
         val conn = openConnection("$baseUrl/$sSafe/whep", "POST", token, "application/sdp")
-        conn.doOutput = true
-        conn.outputStream.use { it.write(offerSdp.toByteArray(StandardCharsets.UTF_8)) }
+        conn.readTimeout = 20000
+        postSdp(conn, offerSdp)
         val code = conn.responseCode
         if (code == 401) {
             val err = readResponse(conn)
@@ -327,6 +336,17 @@ object LuceApi {
                 continue
             } else if (trimmed.startsWith("m=")) {
                 inVideoSection = false
+            }
+
+            if (!isPublish) {
+                // espectador só recebe: direção recvonly e sem identidade de quem envia (ssrc/msid)
+                if (trimmed == "a=sendrecv" || trimmed == "a=sendonly") {
+                    result.add("a=recvonly")
+                    continue
+                }
+                if (trimmed.startsWith("a=ssrc:") || trimmed.startsWith("a=ssrc-group:") || trimmed.startsWith("a=msid:")) {
+                    continue
+                }
             }
 
             if (opusPt != null) {

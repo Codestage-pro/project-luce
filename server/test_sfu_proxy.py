@@ -83,6 +83,38 @@ class ProxyTest(unittest.TestCase):
         self.assertNotIn("apt=96", out)
         self.assertIn("m=video 9 UDP/TLS/RTP/SAVPF 100 97\r\n", out)
 
+    def test_subscribe_follows_viewer_mline_order_and_forces_recvonly(self):
+        # publisher (GStreamer) = [audio, video]; Android = [video, audio] com sendrecv + ssrc/msid
+        self.call("POST", "/ana/whip", OFFER.encode())
+        viewer = ("v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 97\r\na=mid:0\r\na=sendrecv\r\na=rtpmap:97 H264/90000\r\n"
+                  "a=msid:x y\r\na=ssrc:123 cname:a\r\na=ssrc-group:FID 123 456\r\n"
+                  "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:1\r\na=sendonly\r\na=rtpmap:111 opus/48000/2\r\n")
+        code, body, _ = self.call("POST", "/ana/whep", viewer.encode(), headers={"X-Luce-Viewer": "bia"})
+        self.assertEqual((code, body), (201, "ANSWER"))
+        tracks_new = [c for c in self.sfu.calls if c[1].endswith("/tracks/new") and c[2]["tracks"][0]["location"] == "remote"]
+        sent = tracks_new[-1][2]
+        self.assertEqual([(t["trackName"], t["mid"]) for t in sent["tracks"]], [("video", "0"), ("audio", "1")])
+        sdp = sent["sessionDescription"]["sdp"]
+        self.assertNotIn("sendrecv", sdp)
+        self.assertNotIn("sendonly", sdp)
+        self.assertNotIn("a=ssrc", sdp)
+        self.assertNotIn("a=msid", sdp)
+        self.assertEqual(sdp.count("a=recvonly"), 2)
+
+    def test_chunked_body_is_read(self):
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.server.server_port)
+        conn.putrequest("POST", "/ana/whip")
+        conn.putheader("Authorization", "Bearer bdk:segredo")
+        conn.putheader("Transfer-Encoding", "chunked")
+        conn.endheaders()
+        data = OFFER.encode()
+        conn.send(b"%x\r\n%s\r\n0\r\n\r\n" % (len(data), data))
+        resp = conn.getresponse()
+        self.assertEqual((resp.status, resp.read().decode()), (201, "ANSWER"))
+        self.assertEqual(resp.getheader("Connection"), "close")
+        conn.close()
+
     def test_auth_required(self):
         self.assertEqual(self.call("GET", "/v3/paths/list", auth=None)[0], 401)
         self.assertEqual(self.call("GET", "/v3/paths/list", auth="Bearer bdk:errada")[0], 401)

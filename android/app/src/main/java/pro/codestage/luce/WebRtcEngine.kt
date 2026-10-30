@@ -37,6 +37,7 @@ import org.webrtc.MediaStreamTrack
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.RtpReceiver
+import org.webrtc.RtpTransceiver
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceTextureHelper
@@ -388,9 +389,15 @@ class WatchSession(
                     ?: throw RuntimeException("Falha ao criar PeerConnection")
                 peerConnection = pc
 
-                // Adiciona transceivers para receber áudio e vídeo
-                pc.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO)
-                pc.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO)
+                // Só recebe, e na mesma ordem do GStreamer (m=audio, m=video): o SFU casa as tracks por posição
+                val recvOnlyInit = RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY)
+                pc.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO, recvOnlyInit)
+                val videoTransceiver = pc.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO, recvOnlyInit)
+                val h264Codecs = factory.getRtpReceiverCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO)
+                    .codecs.filter { it.name.equals("H264", ignoreCase = true) || it.name.equals("rtx", ignoreCase = true) }
+                if (h264Codecs.any { it.name.equals("H264", ignoreCase = true) }) {
+                    videoTransceiver.setCodecPreferences(h264Codecs)
+                }
 
                 // Cria Oferta WHEP
                 val offerDeferred = CompletableDeferred<SessionDescription>()

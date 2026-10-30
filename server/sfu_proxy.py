@@ -593,13 +593,17 @@ def whep_offer(sdp: str) -> str:
     ofereça o seu (senão 500) e o SFU só aceita um payload por m-line.
     """
     sdp = re.sub(r"(?im)^(a=rtpmap:\d+) opus/48000\r?$", r"\1 opus/48000/2", sdp)
-    drop = {pt for pt, codec in re.findall(r"a=rtpmap:(\d+) (\w+)/", sdp) if codec in ("VP8", "VP9", "H265", "AV1")}
+    # o espectador só recebe: sendrecv/sendonly viram recvonly e a=ssrc/a=msid (identidade de quem envia) saem
+    sdp = re.sub(r"(?m)^a=(?:sendrecv|sendonly)\r?$", "a=recvonly", sdp)
+    sdp = re.sub(r"(?m)^a=(?:ssrc|ssrc-group|msid):[^\r\n]*\r?\n?", "", sdp)
+    drop = {pt for pt, codec in re.findall(r"a=rtpmap:(\d+) ([A-Za-z0-9_-]+)/", sdp)
+            if codec.upper() in ("VP8", "VP9", "H265", "AV1", "RED", "ULPFEC", "FLEXFEC-03")}
     rtx = {pt for pt, _ in re.findall(r"a=fmtp:(\d+) apt=(\d+)", sdp)}
     # o RTX de um codec descartado ficaria apontando (apt=) pra um payload que não existe mais
     drop |= {pt for pt, apt in re.findall(r"a=fmtp:(\d+) apt=(\d+)", sdp) if apt in drop}
     lines = []
     for line in sdp.splitlines():
-        if line.startswith("m=video"):
+        if line.startswith(("m=video", "m=audio")):
             head = line.split(" ")
             # medido: o SFU responde só com o ÚLTIMO payload da m-line; com o rtx por último
             # a resposta perde o H264 e não vem vídeo. Sort estável: rtx primeiro.
@@ -677,11 +681,20 @@ def subscribe(stream: str, offer: str) -> tuple[str, str]:
         pub = publishers.get(stream)
     if pub is None:
         raise HttpError(404, f"{stream} não está transmitindo")
+    # as tracks seguem a ordem das m-lines do ESPECTADOR (o Android oferece video+audio, o GStreamer audio+video):
+    # fora dessa ordem o SFU casa a track de áudio com a m=video e responde erro (vira 502)
+    pub_by_kind = {t["trackName"]: t for t in pub["tracks"]}
+    remote_tracks = [
+        {"location": "remote", "sessionId": pub["session"], "trackName": st["trackName"], "mid": st["mid"]}
+        for st in offer_tracks(offer) if st["trackName"] in pub_by_kind
+    ]
+    if not remote_tracks:
+        remote_tracks = [{"location": "remote", "sessionId": pub["session"], "trackName": t["trackName"]}
+                         for t in pub["tracks"]]
     sub = sfu("POST", "/sessions/new")["sessionId"]
     body = {
         "sessionDescription": {"type": "offer", "sdp": whep_offer(offer)},
-        "tracks": [{"location": "remote", "sessionId": pub["session"], "trackName": t["trackName"]}
-                   for t in pub["tracks"]],
+        "tracks": remote_tracks,
     }
     for attempt in range(1, WHEP_TRIES + 1):
         try:
@@ -793,10 +806,33 @@ class Handler(BaseHTTPRequestHandler):
         for key, value in (extra or {}).items():
             self.send_header(key, value)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
 
+    def _chunked_body(self) -> str:
+        """Corpo com Transfer-Encoding: chunked (o HttpURLConnection sem tamanho fixo usa isso)."""
+        data = b""
+        try:
+            while True:
+                size_line = self.rfile.readline(64).split(b";", 1)[0].strip()
+                size = int(size_line, 16)
+                if size < 0 or len(data) + size > MAX_BODY:
+                    raise HttpError(413, "corpo grande demais")
+                if size == 0:
+                    while self.rfile.readline(1024).strip():  # trailers até a linha em branco
+                        pass
+                    return data.decode("utf-8", "replace")
+                data += self.rfile.read(size)
+                self.rfile.readline(8)  # CRLF depois do chunk
+        except ValueError as exc:
+            raise HttpError(400, "chunk inválido") from exc
+        except (TimeoutError, OSError) as exc:
+            raise HttpError(408, "timeout aguardando corpo da requisição") from exc
+
     def _body(self) -> str:
+        if "chunked" in self.headers.get("Transfer-Encoding", "").lower():
+            return self._chunked_body()
         try:
             raw = self.headers.get("Content-Length") or "0"
             size = int(raw)
