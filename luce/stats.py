@@ -50,4 +50,9 @@ def format_line(arrow: str, now: dict, before: dict | None) -> str:
     if before and now["time"] > before["time"]:
         kbps = max(now["bytes"] - before["bytes"], 0) * 8 / 1000 / (now["time"] - before["time"])
     rate = f"{kbps / 1000:.1f} Mbps" if kbps >= 1000 else f"{kbps:.0f} kbps"
-    return f"{arrow} {rate} · {now['packets']} pacotes · {now['lost']} perdidos · jitter {now['jitter_ms']:.1f} ms"
+    # `lost` é acumulado: o delta mostra se a perda está acontecendo agora ou foi uma rajada antiga
+    lost_now = max(now["lost"] - (before["lost"] if before else now["lost"]), 0)
+    return (
+        f"{arrow} {rate} · {now['packets']} pacotes · {lost_now}/s perdidos ({now['lost']} total)"
+        f" · jitter {now['jitter_ms']:.1f} ms"
+    )

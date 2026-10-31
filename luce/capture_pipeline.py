@@ -109,6 +109,7 @@ def _configure_encoder(enc: Gst.Element, enc_kind: str, bitrate_kbps: int, fps: 
         return
     if enc_kind in NVENC_KINDS:
         _try_set(enc, "gop-size", fps)
+        # 100 ms de bitrate: já é menor que os 500 ms que dariam um IDR de rajada; não aumentar
         _try_set(enc, "vbv-buffer-size", max(bitrate_kbps // 10, 1))
         _try_set(enc, "zerolatency", True)
         _try_set(enc, "rc-mode", "cbr")
@@ -131,7 +132,7 @@ def _configure_encoder(enc: Gst.Element, enc_kind: str, bitrate_kbps: int, fps: 
         _try_set(enc, "key-int-max", fps)
         _try_set(enc, "bframes", 0)
         _try_set(enc, "byte-stream", True)
-        _try_set(enc, "vbv-buf-capacity", 1000)
+        _try_set(enc, "vbv-buf-capacity", 500)  # ms: IDR sem pico de centenas de pacotes de uma vez
     else:
         _try_set(enc, "rate-control", "cbr")
         _try_set(enc, "key-int-max", fps)
@@ -525,6 +526,7 @@ class CapturePipeline:
         _try_set(queue, "leaky", "downstream")
         pay = Gst.ElementFactory.make("rtph264pay", "pay")
         _try_set(pay, "pt", 96)
+        _try_set(pay, "mtu", 1200)  # tamanho padrão do WebRTC: não fragmenta em PPPoE/fibra
         _try_set(pay, "config-interval", -1)
         _try_set(pay, "aggregate-mode", "zero-latency")
         pay.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, self._count_sent)
@@ -716,6 +718,7 @@ class CapturePipeline:
         _try_set(audio_enc, "packet-loss-percentage", 5)
         audio_pay = Gst.ElementFactory.make("rtpopuspay", "audio-pay")
         _try_set(audio_pay, "pt", 97)
+        _try_set(audio_pay, "mtu", 1200)
         audio_chain = (audio_src, audio_queue, audio_convert, audio_resample, self._audio_volume, audio_enc, audio_pay)
         for element in audio_chain:
             self.pipeline.add(element)
