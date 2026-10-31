@@ -2,7 +2,7 @@
 # um ícone no menu de apps (pro.codestage.Luce.desktop), pra abrir sem terminal.
 # Build local, sem source remoto: `makepkg -si` dentro da pasta do projeto.
 pkgname=project-luce
-pkgver=1.0.44
+pkgver=1.0.45
 pkgrel=1
 pkgdesc="Transmissão de tela do grupo (GPU, WHIP/WHEP via Cloudflare Realtime SFU)"
 arch=('any')
