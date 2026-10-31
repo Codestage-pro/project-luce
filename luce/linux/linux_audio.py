@@ -21,7 +21,7 @@ gi.require_version("Gst", "1.0")
 from gi.repository import Gst  # noqa: E402
 
 _POLL_S = 0.5
-_CAPS = "audio/x-raw,format=F32LE,rate=48000,channels=2"
+_CAPS = "audio/x-raw,format=F32LE,rate=48000,channels=2,channel-mask=(bitmask)0x3"
 
 
 def is_excluded(props: dict, mute_app: str) -> bool:
@@ -76,7 +76,7 @@ def _branch(src: Gst.Element, name: str | None = None) -> Gst.Bin:
             pass
     queue = Gst.ElementFactory.make("queue", None)
     queue.set_property("leaky", 2)  # downstream: descarta buffers velhos se a thread oscilar
-    queue.set_property("max-size-time", 200_000_000)  # 200ms
+    queue.set_property("max-size-time", 500_000_000)  # 500ms
     queue.set_property("max-size-buffers", 0)
     queue.set_property("max-size-bytes", 0)
     audio = Gst.ElementFactory.make("capsfilter", None)  # sem caps de áudio o pipewiresrc não acha o alvo

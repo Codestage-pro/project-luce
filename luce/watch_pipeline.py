@@ -35,6 +35,16 @@ def _try_set(element: Gst.Element, name: str, value) -> None:
         log.debug("%s=%r ignorado: %s", name, value, exc)
 
 
+def _make_queue(name: str, max_buffers: int = 0, max_time_ns: int = 0) -> Gst.Element:
+    """queue que nunca descarta (leaky=0): só desacopla a thread de quem alimenta da de quem consome."""
+    queue = Gst.ElementFactory.make("queue", name)
+    queue.set_property("leaky", 0)
+    queue.set_property("max-size-buffers", max_buffers)
+    queue.set_property("max-size-bytes", 0)
+    queue.set_property("max-size-time", max_time_ns)
+    return queue
+
+
 LINUX_DECODERS = (
     ("nvh264dec", "NVDEC (GPU NVIDIA)"),
     ("vah264dec", "VAAPI (GPU AMD/Intel)"),
@@ -192,7 +202,10 @@ class WatchPipeline:
             self._fail("falta o elemento videoconvert (gst-plugins-base)")
             return
 
-        chain: list[Gst.Element] = [dec]
+        # queue sem leaky: o vídeo (60 fps) roda na própria thread, longe da entrega do áudio;
+        # descartar quadro aqui viraria câmera lenta
+        v_queue = _make_queue("queue-video", max_buffers=4)
+        chain: list[Gst.Element] = [v_queue, dec]
         if dec.get_factory().get_name().startswith("d3d11"):
             # memory:D3D11Memory não entra no videoconvert nem no gtk4paintablesink: converte
             # na GPU e baixa pra RAM, senão a abertura da transmissão dá not-negotiated.
@@ -201,7 +214,15 @@ class WatchPipeline:
             if gpu_convert is None or download is None:
                 self._fail("falta d3d11convert/d3d11download (gst-plugins-bad)")
                 return
-            chain += [gpu_convert, download]
+            # RGBA já na GPU (a 60 fps o videoconvert da CPU convertia NV12->RGBA a cada quadro);
+            # o filtro precisa do feature D3D11Memory, o RGBA "cru" não casa com a saída do d3d11convert
+            gpu_rgba = Gst.ElementFactory.make("capsfilter", "caps-d3d11-rgba")
+            gpu_rgba.set_property(
+                "caps", Gst.Caps.from_string("video/x-raw(memory:D3D11Memory),format=RGBA")
+            )
+            # o download da GPU numa thread, o resto (GTK) em outra
+            v_sink_queue = _make_queue("queue-video-sink", max_buffers=2)
+            chain += [gpu_convert, gpu_rgba, download, v_sink_queue]
         chain.append(convert)
         if is_gtk:
             # O GSK Vulkan do GTK tem um bug grave ao subir buffers planares
@@ -222,7 +243,7 @@ class WatchPipeline:
             if not left.link(right):
                 self._fail(f"não liguei {left.get_name()} em {right.get_name()}")
                 return
-        if pad.link(dec.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
+        if pad.link(v_queue.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
             self._fail("o vídeo recebido não encaixou no decoder")
             return
         for element in chain:
@@ -230,7 +251,13 @@ class WatchPipeline:
         print("recebendo vídeo", flush=True)
 
     def _wire_audio(self, pad) -> None:
+        # filas elásticas sem descarte: o áudio tem thread própria na entrada do decoder e na saída
+        # (wasapi2sink no Windows), então o vídeo a 60 fps não o deixa em underrun
+        a_queue = _make_queue("queue-audio", max_time_ns=400_000_000)
+        a_out_queue = _make_queue("queue-audio-out", max_time_ns=200_000_000)
         dec = Gst.ElementFactory.make("opusdec", "dec-audio")
+        _try_set(dec, "plc", True)  # perda de pacote vira áudio interpolado em vez de corte seco
+        _try_set(dec, "use-inband-fec", True)
         convert = Gst.ElementFactory.make("audioconvert", "convert-audio")
         resample = Gst.ElementFactory.make("audioresample", "resample-audio")
         # Opus do WHEP sempre chega em stereo; sem travar isso aqui, a saída
@@ -239,7 +266,7 @@ class WatchPipeline:
         # PipeWire então aparece com 8 entradas + 8 monitores de verdade
         # (visto no qpwgraph), em vez de um stereo normal de 2 portas.
         stereo_caps = Gst.ElementFactory.make("capsfilter", "stereo-caps-audio")
-        stereo_caps.set_property("caps", Gst.Caps.from_string("audio/x-raw,channels=2"))
+        stereo_caps.set_property("caps", Gst.Caps.from_string("audio/x-raw,channels=2,channel-mask=(bitmask)0x3"))
         volume = Gst.ElementFactory.make("volume", "volume-audio")
         volume.set_property("volume", self._wanted_volume)
         volume.set_property("mute", self._wanted_muted)
@@ -248,16 +275,21 @@ class WatchPipeline:
         # autoaudiosink é um bin: client-name não existe nele, só no sink real
         # (pulsesink/pipewiresink) que ele cria sozinho ao ir pra PLAYING —
         # daí aparecer "python" em vez de "Project LUCE" no qpwgraph/pavucontrol.
-        sink.connect("child-added", lambda _bin, child, _name: _try_set(child, "client-name", "Project LUCE"))
+        def tune_sink(_bin, child, _name) -> None:
+            _try_set(child, "client-name", "Project LUCE")
+            _try_set(child, "buffer-time", 120000)  # 120 ms de buffer no WASAPI/Pulse/PipeWire
+            _try_set(child, "latency-time", 20000)  # em passos de 20 ms
+
+        sink.connect("child-added", tune_sink)
         self._volume = volume
-        chain = (dec, convert, resample, stereo_caps, volume, sink)
+        chain = (a_queue, dec, convert, resample, stereo_caps, volume, a_out_queue, sink)
         for element in chain:
             self.pipeline.add(element)
         for left, right in zip(chain, chain[1:]):
             if not left.link(right):
                 print(f"não liguei {left.get_name()} em {right.get_name()}", flush=True)
                 return
-        if pad.link(dec.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
+        if pad.link(a_queue.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
             print("o áudio não encaixou no decode", flush=True)
             return
         for element in chain:

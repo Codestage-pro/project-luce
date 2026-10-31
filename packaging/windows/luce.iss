@@ -1,7 +1,7 @@
-; Instalador do Project LUCE (Windows). Compilar com: ISCC /DAppVersion=1.0.45 luce.iss
+; Instalador do Project LUCE (Windows). Compilar com: ISCC /DAppVersion=1.0.46 luce.iss
 ; Entrada: ..\..\dist\LUCE (montada por .github/workflows/windows-build.yml).
 #ifndef AppVersion
-  #define AppVersion "1.0.45"
+  #define AppVersion "1.0.46"
 #endif
 
 [Setup]

@@ -27,6 +27,9 @@ def enable_nack(element: Gst.Element) -> None:
     cria o webrtcbin (e os transceivers) depois do start, daí o hook.
     """
     def on_webrtcbin(rtc) -> None:
+        # jitterbuffer do rtpbin: o padrão (200 ms) soma atraso fixo; 120 ms cobre a ida e volta de um NACK/RTX
+        if rtc.find_property("latency") is not None:
+            rtc.set_property("latency", 120)
         for i in range(2):  # vídeo e áudio
             tr = rtc.emit("get-transceiver", i)
             if tr is not None:

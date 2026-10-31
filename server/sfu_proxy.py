@@ -584,6 +584,34 @@ def offer_tracks(sdp: str) -> list[dict]:
     return tracks
 
 
+OPUS_STEREO = "stereo=1;sprop-stereo=1"
+
+
+def force_opus_stereo(sdp: str) -> str:
+    """Opus com `stereo=1;sprop-stereo=1` na m=audio (RFC 7587: sem isso vale stereo=0, mono); só o fmtp do Opus muda."""
+    if "m=audio" not in sdp:
+        return sdp
+    out = []
+    for block in re.split(r"(?m)^(?=m=)", sdp):
+        pt = re.search(r"(?im)^a=rtpmap:(\d+)\s+opus/48000", block) if block.startswith("m=audio") else None
+        if pt is None:
+            out.append(block)
+            continue
+        opus = pt.group(1)
+        lines, seen = [], False
+        for line in block.splitlines():
+            if line.startswith(f"a=fmtp:{opus} "):
+                seen = True
+                kept = [kv for kv in line.split(" ", 1)[1].split(";")
+                        if kv.strip() and kv.split("=")[0].strip().lower() not in ("stereo", "sprop-stereo")]
+                line = f"a=fmtp:{opus} {';'.join(kept + [OPUS_STEREO])}"
+            lines.append(line)
+            if line.startswith(f"a=rtpmap:{opus} ") and f"a=fmtp:{opus} " not in block:
+                lines.append(f"a=fmtp:{opus} minptime=10;useinbandfec=1;{OPUS_STEREO}")
+        out.append("\r\n".join(lines) + "\r\n")
+    return "".join(out)
+
+
 def _keep_payloads(kind: str, block: str) -> list[str] | None:
     """Payloads que o viewer pode oferecer numa m-line (lista branca); None = não mexe na seção."""
     rtpmap = re.findall(r"(?im)^a=rtpmap:(\d+)\s+([A-Za-z0-9_-]+)/", block)
@@ -642,7 +670,7 @@ def whep_offer(sdp: str) -> str:
                 line = f"a=fmtp:{opus_pt} minptime=10;useinbandfec=1"
             lines.append(line)
         out.append("\r\n".join(lines) + "\r\n")
-    return "".join(out)
+    return force_opus_stereo("".join(out))
 
 
 def close_tracks(pub: dict) -> None:
@@ -657,6 +685,7 @@ def publish(stream: str, offer: str) -> tuple[str, str]:
     with lock:
         if len(publishers) >= MAX_PUBLISHERS and stream not in publishers:
             raise HttpError(429, "limite de transmissões simultâneas atingido")
+    offer = force_opus_stereo(offer)
     tracks = offer_tracks(offer)
     session = sfu("POST", "/sessions/new")["sessionId"]
     res = tracks_new(session, {"sessionDescription": {"type": "offer", "sdp": offer}, "tracks": tracks})
@@ -666,7 +695,7 @@ def publish(stream: str, offer: str) -> tuple[str, str]:
     if old:  # reiniciou sem o DELETE antigo ter chegado
         close_tracks(old)
     log(f"no ar: {stream} (sessão {session[:8]})")
-    return session, res["sessionDescription"]["sdp"]
+    return session, force_opus_stereo(res["sessionDescription"]["sdp"])
 
 
 def unpublish(stream: str, session: str | None) -> bool:
@@ -722,7 +751,8 @@ def subscribe(stream: str, offer: str) -> tuple[str, str]:
         remote_tracks = [{"location": "remote", "sessionId": pub["session"], "trackName": t["trackName"]}
                          for t in pub["tracks"]]
     try:
-        return _subscribe_tracks(stream, whep_offer(offer), remote_tracks)
+        sub, answer = _subscribe_tracks(stream, whep_offer(offer), remote_tracks)
+        return sub, force_opus_stereo(answer)
     except SfuError as exc:
         video = [t for t in remote_tracks if t["trackName"] == "video"]
         if not str(exc).startswith("track audio:") or not video or len(video) == len(remote_tracks):
@@ -731,7 +761,7 @@ def subscribe(stream: str, offer: str) -> tuple[str, str]:
         log(f"{stream}: áudio sem dados no SFU ({exc}); assistindo só o vídeo")
         video_offer, restore = _drop_audio(whep_offer(offer))
         sub, answer = _subscribe_tracks(stream, video_offer, video)
-        return sub, restore(answer)
+        return sub, force_opus_stereo(restore(answer))
 
 
 def _subscribe_tracks(stream: str, sdp: str, remote_tracks: list[dict]) -> tuple[str, str]:

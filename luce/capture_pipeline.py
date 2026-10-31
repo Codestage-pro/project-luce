@@ -702,7 +702,7 @@ class CapturePipeline:
         # queue com leaky downstream logo após a fonte evita atrasos e alertas de gravação lenta
         audio_queue = Gst.ElementFactory.make("queue", "audio-queue")
         audio_queue.set_property("leaky", 2)  # downstream
-        audio_queue.set_property("max-size-time", 200_000_000)  # 200ms
+        audio_queue.set_property("max-size-time", 500_000_000)  # 500ms
         audio_queue.set_property("max-size-buffers", 0)
         audio_queue.set_property("max-size-bytes", 0)
         audio_convert = Gst.ElementFactory.make("audioconvert", "audio-convert")
@@ -712,6 +712,8 @@ class CapturePipeline:
         audio_enc = Gst.ElementFactory.make("opusenc", "audio-enc")
         _try_set(audio_enc, "bitrate", audio_bitrate_kbps * 1000)
         _try_set(audio_enc, "audio-type", "restricted-lowdelay")
+        _try_set(audio_enc, "inband-fec", True)
+        _try_set(audio_enc, "packet-loss-percentage", 5)
         audio_pay = Gst.ElementFactory.make("rtpopuspay", "audio-pay")
         _try_set(audio_pay, "pt", 97)
         audio_chain = (audio_src, audio_queue, audio_convert, audio_resample, self._audio_volume, audio_enc, audio_pay)

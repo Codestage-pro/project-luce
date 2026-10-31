@@ -87,6 +87,39 @@ class ProxyTest(unittest.TestCase):
         self.assertNotIn("apt=96", out)
         self.assertIn("m=video 9 UDP/TLS/RTP/SAVPF 100 97\r\n", out)
 
+    def test_whep_offer_adds_stereo_fmtp_when_opus_has_none(self):
+        out = p.whep_offer(OFFER)  # OFFER não tem a=fmtp do Opus
+        self.assertIn("a=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1\r\n", out)
+
+    def test_force_opus_stereo_merges_and_keeps_other_params(self):
+        sdp = ("m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\n"
+               "a=fmtp:111 minptime=10;stereo=0;sprop-stereo=0;maxaveragebitrate=320000\r\n"
+               "m=video 9 UDP/TLS/RTP/SAVPF 97\r\na=rtpmap:97 H264/90000\r\na=fmtp:97 packetization-mode=1\r\n")
+        out = p.force_opus_stereo(sdp)
+        self.assertIn("a=fmtp:111 minptime=10;maxaveragebitrate=320000;stereo=1;sprop-stereo=1\r\n", out)
+        self.assertEqual(out.count("stereo=1"), 2)  # stereo=1 e sprop-stereo=1
+        self.assertNotIn("stereo=0", out)
+        self.assertIn("a=fmtp:97 packetization-mode=1\r\n", out)  # vídeo intacto
+        self.assertEqual(p.force_opus_stereo("ANSWER"), "ANSWER")  # não-SDP passa direto
+
+    def test_publish_sends_and_returns_stereo_opus(self):
+        answer = ("v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\n"
+                  "a=fmtp:111 minptime=10;useinbandfec=1\r\n")
+        self.sfu.answer = answer
+        code, body, _ = self.call("POST", "/ana/whip", OFFER.encode())
+        self.assertEqual(code, 201)
+        sent = [c for c in self.sfu.calls if c[1].endswith("/tracks/new")][0][2]["sessionDescription"]["sdp"]
+        self.assertIn("a=fmtp:111 minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1\r\n", sent)
+        self.assertIn("a=fmtp:111 minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1\r\n", body)
+
+    def test_subscribe_answer_has_stereo_opus(self):
+        self.call("POST", "/ana/whip", OFFER.encode())
+        self.sfu.answer = ("v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\n"
+                           "a=fmtp:111 minptime=10;useinbandfec=1\r\n")
+        code, body, _ = self.call("POST", "/ana/whep", OFFER.encode(), headers={"X-Luce-Viewer": "bia"})
+        self.assertEqual(code, 201)
+        self.assertIn("a=fmtp:111 minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1\r\n", body)
+
     def test_subscribe_follows_viewer_mline_order_and_forces_recvonly(self):
         # publisher (GStreamer) = [audio, video]; o viewer é um SDP real do libwebrtc/Android
         self.call("POST", "/ana/whip", OFFER.encode())
@@ -116,9 +149,9 @@ class ProxyTest(unittest.TestCase):
         self.assertIn("m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n", sdp)
         self.assertIn("m=video 9 UDP/TLS/RTP/SAVPF 100 98\r\n", sdp)
         for gone in ("G722", "PCMU", "PCMA", "CN/", "telephone-event", "red/", "VP8", "ulpfec", "640c1f",
-                     "sendrecv", "sendonly", "a=ssrc", "a=msid", "stereo", "maxaveragebitrate"):
+                     "sendrecv", "sendonly", "a=ssrc", "a=msid", "maxaveragebitrate"):
             self.assertNotIn(gone, sdp)
-        self.assertIn("a=fmtp:111 minptime=10;useinbandfec=1\r\n", sdp)
+        self.assertIn("a=fmtp:111 minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1\r\n", sdp)
         self.assertEqual(sdp.count("a=recvonly"), 2)
 
     def test_chunked_body_is_read(self):
