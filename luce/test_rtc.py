@@ -33,5 +33,16 @@ class BoostUdpBuffersTest(unittest.TestCase):
         self.assertEqual((_rcvbuf(tcp), _rcvbuf(unix)), before)
 
 
+class LipSyncTest(unittest.TestCase):
+    def test_rtpbin_never_shifts_stream_offsets(self):
+        # o lip-sync empurrava o ts-offset do áudio ~137 ms a cada RTCP SR: cada salto virava um buraco no som
+        rtc.Gst.init(None)
+        outer = rtc.Gst.Bin.new("whep")
+        webrtc = rtc.Gst.ElementFactory.make("webrtcbin", None)
+        outer.add(webrtc)
+        rtc.enable_nack(outer)
+        self.assertEqual(webrtc.get_by_name("rtpbin").get_property("max-ts-offset"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

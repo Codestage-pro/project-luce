@@ -711,6 +711,9 @@ class CapturePipeline:
         audio_resample = Gst.ElementFactory.make("audioresample", "audio-resample")
         self._audio_volume = Gst.ElementFactory.make("volume", "audio-volume")
         self._audio_volume.set_property("mute", not audio_enabled)
+        # sem travar 2 canais, o rtpopuspay prefere mono e o audioconvert soma L+R: quem assiste ouvia igual nos dois lados
+        audio_stereo = Gst.ElementFactory.make("capsfilter", "audio-stereo")
+        audio_stereo.set_property("caps", Gst.Caps.from_string("audio/x-raw,channels=2,channel-mask=(bitmask)0x3"))
         audio_enc = Gst.ElementFactory.make("opusenc", "audio-enc")
         _try_set(audio_enc, "bitrate", audio_bitrate_kbps * 1000)
         _try_set(audio_enc, "audio-type", "restricted-lowdelay")
@@ -719,7 +722,7 @@ class CapturePipeline:
         audio_pay = Gst.ElementFactory.make("rtpopuspay", "audio-pay")
         _try_set(audio_pay, "pt", 97)
         _try_set(audio_pay, "mtu", 1200)
-        audio_chain = (audio_src, audio_queue, audio_convert, audio_resample, self._audio_volume, audio_enc, audio_pay)
+        audio_chain = (audio_src, audio_queue, audio_convert, audio_resample, self._audio_volume, audio_stereo, audio_enc, audio_pay)
         for element in audio_chain:
             self.pipeline.add(element)
         for left, right in zip(audio_chain, audio_chain[1:]):

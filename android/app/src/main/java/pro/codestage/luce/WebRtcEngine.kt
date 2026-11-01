@@ -493,7 +493,7 @@ class WatchSession(
                     override fun onSetFailure(error: String?) {}
                 }, MediaConstraints())
 
-                val offer = offerDeferred.await()
+                val offer = SessionDescription(SessionDescription.Type.OFFER, LuceApi.withStereoOpus(offerDeferred.await().description))
                 val setLocalDeferred = CompletableDeferred<Unit>()
                 pc.setLocalDescription(object : SdpObserver {
                     override fun onCreateSuccess(desc: SessionDescription?) {}

@@ -70,6 +70,11 @@ def enable_nack(element: Gst.Element) -> None:
         # jitterbuffer do rtpbin: o padrão (200 ms) soma atraso fixo; 120 ms cobre a ida e volta de um NACK/RTX
         if rtc.find_property("latency") is not None:
             rtc.set_property("latency", 120)
+        rtpbin = rtc.get_by_name("rtpbin") if isinstance(rtc, Gst.Bin) else None
+        if rtpbin is not None:
+            # desliga o lip-sync: a 60 fps o vídeo atrasa e o rtpbin empurrava o áudio ~137 ms a cada RTCP SR
+            # (sem limite, 1,5 s em 20 s); cada salto era um buraco no som = áudio "robotizado". Offset > 1 ns é ignorado.
+            rtpbin.set_property("max-ts-offset", 1)
         for i in range(2):  # vídeo e áudio
             tr = rtc.emit("get-transceiver", i)
             if tr is not None:

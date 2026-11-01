@@ -444,6 +444,14 @@ object LuceApi {
         return "$head ${(kept + add).joinToString(";")}"
     }
 
+    /** Só para a descrição LOCAL de quem assiste: sem stereo=1 o libwebrtc abre o decodificador Opus em mono. */
+    fun withStereoOpus(sdp: String): String {
+        val opusPt = Regex("(?im)^a=rtpmap:(\\d+)\\s+opus/48000").find(sdp)?.groupValues?.get(1) ?: return sdp
+        return Regex("(?m)^a=fmtp:$opusPt [^\\r\\n]*").replace(sdp) {
+            rewriteFmtp(it.value, { k -> k == "stereo" }, listOf("stereo=1"))
+        }
+    }
+
     private fun opusFmtp(line: String, audioBitrateKbps: Int): String = rewriteFmtp(
         line,
         { it in OPUS_MANAGED_KEYS },
