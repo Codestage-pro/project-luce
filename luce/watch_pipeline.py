@@ -113,6 +113,12 @@ class WatchPipeline:
         self.pipeline.add(src)
         rtc.enable_nack(src)
         src.connect("pad-added", self._on_pad_added)
+        # perda que o RTX não salvou: pede IDR (PLI) em vez de ficar com a imagem rasgada até o próximo (até 1 s)
+        self.pipeline.connect(
+            "deep-element-added",
+            lambda _p, _b, el: el.get_factory() is not None and el.get_factory().get_name() == "rtph264depay"
+            and el.set_property("request-keyframe", True),
+        )
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()
         bus.connect("message::error", self._on_error)

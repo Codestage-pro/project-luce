@@ -67,9 +67,10 @@ def enable_nack(element: Gst.Element) -> None:
     cria o webrtcbin (e os transceivers) depois do start, daí o hook.
     """
     def on_webrtcbin(rtc) -> None:
-        # jitterbuffer do rtpbin: o padrão (200 ms) soma atraso fixo; 120 ms cobre a ida e volta de um NACK/RTX
+        # jitterbuffer do rtpbin: com 120 ms o NACK/RTX chegava tarde (o RTCP de feedback é espaçado) e cada perda
+        # rasgava a imagem até o próximo IDR; 250 ms recuperou 100% a 2% de perda, mesmo com 50 ms de RTT
         if rtc.find_property("latency") is not None:
-            rtc.set_property("latency", 120)
+            rtc.set_property("latency", 250)
         rtpbin = rtc.get_by_name("rtpbin") if isinstance(rtc, Gst.Bin) else None
         if rtpbin is not None:
             # desliga o lip-sync: a 60 fps o vídeo atrasa e o rtpbin empurrava o áudio ~137 ms a cada RTCP SR

@@ -44,5 +44,16 @@ class LipSyncTest(unittest.TestCase):
         self.assertEqual(webrtc.get_by_name("rtpbin").get_property("max-ts-offset"), 1)
 
 
+class JitterBufferTest(unittest.TestCase):
+    def test_jitterbuffer_waits_long_enough_for_retransmission(self):
+        # com 120 ms o RTX chegava tarde a 2% de perda (centenas de quadros rasgados até o próximo IDR); 250 ms recuperou tudo
+        rtc.Gst.init(None)
+        outer = rtc.Gst.Bin.new("whep")
+        webrtc = rtc.Gst.ElementFactory.make("webrtcbin", None)
+        outer.add(webrtc)
+        rtc.enable_nack(outer)
+        self.assertGreaterEqual(webrtc.get_property("latency"), 250)
+
+
 if __name__ == "__main__":
     unittest.main()
