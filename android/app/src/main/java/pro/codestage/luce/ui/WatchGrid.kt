@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -80,6 +81,7 @@ fun WatchGrid(
     modifier: Modifier = Modifier
 ) {
     if (sessions.isEmpty()) return
+    KeepScreenOnEffect()
 
     if (fullscreenStreamName != null) {
         val focused = sessions.find { it.streamName == fullscreenStreamName }
@@ -135,6 +137,16 @@ private fun Context.findActivity(): Activity? {
         c = c.baseContext
     }
     return null
+}
+
+/** Enquanto houver transmissão aberta, a tela do celular não apaga nem bloqueia por inatividade. */
+@Composable
+private fun KeepScreenOnEffect() {
+    val activity = LocalContext.current.findActivity()
+    DisposableEffect(activity) {
+        activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        onDispose { activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+    }
 }
 
 /** Tela cheia: acompanha a orientação do vídeo (vertical/paisagem) e esconde as barras do sistema; ao sair, devolve tudo. */
