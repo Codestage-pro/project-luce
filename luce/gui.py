@@ -744,6 +744,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._x11_region: tuple[int, int, int, int] | None = None
         self._last_restart_time: float = 0.0
         self._restart_window_start: float = 0.0
+        self._restart_id: int | None = None  # restart agendado; um só por vez
         # Um só GLDisplay pra vida da janela: recriar um novo a cada restart
         # (troca de tela/resolução) é o que parece deixar a NVIDIA devolver
         # EGL_BAD_CONTEXT — ver comentário em CapturePipeline._on_need_context.
@@ -860,7 +861,7 @@ class MainWindow(Gtk.ApplicationWindow):
         return clean
 
     def _on_share_clicked(self, _button: Gtk.Button) -> None:
-        if self._capture is not None:
+        if self._capture is not None or self._restart_id is not None:
             self._stop_sharing()
             return
         if not config.is_fully_authenticated():
@@ -1084,7 +1085,7 @@ class MainWindow(Gtk.ApplicationWindow):
             cap.stop()
             self._capture = None
             gc.collect()
-            GLib.timeout_add(800, self._do_restart_sharing)  # mesma folga pro driver da NVIDIA que o _on_share_error
+            self._schedule_restart(800)  # mesma folga pro driver da NVIDIA que o _on_share_error
             return
         if old["bitrate"] != new["bitrate"]:
             cap.set_bitrate(new["bitrate"])
@@ -1171,8 +1172,12 @@ class MainWindow(Gtk.ApplicationWindow):
         # dá pra esperar. 400ms fixo não bastava mesmo na primeira tentativa
         # (visto em teste real); backoff crescente dá mais fôlego a cada
         # retry em vez de martelar o driver sempre no mesmo intervalo curto.
-        delay = min(800 * (2 ** (self._restart_count - 1)), 3200)
-        GLib.timeout_add(delay, self._do_restart_sharing)
+        self._schedule_restart(min(800 * (2 ** (self._restart_count - 1)), 3200))
+
+    def _schedule_restart(self, delay_ms: int) -> None:
+        if self._restart_id is not None:
+            GLib.source_remove(self._restart_id)
+        self._restart_id = GLib.timeout_add(delay_ms, self._do_restart_sharing)
 
     def _make_preview_sink(self) -> Gst.Element | None:
         sink = Gst.ElementFactory.make("gtk4paintablesink", "preview-sink")
@@ -1181,6 +1186,10 @@ class MainWindow(Gtk.ApplicationWindow):
         return sink
 
     def _do_restart_sharing(self) -> bool:
+        self._restart_id = None
+        # já tem captura rodando: montar outra por cima vazava a antiga, que seguia subindo (upload em dobro)
+        if self._capture is not None:
+            return False
         if self._portal is None and not self._x11 and self._monitor_handle is None and self._window_handle is None:
             return False
         name = self._name_entry.get_text().strip()
@@ -1308,10 +1317,13 @@ class MainWindow(Gtk.ApplicationWindow):
             self._capture.stop()
             self._capture = None
         gc.collect()
-        GLib.timeout_add(800, self._do_restart_sharing)
+        self._schedule_restart(800)
 
     def _stop_sharing(self) -> None:
         self._restart_count = 0
+        if self._restart_id is not None:
+            GLib.source_remove(self._restart_id)
+            self._restart_id = None
         if self._capture is not None:
             self._capture.stop()
             self._capture = None

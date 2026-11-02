@@ -10,10 +10,10 @@ android {
 
     val envVer = (project.findProperty("luceVersion") as? String)?.takeIf { it.isNotBlank() }
         ?: System.getenv("LUCE_VERSION")?.takeIf { it.isNotBlank() }
-        ?: "1.0.50"
+        ?: "1.0.51"
     val envCode = ((project.findProperty("luceCode") as? String)?.toIntOrNull()
         ?: System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
-        ?: 1) + 5000
+        ?: 1) + 5100
 
     defaultConfig {
         applicationId = "pro.codestage.luce"

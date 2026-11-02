@@ -523,7 +523,9 @@ class CapturePipeline:
         )
         queue = Gst.ElementFactory.make("queue", "queue")
         _try_set(queue, "max-size-buffers", 3)
-        _try_set(queue, "leaky", "downstream")
+        # sem leaky: H.264 descartado aqui não deixa buraco no RTP (ninguém pede IDR) e a imagem fica
+        # rasgada até o próximo keyframe; se a rede engasgar, segura o encoder e quem perde quadro é a captura (cru)
+        _try_set(queue, "leaky", "no")
         pay = Gst.ElementFactory.make("rtph264pay", "pay")
         _try_set(pay, "pt", 96)
         _try_set(pay, "mtu", 1200)  # tamanho padrão do WebRTC: não fragmenta em PPPoE/fibra
