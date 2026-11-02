@@ -831,7 +831,16 @@ class MainWindow(Gtk.ApplicationWindow):
         self._preview.connect("notify::paintable", lambda p, _: hint.set_visible(p.get_paintable() is None))
         stage = Gtk.Overlay(child=self._preview, css_classes=["stage"], overflow=Gtk.Overflow.HIDDEN)
         stage.add_overlay(hint)
+        self._preview_paused_label = Gtk.Label(
+            label="Prévia pausada enquanto o LUCE está em segundo plano — a transmissão continua",
+            css_classes=["stage-hint"], wrap=True, visible=False,
+        )
+        stage.add_overlay(self._preview_paused_label)
+        # todo caminho que encerra a captura limpa a prévia: some o aviso junto
+        self._preview.connect("notify::paintable", lambda p, _: p.get_paintable() is None
+                              and self._preview_paused_label.set_visible(False))
         root.append(stage)
+        self.connect("notify::is-active", lambda *_: self._sync_preview_pause())
 
         root.append(Gtk.Label(label="No ar agora", xalign=0, css_classes=["section"]))
         self._roster_box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
@@ -842,6 +851,13 @@ class MainWindow(Gtk.ApplicationWindow):
         GLib.timeout_add_seconds(1, self._poll_stats)
 
     # --- transmitir ---
+
+    def _sync_preview_pause(self) -> None:
+        """Foco em outro app: a prévia para de converter/desenhar (o Discord faz igual); a transmissão segue."""
+        paused = self._capture is not None and not self.is_active()
+        if self._capture is not None:
+            self._capture.preview_paused = paused
+        self._preview_paused_label.set_visible(paused)
 
     def _sync_user_name(self, fallback_os: bool = False) -> str:
         """Lê o nome da caixa de texto, normaliza para o servidor e salva no config.toml."""
@@ -950,6 +966,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 gl_display=self._gl_display,
             )
             self._capture.start()
+            self._sync_preview_pause()
         except Exception as exc:
             # Montar o pipeline falha de verdade em máquina sem encoder de GPU
             # (sem NVIDIA e sem driver VA-API): sem isto a exceção só ia pro
@@ -1236,6 +1253,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 gl_display=self._gl_display,
             )
             self._capture.start()
+            self._sync_preview_pause()
             enc_label = _ENCODER_LABELS[self._capture.encoder_kind]
             self._status.set_label(f"transmitindo como {name} ({enc_label})")
         except Exception as exc:

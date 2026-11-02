@@ -285,6 +285,7 @@ class CapturePipeline:
         self._gl_display = gl_display
         self._preview_pipeline: Gst.Pipeline | None = None
         self._preview_make = None
+        self.preview_paused = False  # GUI em segundo plano: a prévia nem converte nem desenha
         self._system_audio: linux_audio.SystemAudioExcept | None = None
         self._fps = fps
         self._pattern = pattern
@@ -620,6 +621,13 @@ class CapturePipeline:
                 if not left.link(right):
                     raise RuntimeError(f"não liguei {left.get_name()} em {right.get_name()}")
             encode_src = enc_queue
+
+        prev_queue = self.pipeline.get_by_name("preview-queue")  # os dois caminhos de preview acima
+        if prev_queue is not None:
+            prev_queue.get_static_pad("sink").add_probe(
+                Gst.PadProbeType.BUFFER,
+                lambda *_: Gst.PadProbeReturn.DROP if self.preview_paused else Gst.PadProbeReturn.OK,
+            )
 
         sink_pad = enc.get_static_pad("sink")
         tmpl = sink_pad.get_pad_template_caps().to_string() if sink_pad else ""
