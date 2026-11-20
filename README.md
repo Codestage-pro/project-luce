@@ -27,7 +27,7 @@ Cliente de transmissão de tela feito **só para o servidor do Discord BDK**. O 
 flatpak install --user https://codestage-pro.github.io/project-luce/luce.flatpakref
 ```
 
-**Windows:** baixe o `Luce-Setup.exe` na [última versão](https://github.com/Codestage-pro/project-luce/releases/latest).
+**Windows:** baixe o `Luce-Setup-<versão>.exe` na [última versão](https://github.com/Codestage-pro/project-luce/releases/latest).
 
 Na primeira abertura, digite o seu **nome** e a **senha do grupo**. As atualizações são avisadas dentro do app e instaladas com um clique.
 
