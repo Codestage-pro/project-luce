@@ -17,7 +17,7 @@
 
 ---
 
-Cliente de transmissão de tela feito **só para o servidor do Discord BDK**. O repositório é público apenas para as atualizações automáticas funcionarem; o app não serve para outro uso.
+Cliente de transmissão de tela feito **só para o servidor do Discord BDK**. Este repositório só distribui o app (versões e atualizações automáticas); o app não serve para outro uso.
 
 ## Instalar
 
@@ -43,4 +43,4 @@ Na primeira abertura, digite o seu **nome** e a **senha do grupo**. As atualiza�
 
 ## Licença
 
-**Todos os direitos reservados © 2026 Codestage.pro.** O código está público apenas para distribuir o app pelos canais oficiais; não é open source. Copiar, modificar, redistribuir ou vender qualquer parte exige autorização por escrito. Detalhes em [`LICENSE`](LICENSE).
+**Todos os direitos reservados © 2026 Codestage.pro.** O código é privado e este repositório existe apenas para distribuir o app pelos canais oficiais; não é open source. Copiar, modificar, redistribuir ou vender qualquer parte exige autorização por escrito. Detalhes em [`LICENSE`](LICENSE).
